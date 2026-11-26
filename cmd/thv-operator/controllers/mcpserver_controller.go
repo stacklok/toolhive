@@ -265,9 +265,30 @@ func (r *MCPServerReconciler) handleInvalidCABundle(
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: server.Generation,
 			Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
-			Message:            fmt.Sprintf("invalid CA bundle: %v", err),
+			Message:            ctrlutil.InvalidCABundleMessage(err),
 		})
 	})
+}
+
+// markExternalAuthConfigFailed records a handleExternalAuthConfig failure as
+// Phase=Failed / Ready=False, alongside the ExternalAuthConfigValidated
+// condition the handler already set in memory. It keeps the full-object status
+// Update the other MCPServer config handlers use, so the in-memory conditions
+// are persisted with it. The write is skipped when the status is unchanged from
+// originalStatus, so a terminal failure that is not requeued does not rewrite
+// the same status on every reconcile.
+func (r *MCPServerReconciler) markExternalAuthConfigFailed(
+	ctx context.Context,
+	mcpServer *mcpv1beta1.MCPServer,
+	originalStatus mcpv1beta1.MCPServerStatus,
+	err error,
+) error {
+	mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+	setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
+	if equality.Semantic.DeepEqual(originalStatus, mcpServer.Status) {
+		return nil
+	}
+	return r.Status().Update(ctx, mcpServer)
 }
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -388,15 +409,22 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, nil
 		}
 
-		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
-		// Update status to reflect the error
-		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
-		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
-		if !equality.Semantic.DeepEqual(originalStatus, mcpServer.Status) {
-			if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+		// A spec defect the user must fix (e.g. obo without incoming OIDC) is
+		// recorded on status and not requeued; only a failed status write is
+		// retried.
+		var validationErr *obo.ValidationError
+		if stderrors.As(err, &validationErr) {
+			if statusErr := r.markExternalAuthConfigFailed(ctx, mcpServer, originalStatus, err); statusErr != nil {
 				ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
 				return ctrl.Result{}, statusErr
 			}
+			return ctrl.Result{}, nil
+		}
+
+		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
+		if statusErr := r.markExternalAuthConfigFailed(ctx, mcpServer, originalStatus, err); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
+			return ctrl.Result{}, statusErr
 		}
 		if isTerminalExternalAuthError(err) {
 			// A consumer/type incompatibility is a configuration error. A spec or
@@ -1201,13 +1229,12 @@ func (r *MCPServerReconciler) imagePullSecretsForMCPServer(
 }
 
 // logOBOSecretEnvVarError logs an error from OBO secret env var generation
-// without leaking sensitive detail. The OBOHandler error contract only
-// guarantees *obo.ValidationError.Message is safe to surface; the transient
-// bucket (e.g. "secret obo-secret/client-secret not found", JWKS URLs) carries
-// no such guarantee, so anything that is not a ValidationError is logged
-// generically with a pointer to the MCPExternalAuthConfig status, which the
-// MCPExternalAuthConfig reconciler populates with the triaged detail. Shared by
-// the MCPServer and MCPRemoteProxy proxy-env builders.
+// without leaking sensitive detail. Only *obo.ValidationError.Message is
+// guaranteed safe to surface; other errors (e.g. "secret obo-secret/client-secret
+// not found") carry no such guarantee, so anything that is not a
+// ValidationError is logged generically with a pointer to the
+// MCPExternalAuthConfig status, which its reconciler populates with the triaged
+// detail. Shared by the MCPServer and MCPRemoteProxy proxy-env builders.
 func logOBOSecretEnvVarError(ctx context.Context, err error) {
 	logger := log.FromContext(ctx)
 	var validationErr *obo.ValidationError
@@ -1358,9 +1385,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			env = append(env, tokenExchangeEnvVars...)
 		}
 
-		// Add OBO secret environment variables. Dispatched through the
-		// registered OBO handler; inert (no env vars) in builds without one.
-		// Must mirror deploymentNeedsUpdate exactly to avoid reconcile drift.
+		// Add OBO secret environment variables. Must mirror
+		// deploymentNeedsUpdate exactly to avoid reconcile drift.
 		oboEnvVars, err := ctrlutil.AddOBOSecretEnvVars(
 			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef,
 		)
@@ -2048,12 +2074,10 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			// Add OBO secret environment variables. Must mirror
 			// deploymentForMCPServer exactly (same call, same position) so a
 			// correctly-configured resource does not look perpetually drifted.
-			// In handler-less builds the dispatcher swallows ErrEnterpriseRequired
-			// to (nil, nil), keeping this path symmetric with the builder. A
-			// genuine handler error returns true here while the builder logs and
-			// continues, so as long as the handler keeps erroring the operator
-			// re-applies an identical (OBO-env-less) Deployment each reconcile; it
-			// stops only once the handler succeeds. This mirrors the token-exchange
+			// An error returns true here while the builder logs and continues,
+			// so as long as it keeps erroring the operator re-applies an
+			// identical (OBO-env-less) Deployment each reconcile; it stops once
+			// the config is fixed. This mirrors the token-exchange
 			// block above; unifying both (requeue on genuine error so neither side
 			// acts) is out of scope for this change.
 			oboEnvVars, err := ctrlutil.AddOBOSecretEnvVars(
@@ -2469,9 +2493,8 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	}
 
 	// Mirror the referenced MCPExternalAuthConfig's Valid=False condition onto
-	// the MCPServer so the failure is visible on the consumer CR (e.g. obo-typed
-	// configs surface Valid=False/EnterpriseRequired here without the user
-	// having to inspect the referenced MCPExternalAuthConfig).
+	// the MCPServer so the failure is visible on the consumer CR without the
+	// user having to inspect the referenced MCPExternalAuthConfig.
 	if mirrored, err := mirrorInvalidOnMCPServer(m, externalAuthConfig); mirrored {
 		return err
 	}
@@ -2490,6 +2513,19 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 		return fmt.Errorf("MCPExternalAuthConfig %s/%s: %w", m.Namespace, externalAuthConfig.Name, err)
 	}
 
+	// OBO exchanges the authenticated user's token, so it needs incoming OIDC
+	// authentication. Terminal: the caller records it without requeueing.
+	if err := ctrlutil.ValidateOBOIncomingAuth(externalAuthConfig, m.Spec.OIDCConfigRef != nil); err != nil {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+			Message:            err.Error(),
+			ObservedGeneration: m.Generation,
+		})
+		return err
+	}
+
 	// Resolve upstream CA dependencies before allowing any workload changes.
 	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil {
 		if err := ctrlutil.ValidateEmbeddedAuthServerCABundles(ctx, r.Client, m.Namespace, embeddedCfg); err != nil {
@@ -2501,7 +2537,7 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 			}
 			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
 				Type: mcpv1beta1.ConditionTypeExternalAuthConfigValidated, Status: metav1.ConditionFalse,
-				Reason: mcpv1beta1.ConditionReasonInvalidCABundle, Message: fmt.Sprintf("invalid CA bundle: %v", err),
+				Reason: mcpv1beta1.ConditionReasonInvalidCABundle, Message: ctrlutil.InvalidCABundleMessage(err),
 				ObservedGeneration: m.Generation,
 			})
 			return err
@@ -2556,7 +2592,14 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 // A CA bundle failure (ConditionReasonInvalidCABundle) is deliberately not
 // preserved here: its failing input is ConfigMap content, which neither
 // generation nor configHash tracks, and the check that records it re-runs
-// earlier in this same function. Holding it would make the failure permanent.
+// earlier in handleExternalAuthConfig. Holding it would make the failure permanent.
+// Neither is an InvalidConfig mirrored from the referenced
+// MCPExternalAuthConfig (see isLocalValidationFailure): the source can heal
+// back to an unchanged ConfigHash, and holding it would then be permanent too.
+// The obo incoming-auth rejection (ctrlutil.MsgOBORequiresIncomingAuth) is not
+// held either: it re-runs earlier in handleExternalAuthConfig and returns before the
+// stored hash advances, so a source that reverts from obo to its earlier spec
+// matches the stored hash, and holding it would keep a stale False.
 func setMCPServerExternalAuthConfigValidCondition(
 	m *mcpv1beta1.MCPServer,
 	configName, configHash string,
@@ -2564,9 +2607,9 @@ func setMCPServerExternalAuthConfigValidCondition(
 	previousCondition := meta.FindStatusCondition(
 		m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 	)
-	if previousCondition != nil &&
-		previousCondition.Status == metav1.ConditionFalse &&
+	if isLocalValidationFailure(previousCondition) &&
 		previousCondition.Reason == mcpv1beta1.ConditionReasonInvalidConfig &&
+		previousCondition.Message != ctrlutil.MsgOBORequiresIncomingAuth &&
 		previousCondition.ObservedGeneration == m.Generation &&
 		m.Status.ExternalAuthConfigHash == configHash {
 		return
@@ -2681,7 +2724,7 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1b
 				Type:               mcpv1beta1.ConditionTypeAuthServerRefValidated,
 				Status:             metav1.ConditionFalse,
 				Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
-				Message:            fmt.Sprintf("invalid CA bundle: %v", err),
+				Message:            ctrlutil.InvalidCABundleMessage(err),
 				ObservedGeneration: m.Generation,
 			})
 			return err

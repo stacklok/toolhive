@@ -274,7 +274,7 @@ func (r *MCPRemoteProxyReconciler) resolveAndAddOIDCConfig(
 		resolved.JWKSAllowPrivateIP,
 		resolved.InsecureAllowHTTP,
 		resolved.Scopes,
-	))
+	), runner.WithOIDCRequiredSubject(resolved.RequiredSubject, resolved.RequiredSubjectPrefix))
 	return resolved, nil
 }
 

@@ -53,9 +53,9 @@ var vmcpAppliedTypes = []mcpv1beta1.ExternalAuthType{
 // controllerutil exercise that dispatch against every type, so these rows
 // cannot silently drift from what the dispatcher implements.
 //
-// OBO appears for every consumer because enterprise builds may register the
-// required handler; upstream-only builds reject OBO separately with
-// EnterpriseRequired.
+// OBO appears for every consumer. MCPServer and MCPRemoteProxy additionally
+// require incoming OIDC authentication for it, which is checked separately
+// (controllerutil.ValidateOBOIncomingAuth).
 var supportMatrix = map[Consumer]map[mcpv1beta1.ExternalAuthType]struct{}{
 	ConsumerMCPServer: backendRow(
 		mcpv1beta1.ExternalAuthTypeTokenExchange,

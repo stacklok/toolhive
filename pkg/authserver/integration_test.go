@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -48,6 +49,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+)
+
+// idJAGClientID is the confidential client that redeems ID-JAGs signed by
+// setupJWTBearerGrantTestServer.
+const (
+	idJAGClientID     = "id-jag-client"
+	idJAGClientSecret = "id-jag-client-secret"
 )
 
 const (
@@ -567,7 +575,17 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 	}))
 	t.Cleanup(jwksServer.Close)
 
-	serverOpts := append([]testServerOption{}, opts...)
+	// ID-JAGs are redeemed by a confidential client: AS-2 refuses public ones.
+	idJAGClient, err := registration.New(registration.Config{
+		ID: idJAGClientID, Secret: idJAGClientSecret,
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		GrantTypes:              []string{oauthproto.GrantTypeJWTBearer},
+		Scopes:                  registration.DefaultScopes,
+		Audience:                []string{testAudience},
+	})
+	require.NoError(t, err)
+
+	serverOpts := append([]testServerOption{withExtraClient(idJAGClient)}, opts...)
 	serverOpts = append(serverOpts, withTrustedIssuers([]tokenexchange.TrustedIssuer{{
 		IssuerURL:              externalIssuer,
 		ExpectedAudience:       testAudience,
@@ -594,8 +612,10 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 	)
 	require.NoError(t, err)
 
-	sign := func(subject, audience string, issuedAt, expiry time.Time, id string) string {
+	signWith := func(extra map[string]any, subject, audience string, issuedAt, expiry time.Time, id string) string {
 		t.Helper()
+		claims := map[string]any{"azp": subject}
+		maps.Copy(claims, extra)
 		builder := jwt.Signed(signer).Claims(jwt.Claims{
 			Issuer:   externalIssuer,
 			Subject:  subject,
@@ -603,10 +623,18 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 			IssuedAt: jwt.NewNumericDate(issuedAt),
 			Expiry:   jwt.NewNumericDate(expiry),
 			ID:       id,
-		}).Claims(map[string]any{"azp": subject})
+		}).Claims(claims)
 		assertion, err := builder.Serialize()
 		require.NoError(t, err)
 		return assertion
+	}
+	sign := func(subject, audience string, issuedAt, expiry time.Time, id string) string {
+		t.Helper()
+		return signWith(nil, subject, audience, issuedAt, expiry, id)
+	}
+	ts.signAssertionWith = func(extra map[string]any, subject string, issuedAt, expiry time.Time, id string) string {
+		t.Helper()
+		return signWith(extra, subject, testIssuer+"/oauth/token", issuedAt, expiry, id)
 	}
 	signAssertion := func(subject string, issuedAt, expiry time.Time, id string) string {
 		return sign(subject, testIssuer+"/oauth/token", issuedAt, expiry, id)
@@ -614,14 +642,20 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 	ts.signSubjectToken = func(subject string, issuedAt, expiry time.Time, id string) string {
 		return sign(subject, testAudience, issuedAt, expiry, id)
 	}
-	ts.signIDJAGAssertion = func(subject string, issuedAt, expiry time.Time, id string) string {
+	ts.signIDJAGAssertionWith = func(clientID string, extra map[string]any, subject string, issuedAt, expiry time.Time, id string) string {
 		t.Helper()
+		claims := map[string]any{"client_id": clientID}
+		maps.Copy(claims, extra)
 		assertion, err := jwt.Signed(idjagSigner).Claims(jwt.Claims{
 			Issuer: externalIssuer, Subject: subject, Audience: jwt.Audience{testIssuer + "/oauth/token"},
 			IssuedAt: jwt.NewNumericDate(issuedAt), Expiry: jwt.NewNumericDate(expiry), ID: id,
-		}).Claims(map[string]any{"client_id": testClientID}).Serialize()
+		}).Claims(claims).Serialize()
 		require.NoError(t, err)
 		return assertion
+	}
+	ts.signIDJAGAssertion = func(subject string, issuedAt, expiry time.Time, id string) string {
+		t.Helper()
+		return ts.signIDJAGAssertionWith(idJAGClientID, nil, subject, issuedAt, expiry, id)
 	}
 	return ts, signAssertion
 }
@@ -2486,6 +2520,12 @@ type testServerWithUpstream struct {
 	upstreamProvider   upstream.OAuth2Provider
 	signSubjectToken   func(string, time.Time, time.Time, string) string
 	signIDJAGAssertion func(string, time.Time, time.Time, string) string
+	// signAssertionWith signs a plain RFC 7523 assertion with extra claims
+	// merged over the defaults.
+	signAssertionWith func(extra map[string]any, subject string, issuedAt, expiry time.Time, id string) string
+	// signIDJAGAssertionWith signs an ID-JAG naming clientID, with extra claims
+	// merged over the defaults.
+	signIDJAGAssertionWith func(clientID string, extra map[string]any, subject string, issuedAt, expiry time.Time, id string) string
 }
 
 // startMockOIDC starts a mockoidc server with default test user.
@@ -6824,7 +6864,7 @@ func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
 
 			now := time.Now()
 			subjectToken := ts.signSubjectToken("external-subject", now, now.Add(10*time.Minute), "subject-1")
-			assertion := makeAssertion(registered.ClientID, testIssuer+"/oauth/token", now.Add(2*time.Minute), "client-assertion-1")
+			assertion := makeAssertion(registered.ClientID, testIssuer, now.Add(2*time.Minute), "client-assertion-1")
 			response, body := request(assertion, subjectToken)
 			t.Cleanup(func() { response.Body.Close() })
 			require.Equal(t, http.StatusOK, response.StatusCode, body)
@@ -6850,8 +6890,8 @@ func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
 				assertion string
 			}{
 				{name: "wrong_audience", assertion: makeAssertion(registered.ClientID, "https://wrong.example/token", now.Add(2*time.Minute), "client-assertion-wrong-aud")},
-				{name: "wrong_subject", assertion: makeAssertion("different-client", testIssuer+"/oauth/token", now.Add(2*time.Minute), "client-assertion-wrong-sub")},
-				{name: "expired", assertion: makeAssertion(registered.ClientID, testIssuer+"/oauth/token", now.Add(-time.Minute), "client-assertion-expired")},
+				{name: "wrong_subject", assertion: makeAssertion("different-client", testIssuer, now.Add(2*time.Minute), "client-assertion-wrong-sub")},
+				{name: "expired", assertion: makeAssertion(registered.ClientID, testIssuer, now.Add(-2*time.Minute), "client-assertion-expired")},
 			} {
 				t.Run(negative.name, func(t *testing.T) {
 					response, body := request(negative.assertion, subjectToken)
@@ -6866,8 +6906,9 @@ func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
 
 // TestIntegration_PrivateKeyJWTClientAssertionAudience drives a DCR
 // private_key_jwt client through the token endpoint with different assertion
-// audiences and JOSE types. The issuer and the token endpoint URL are accepted;
-// any other audience is refused with invalid_client.
+// audiences and JOSE types. Only the issuer, and nothing else, is accepted;
+// the token endpoint URL, an array with another value and any other audience
+// are refused with invalid_client.
 func TestIntegration_PrivateKeyJWTClientAssertionAudience(t *testing.T) {
 	t.Parallel()
 
@@ -6918,7 +6959,8 @@ func TestIntegration_PrivateKeyJWTClientAssertionAudience(t *testing.T) {
 		wantOK   bool
 	}{
 		{name: "issuer", audience: jwt.Audience{testIssuer}, typ: "JWT", wantOK: true},
-		{name: "token URL", audience: jwt.Audience{testIssuer + "/oauth/token"}, typ: "JWT", wantOK: true},
+		{name: "token URL", audience: jwt.Audience{testIssuer + "/oauth/token"}, typ: "JWT"},
+		{name: "issuer and another value in an array", audience: jwt.Audience{testIssuer, "https://other.example.com"}, typ: "JWT"},
 		{name: "unrelated audience", audience: jwt.Audience{"https://other.example.com"}, typ: "JWT"},
 		{name: "rfc7523bis typ header with issuer", audience: jwt.Audience{testIssuer}, typ: "client-authentication+jwt", wantOK: true},
 	}
@@ -7356,10 +7398,11 @@ func TestIntegration_AccessTokenType(t *testing.T) {
 			t.Helper()
 			token := jwtBearerAccessToken(t, opts, func(ts *testServerWithUpstream, _ func(string, time.Time, time.Time, string) string, now time.Time) url.Values {
 				return url.Values{
-					"grant_type": {oauthproto.GrantTypeJWTBearer},
-					"assertion":  {ts.signIDJAGAssertion("external-subject", now, now.Add(2*time.Minute), "typ-id-jag")},
-					"client_id":  {testClientID},
-					"resource":   {testAudience},
+					"grant_type":    {oauthproto.GrantTypeJWTBearer},
+					"assertion":     {ts.signIDJAGAssertion("external-subject", now, now.Add(2*time.Minute), "typ-id-jag")},
+					"client_id":     {idJAGClientID},
+					"client_secret": {idJAGClientSecret},
+					"resource":      {testAudience},
 				}
 			})
 			// The plain JWT-bearer handler would mint a synthetic client_id, so
@@ -7368,7 +7411,7 @@ func TestIntegration_AccessTokenType(t *testing.T) {
 			require.NoError(t, err)
 			var claims map[string]any
 			require.NoError(t, parsed.UnsafeClaimsWithoutVerification(&claims))
-			require.Equal(t, testClientID, claims["client_id"])
+			require.Equal(t, idJAGClientID, claims["client_id"])
 			return token
 		}},
 	}

@@ -224,6 +224,8 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 				resolvedOIDCConfig.JWKSAllowPrivateIP,
 				resolvedOIDCConfig.InsecureAllowHTTP,
 				resolvedOIDCConfig.Scopes,
+			), runner.WithOIDCRequiredSubject(
+				resolvedOIDCConfig.RequiredSubject, resolvedOIDCConfig.RequiredSubjectPrefix,
 			))
 		}
 	}

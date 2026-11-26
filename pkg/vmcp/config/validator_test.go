@@ -240,6 +240,57 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 			wantErr: true,
 			errMsg:  "caBundlePath contains invalid path characters",
 		},
+		{
+			name: "valid OIDC auth with absolute jwksAuthTokenPath",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "OIDC rejects relative jwksAuthTokenPath",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "token",
+				},
+			},
+			wantErr: true,
+			errMsg:  "jwksAuthTokenPath must be an absolute path",
+		},
+		{
+			name: "OIDC rejects jwksAuthTokenPath with path traversal",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "/var/run/../../etc/passwd",
+				},
+			},
+			wantErr: true,
+			errMsg:  "jwksAuthTokenPath contains invalid path characters",
+		},
+		{
+			name: "OIDC rejects jwksAuthTokenPath with null byte",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "/var/run/tok\x00en",
+				},
+			},
+			wantErr: true,
+			errMsg:  "jwksAuthTokenPath contains invalid path characters",
+		},
 	}
 
 	for _, tt := range tests {
@@ -258,6 +309,49 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 					t.Errorf("validateIncomingAuth() error message = %v, want to contain %v", err.Error(), tt.errMsg)
 				}
 			}
+		})
+	}
+}
+
+func TestValidateOIDCFilePaths(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		oidc   *OIDCConfig
+		errMsg string
+	}{
+		{name: "nil config", oidc: nil},
+		{name: "no paths set", oidc: &OIDCConfig{}},
+		{
+			name: "absolute paths",
+			oidc: &OIDCConfig{
+				CABundlePath:      "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				JWKSAuthTokenPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+			},
+		},
+		{
+			name:   "relative caBundlePath",
+			oidc:   &OIDCConfig{CABundlePath: "ca.crt"},
+			errMsg: "incomingAuth.oidc.caBundlePath must be an absolute path",
+		},
+		{
+			name:   "relative jwksAuthTokenPath",
+			oidc:   &OIDCConfig{JWKSAuthTokenPath: "token"},
+			errMsg: "incomingAuth.oidc.jwksAuthTokenPath must be an absolute path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateOIDCFilePaths(tt.oidc)
+			if tt.errMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errMsg)
 		})
 	}
 }

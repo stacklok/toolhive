@@ -12,19 +12,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func testSPIFFEClients(t *testing.T) map[string]fosite.Client {
 	t.Helper()
-	client, err := registration.NewSPIFFEClient(
-		"spiffe-client",
-		[]string{"openid"},
-		[]string{"https://api.example.com"},
-		nil,
-	)
-	require.NoError(t, err)
+	client := spiffetest.Client(t)
 	return map[string]fosite.Client{client.GetID(): client}
 }
 
@@ -42,10 +37,7 @@ func (c testIdentityClient) IdentityFingerprint() string { return c.identityFing
 
 func testSPIFFEClientWithIdentity(t *testing.T, identityFingerprint string) fosite.Client {
 	t.Helper()
-	client, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, nil,
-	)
-	require.NoError(t, err)
+	client := spiffetest.Client(t)
 	return testIdentityClient{SPIFFEClient: client, identityFingerprint: identityFingerprint}
 }
 
@@ -249,9 +241,7 @@ func TestSPIFFEStorageDecoratorPlaceholderResourcesRoundTripThroughRedis(t *test
 	raw, mr := newTestRedisStorage(t)
 	t.Cleanup(func() { _ = raw.Close(); mr.Close() })
 
-	client, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp.example.com"})
-	require.NoError(t, err)
+	client := spiffetest.Client(t, spiffetest.WithResources("https://mcp.example.com"))
 
 	require.NoError(t, PreflightSPIFFEStaticClientCollisions(ctx, raw, map[string]fosite.Client{client.GetID(): client}))
 
@@ -349,9 +339,7 @@ func TestSPIFFEStorageDecoratorDurableClaimRedisBacked(t *testing.T) {
 
 	// Reconstructing with a changed association at the same ID replaces the
 	// placeholder.
-	changed, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"a-different-scope"}, []string{"https://api.example.com"}, nil)
-	require.NoError(t, err)
+	changed := spiffetest.Client(t, spiffetest.WithScopes("a-different-scope"))
 	_, err = NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{"spiffe-client": changed})
 	require.NoError(t, err)
 	replaced, err := base.GetClient(ctx, "spiffe-client")

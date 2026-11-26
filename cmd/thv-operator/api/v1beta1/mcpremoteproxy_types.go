@@ -85,7 +85,7 @@ type MCPRemoteProxySpec struct {
 
 	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource for external authentication.
 	// Supported types are tokenExchange, bearerToken, unauthenticated,
-	// embeddedAuthServer, awsSts, and obo when an enterprise handler is registered.
+	// embeddedAuthServer, awsSts, and obo.
 	// For new embedded authorization server configurations, prefer AuthServerRef.
 	// headerInjection, upstreamInject, and xaa are accepted but not applied by the
 	// MCPRemoteProxy: they take effect when a VirtualMCPServer discovers this
@@ -133,7 +133,14 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	TelemetryConfigRef *MCPTelemetryConfigReference `json:"telemetryConfigRef,omitempty"`
 
-	// Resources defines the resource requirements for the proxy container
+	// Resources defines the resource requirements for the proxy container.
+	// Unset fields fall back to defaults: requests of 50m CPU and 64Mi memory,
+	// limits of 200m CPU and 256Mi memory. Resources set on the "toolhive"
+	// container through podTemplateSpec take precedence over this field.
+	// A limit set without a request, here or in podTemplateSpec, drops the
+	// default request so Kubernetes copies the limit into the request as usual.
+	// A request set without a limit raises the default limit to match if the
+	// request is above it. Requests and limits the user sets explicitly are used as given.
 	// +optional
 	Resources ResourceRequirements `json:"resources,omitempty"`
 

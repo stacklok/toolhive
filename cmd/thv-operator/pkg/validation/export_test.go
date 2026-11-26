@@ -5,4 +5,7 @@ package validation
 
 const MaxPolicyBytes = maxPolicyBytes
 
-var ErrPolicyTooLarge = errPolicyTooLarge
+var (
+	ErrPolicyTooLarge     = errPolicyTooLarge
+	ErrMultipleStatements = errMultipleStatements
+)

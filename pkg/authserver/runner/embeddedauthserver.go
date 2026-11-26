@@ -68,7 +68,10 @@ type embeddedAuthServerOptions struct {
 }
 
 // WithAuthorizationDetailsRegistry configures the embedded authorization server
-// to pass the registry to its RFC 8693 token-exchange handler.
+// to pass the registry to its RFC 8693 token-exchange handlers, including the
+// one that mints ID-JAGs and signs the granted entries into them, and to its
+// ID-JAG redemption handler, which processes an ID-JAG's signed
+// authorization_details claim with it.
 func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) EmbeddedAuthServerOption {
 	return func(options *embeddedAuthServerOptions) { options.authorizationDetailsRegistry = registry }
 }
@@ -320,18 +323,7 @@ func prepareInboundGrantConfiguration(
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("build SPIFFE trust config: %w", err)
 	}
-	// SPIFFE client authentication exclusively uses the token-exchange grant
-	// (validateSPIFFEGrants enforces this), so configuring any SPIFFE
-	// association implies token-exchange capability independent of
-	// legacy/canonical token-exchange enablement.
-	normalized.Capabilities.TokenExchange = normalized.Capabilities.TokenExchange || hasSPIFFEClientAuth(cfg)
 	return normalized, delegateClients, spiffeTrust, nil
-}
-
-// hasSPIFFEClientAuth reports whether cfg declares any SPIFFE client-auth
-// association.
-func hasSPIFFEClientAuth(cfg *authserver.RunConfig) bool {
-	return cfg.InboundGrants != nil && len(cfg.InboundGrants.SPIFFEClientAuth) > 0
 }
 
 // buildUpstreamFilter constructs an upstreamfilter.UpstreamFilter from the RunConfig,
@@ -402,8 +394,9 @@ func newEmbeddedAuthServerWithStorage(
 	if err != nil {
 		return nil, err
 	}
-	if options.authorizationDetailsRegistry != nil && !normalized.Capabilities.TokenExchange {
-		return nil, fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	if options.authorizationDetailsRegistry != nil &&
+		!authserver.AuthorizationDetailsRegistryReachable(normalized.Capabilities.TokenExchange, normalized.TrustedIssuers) {
+		return nil, authserver.ErrAuthorizationDetailsRegistryUnreachable
 	}
 	// Refuse a required_subject_claims that cannot be satisfied before upstream
 	// resolution, which may register this server at an upstream via DCR.
@@ -515,9 +508,8 @@ func newEmbeddedAuthServerWithStorage(
 		// authorization-critical data is protected without a deep copy here.
 		TrustedIssuers:  trustedIssuers,
 		DelegateClients: delegateClients,
-		// SPIFFE client authentication factors into Capabilities.TokenExchange
-		// already (see prepareInboundGrantConfiguration): it exclusively uses
-		// the token-exchange grant, independent of legacy/canonical enablement.
+		// Capabilities.TokenExchange already accounts for SPIFFE associations
+		// that list the token-exchange grant (see NormalizeInboundGrants).
 		DisableTokenExchange:         !normalized.Capabilities.TokenExchange,
 		AuthorizationDetailsRegistry: options.authorizationDetailsRegistry,
 		SPIFFETrust:                  spiffeTrust,
@@ -742,8 +734,8 @@ func validateAuthorizationDetailsRegistryForRunConfig(cfg *authserver.RunConfig,
 	if err != nil {
 		return fmt.Errorf("normalize inbound grants: %w", err)
 	}
-	if !normalized.Capabilities.TokenExchange {
-		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	if !authserver.AuthorizationDetailsRegistryReachable(normalized.Capabilities.TokenExchange, normalized.TrustedIssuers) {
+		return authserver.ErrAuthorizationDetailsRegistryUnreachable
 	}
 	return nil
 }
@@ -1285,6 +1277,10 @@ func loadJWKSFile(path string) (*jose.JSONWebKeySet, error) {
 func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]authserver.DelegateClient, error) {
 	resolved := make([]authserver.DelegateClient, len(clients))
 	for i, client := range clients {
+		lifespan, err := client.AccessTokenLifespanDuration()
+		if err != nil {
+			return nil, err
+		}
 		resolved[i] = authserver.DelegateClient{
 			ClientID:                    client.ClientID,
 			Scopes:                      slices.Clone(client.Scopes),
@@ -1294,6 +1290,7 @@ func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]aut
 			GrantTypes:                  slices.Clone(client.GrantTypes),
 			RedirectURIs:                slices.Clone(client.RedirectURIs),
 			TokenExchange:               client.TokenExchange.Clone(),
+			AccessTokenLifespan:         lifespan,
 		}
 		if client.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 			jwks, err := loadJWKSFile(client.JWKSFile)

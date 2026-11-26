@@ -298,6 +298,7 @@ func TestNewDCRRequest(t *testing.T) {
 		wantRotationKey        string
 		wantRegistrationProbe  dcr.RegistrationProbe
 		wantAuthMethod         string
+		wantClientName         string
 	}{
 		{
 			name: "discovery_url branch resolves file-based initial access token",
@@ -363,6 +364,23 @@ func TestNewDCRRequest(t *testing.T) {
 			wantRotationKey:  "2026-10",
 		},
 		{
+			// Pins the ClientName copy onto dcr.Request: without it a
+			// client_name configured on the run-config would silently keep
+			// registering as the hardcoded "ToolHive MCP Client".
+			name: "client_name propagates from run-config",
+			rc: &authserver.OAuth2UpstreamRunConfig{
+				Scopes: []string{"openid"},
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+					ClientName:           "Acme MCP Client",
+				},
+			},
+			localIssuer:      "https://thv.example.com",
+			wantIssuer:       "https://thv.example.com",
+			wantRegistration: "https://idp.example.com/register",
+			wantClientName:   "Acme MCP Client",
+		},
+		{
 			// Pins the RegistrationProbe copy onto dcr.Request: without it an
 			// upstream configured for the authorization-endpoint probe would
 			// silently be probed at its token endpoint.
@@ -423,6 +441,7 @@ func TestNewDCRRequest(t *testing.T) {
 			assert.Equal(t, tc.wantRotationKey, req.RotationKey)
 			assert.Equal(t, tc.wantRegistrationProbe, req.RegistrationProbe)
 			assert.Equal(t, tc.wantAuthMethod, req.TokenEndpointAuthMethod)
+			assert.Equal(t, tc.wantClientName, req.ClientName)
 		})
 	}
 }

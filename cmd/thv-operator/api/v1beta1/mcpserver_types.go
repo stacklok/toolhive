@@ -349,7 +349,7 @@ type MCPServerSpec struct {
 
 	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource for external authentication.
 	// Supported types are tokenExchange, unauthenticated, embeddedAuthServer, and
-	// obo when an enterprise handler is registered. For new embedded authorization
+	// obo. For new embedded authorization
 	// server configurations, prefer AuthServerRef. headerInjection, upstreamInject,
 	// and xaa are accepted but not applied by the MCPServer: they take effect when
 	// a VirtualMCPServer discovers this server as a backend. Other types are

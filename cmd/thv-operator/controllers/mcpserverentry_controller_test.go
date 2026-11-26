@@ -19,7 +19,6 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
-	"github.com/stacklok/toolhive/pkg/auth/obo"
 )
 
 const (
@@ -28,6 +27,10 @@ const (
 	testAuthConfig    = "test-auth-config"
 	testCAConfigMap   = "test-ca-bundle"
 	testEntryGroupRef = "test-group"
+
+	// testInvalidOBOSourceMessage is the Valid=False message of a malformed obo
+	// MCPExternalAuthConfig that the entry mirrors.
+	testInvalidOBOSourceMessage = "obo config requires clientId"
 )
 
 // newEntryFakeClient builds a fake client with all required indexes and status subresources.
@@ -246,8 +249,8 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 					authConfig.Status.Conditions = []metav1.Condition{{
 						Type:    mcpv1beta1.ConditionTypeValid,
 						Status:  metav1.ConditionFalse,
-						Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
-						Message: obo.ErrEnterpriseRequired.Error(),
+						Reason:  mcpv1beta1.ConditionReasonInvalidConfig,
+						Message: testInvalidOBOSourceMessage,
 					}}
 					return authConfig
 				}(),
@@ -258,7 +261,7 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 				status   metav1.ConditionStatus
 				reason   string
 			}{
-				{mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonEnterpriseRequired},
+				{mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonInvalidConfig},
 				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
 			},
 			extraCheck: func(t *testing.T, entry *mcpv1beta1.MCPServerEntry) {
@@ -267,7 +270,7 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 					entry.Status.Conditions, mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated)
 				require.NotNil(t, cond)
 				assert.Equal(t, entry.Generation, cond.ObservedGeneration)
-				assert.Equal(t, obo.ErrEnterpriseRequired.Error(), cond.Message)
+				assert.Equal(t, testInvalidOBOSourceMessage, cond.Message)
 			},
 		},
 		{
@@ -691,8 +694,8 @@ func TestMCPServerEntryReconciler_ExternalAuthConfigMirrorRecovery(t *testing.T)
 	authConfig.Status.Conditions = []metav1.Condition{{
 		Type:    mcpv1beta1.ConditionTypeValid,
 		Status:  metav1.ConditionFalse,
-		Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
-		Message: obo.ErrEnterpriseRequired.Error(),
+		Reason:  mcpv1beta1.ConditionReasonInvalidConfig,
+		Message: testInvalidOBOSourceMessage,
 	}}
 
 	fakeClient := newEntryFakeClient(
@@ -719,8 +722,8 @@ func TestMCPServerEntryReconciler_ExternalAuthConfigMirrorRecovery(t *testing.T)
 		failedEntry.Status.Conditions, mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated)
 	require.NotNil(t, failedCondition)
 	assert.Equal(t, metav1.ConditionFalse, failedCondition.Status)
-	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, failedCondition.Reason)
-	assert.Equal(t, obo.ErrEnterpriseRequired.Error(), failedCondition.Message)
+	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, failedCondition.Reason)
+	assert.Equal(t, testInvalidOBOSourceMessage, failedCondition.Message)
 	assert.Equal(t, failedEntry.Generation, failedCondition.ObservedGeneration)
 
 	var healedAuthConfig mcpv1beta1.MCPExternalAuthConfig

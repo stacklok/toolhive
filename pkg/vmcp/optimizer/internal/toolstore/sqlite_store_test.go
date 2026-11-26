@@ -6,6 +6,7 @@ package toolstore
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -868,6 +869,48 @@ func TestSQLiteToolStore_SemanticDistanceThreshold(t *testing.T) {
 	// With such a tight threshold, very few (if any) results should pass
 	require.Less(t, len(results), len(tools),
 		"tight threshold should filter out some results")
+}
+
+// TestSQLiteToolStore_SemanticSearch_SkipsNaNDistance pins that a stored
+// vector with NaN or Inf components never matches. Its distance is NaN, which
+// passes any threshold comparison, so without the check the tool would rank
+// for every query.
+func TestSQLiteToolStore_SemanticSearch_SkipsNaNDistance(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		component float32
+	}{
+		{name: "NaN component", component: float32(math.NaN())},
+		{name: "Inf component", component: float32(math.Inf(1))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			client := newFakeEmbeddingClient(384)
+			// The widest threshold admits every finite distance, so only the
+			// NaN check can exclude a tool.
+			widest := 2.0
+			store := newTestStore(t, client, &types.OptimizerConfig{SemanticDistanceThreshold: &widest})
+			tools := makeTools(
+				mcp.NewTool("read_file", mcp.WithDescription("Read a file from disk")),
+				mcp.NewTool("poisoned", mcp.WithDescription("Read a file from disk too")),
+			)
+			require.NoError(t, store.UpsertTools(ctx, tools))
+
+			vec := client.embedVector("anything")
+			vec[0] = tc.component
+			_, err := store.db.ExecContext(ctx,
+				"UPDATE llm_capabilities SET embedding = ? WHERE name = ?", encodeEmbedding(vec), "poisoned")
+			require.NoError(t, err)
+
+			results, err := store.searchSemantic(ctx, "read a file", toolNames(tools), DefaultMaxToolsToReturn)
+			require.NoError(t, err)
+			require.Equal(t, []string{"read_file"}, toolNames(makeTools(results...)))
+		})
+	}
 }
 
 // newFakeEmbeddingClient is a test helper that creates a deterministic embedding client.

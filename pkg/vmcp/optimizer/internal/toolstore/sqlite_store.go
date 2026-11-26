@@ -17,12 +17,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"sort"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
@@ -105,6 +108,48 @@ type sqliteToolStore struct {
 	// the model id in the cache key. Held by pointer because the store is
 	// used by value.
 	embeddingDim *atomic.Int64
+
+	// embedTurn admits one build at a time to the embedding step (see
+	// buildTurn). Held by pointer because the store is used by value.
+	embedTurn *semaphore.Weighted
+
+	// embedTurnWait bounds how long a build waits for embedTurn before it
+	// embeds without it. Immutable after construction.
+	embedTurnWait time.Duration
+
+	// sharedEmbeddings, when set, extends reuse across replicas. Nil keeps it
+	// within this process.
+	sharedEmbeddings EmbeddingCache
+}
+
+// Option configures a tool store.
+type Option func(*sqliteToolStore)
+
+// defaultEmbedTurnWait is how long a build waits for the embedding turn. It is
+// about as long as a cold embed of a few hundred tools takes on a CPU-backed
+// TEI, so a build that waits usually finds every vector it needs once the
+// build ahead of it commits. A shorter wait would send those builds back to
+// the backend in parallel in exactly the case the turn exists for.
+const defaultEmbedTurnWait = 30 * time.Second
+
+// withEmbedTurnWait overrides defaultEmbedTurnWait.
+func withEmbedTurnWait(wait time.Duration) Option {
+	return func(s *sqliteToolStore) {
+		s.embedTurnWait = wait
+	}
+}
+
+// WithEmbeddingCache shares the store's verified embeddings through cache, so
+// a replica reuses vectors other replicas computed. It shares vectors only:
+// each replica keeps its own rows and index, and replicas that miss the same
+// vectors at the same moment both embed them. A build reads cache at most once,
+// before it waits for the embedding turn, and writes it at most once, after it
+// commits and gives the turn back, so a slow cache delays only that build. A cache failure
+// costs reuse and never fails a build. The store closes cache when it is closed.
+func WithEmbeddingCache(cache EmbeddingCache) Option {
+	return func(s *sqliteToolStore) {
+		s.sharedEmbeddings = cache
+	}
 }
 
 // NewSQLiteToolStore creates a new ToolStore backed by a shared in-memory
@@ -112,15 +157,17 @@ type sqliteToolStore struct {
 // which is the intended production behavior (one shared store per server).
 // If embeddingClient is non-nil, semantic search is enabled alongside FTS5.
 // If cfg is non-nil, its search parameters override the defaults; nil values use defaults.
-func NewSQLiteToolStore(embeddingClient types.EmbeddingClient, cfg *types.OptimizerConfig) (types.ToolStore, error) {
-	return newSQLiteToolStore("file:memdb?mode=memory&cache=shared", embeddingClient, cfg)
+func NewSQLiteToolStore(
+	embeddingClient types.EmbeddingClient, cfg *types.OptimizerConfig, opts ...Option,
+) (types.ToolStore, error) {
+	return newSQLiteToolStore("file:memdb?mode=memory&cache=shared", embeddingClient, cfg, opts...)
 }
 
 // newSQLiteToolStore creates a tool store backed by a database described
 // in the connectionString. It is useful for tests, where we want multiple
 // isolated (non-shared) databases.
 func newSQLiteToolStore(
-	connectionString string, embeddingClient types.EmbeddingClient, cfg *types.OptimizerConfig,
+	connectionString string, embeddingClient types.EmbeddingClient, cfg *types.OptimizerConfig, opts ...Option,
 ) (sqliteToolStore, error) {
 	db, err := sql.Open("sqlite", connectionString)
 	if err != nil {
@@ -167,6 +214,11 @@ func newSQLiteToolStore(
 		configIdentity:            configIdentity(cfg),
 		lastModelID:               &atomic.Pointer[string]{},
 		embeddingDim:              &atomic.Int64{},
+		embedTurn:                 semaphore.NewWeighted(1),
+		embedTurnWait:             defaultEmbedTurnWait,
+	}
+	for _, opt := range opts {
+		opt(&store)
 	}
 
 	slog.Debug("optimizer tool store created",
@@ -174,27 +226,49 @@ func newSQLiteToolStore(
 		"hybrid_semantic_ratio", hybridRatio,
 		"semantic_distance_threshold", semanticThreshold,
 		"semantic_search_enabled", embeddingClient != nil,
+		"shared_embeddings_enabled", store.sharedEmbeddings != nil,
 	)
 
 	return store, nil
 }
 
 // UpsertTools adds or updates tools in the store.
-func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerTool) (retErr error) {
-	// Resolve embeddings before opening the write transaction, so no lock is
-	// held across the multi-second embedding call. SQLite in shared-cache mode
-	// takes table-level locks: a read inside the transaction would pin a read
-	// lock on llm_capabilities, and concurrent builds would then fail to take
-	// the write lock with SQLITE_LOCKED, which the busy handler does not retry.
-	// See TestSQLiteToolStore_UpsertTools_ConcurrentBuilds.
-	embBlobs, hashes, err := s.resolveEmbeddings(ctx, tools)
+func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerTool) error {
+	shareable, err := s.commitTools(ctx, tools)
 	if err != nil {
 		return err
+	}
+	// Published once the rows are committed and the embedding turn is given
+	// back, so a slow shared cache holds up only this build.
+	s.shareEmbeddings(ctx, shareable)
+	return nil
+}
+
+// commitTools resolves the tools' embeddings and commits their rows. It
+// returns the freshly embedded vectors that may be shared (see fillMisses).
+//
+// Embeddings are resolved before opening the write transaction, so no SQLite
+// lock is held across the multi-second embedding call. SQLite in shared-cache
+// mode takes table-level locks: a read inside the transaction would pin a read
+// lock on llm_capabilities, and concurrent builds would then fail to take the
+// write lock with SQLITE_LOCKED, which the busy handler does not retry. See
+// TestSQLiteToolStore_UpsertTools_ConcurrentBuilds.
+//
+// The embedding turn, if this build takes one, is held until the rows are
+// committed or rolled back, so a build waiting for it finds them.
+func (s sqliteToolStore) commitTools(
+	ctx context.Context, tools []server.ServerTool,
+) (_ map[string][]byte, retErr error) {
+	turn := &buildTurn{sem: s.embedTurn, wait: s.embedTurnWait}
+	defer turn.release()
+	embBlobs, hashes, shareable, err := s.resolveEmbeddings(ctx, tools, turn)
+	if err != nil {
+		return nil, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() {
 		if retErr != nil {
@@ -205,19 +279,22 @@ func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerT
 	stmt, err := tx.PrepareContext(ctx,
 		"INSERT OR REPLACE INTO llm_capabilities (name, description, embedding, content_hash) VALUES (?, ?, ?, ?)")
 	if err != nil {
-		return fmt.Errorf("failed to prepare statement: %w", err)
+		return nil, fmt.Errorf("failed to prepare statement: %w", err)
 	}
 	defer func() { _ = stmt.Close() }()
 
 	for i, tool := range tools {
 		if _, err := stmt.ExecContext(ctx, tool.Tool.Name, tool.Tool.Description, embBlobs[i], hashes[i]); err != nil {
-			return fmt.Errorf("failed to upsert tool %s: %w", tool.Tool.Name, err)
+			return nil, fmt.Errorf("failed to upsert tool %s: %w", tool.Tool.Name, err)
 		}
 	}
 
 	slog.Debug("upserted tools into store", "count", len(tools))
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return shareable, nil
 }
 
 // maxResolveAttempts bounds how many times one build may restart because the
@@ -227,13 +304,18 @@ func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerT
 const maxResolveAttempts = 2
 
 // resolveEmbeddings returns an encoded embedding blob and a content hash for
-// each tool, embedding only the tools whose hash is not already stored.
+// each tool, embedding only the tools whose hash is not already stored, and
+// the fresh vectors that may be shared, keyed by hash.
 //
 // The Serve path rebuilds a per-session optimizer on every session registration
 // and every cross-pod rehydration, each upserting the session's whole tool set.
 // Embedding all of it every time costs O(tools x sessions) on the client's
 // initialize round-trip; reuse makes it O(tools whose text changed). See
-// stacklok/toolhive#5847.
+// stacklok/toolhive#5847. Builds that start together on a cold store, as the
+// first sessions after a deploy do, would each still miss and embed the whole
+// catalogue, so a build with misses waits its turn to embed and looks again
+// (see buildTurn). With a shared cache, lookups also find the vectors other
+// replicas computed.
 //
 // The backend identity is read at the start of an attempt and re-read after
 // the embedding batch. If the two differ, the batch spanned a model swap and
@@ -246,17 +328,17 @@ const maxResolveAttempts = 2
 // found under the identity it was committed with, and only identities that
 // were verified when the blob was committed ever carry a hash — vectors
 // embedded while the id could not be read are committed hashless, searchable
-// but never reusable (see the note at the fill loop below).
+// but never reusable, and never shared (see fillMisses).
 //
 // With no embedding client it returns nil blobs and hashes (FTS5-only mode).
 func (s sqliteToolStore) resolveEmbeddings(
-	ctx context.Context, tools []server.ServerTool,
-) ([][]byte, []sql.NullString, error) {
+	ctx context.Context, tools []server.ServerTool, turn *buildTurn,
+) ([][]byte, []sql.NullString, map[string][]byte, error) {
 	blobs := make([][]byte, len(tools))
 	hashes := make([]sql.NullString, len(tools))
 
 	if s.embeddingClient == nil {
-		return blobs, hashes, nil
+		return blobs, hashes, nil, nil
 	}
 
 	texts := make([]string, len(tools))
@@ -273,32 +355,27 @@ func (s sqliteToolStore) resolveEmbeddings(
 			hashes[i] = sql.NullString{String: keys[i], Valid: true}
 		}
 
-		cached, err := s.cachedEmbeddings(ctx, keys)
+		missIndexByKey, missTexts, err := s.reuseEmbeddings(ctx, blobs, keys, texts, turn)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-
-		missIndexByKey, missTexts, reused := partitionMisses(blobs, keys, texts, cached)
-
-		slog.Debug("resolved tool embeddings",
-			"tools", len(tools), "reused", reused, "embedded", len(missTexts))
 
 		// All cache hits: nothing was embedded, so there is no batch to have
 		// spanned a swap. The reused vectors are correct for the keys they
 		// carry by construction.
 		if len(missTexts) == 0 {
-			return blobs, hashes, nil
+			return blobs, hashes, nil, nil
 		}
 
 		embeddings, err := s.embedTexts(ctx, missTexts)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		after, afterVerified := s.embeddingIdentity(ctx)
 		if after != identity {
 			if attempt >= maxResolveAttempts {
-				return nil, nil, fmt.Errorf(
+				return nil, nil, nil, fmt.Errorf(
 					"embedding model changed during %d consecutive build attempts; giving up", attempt)
 			}
 			slog.Warn("embedding model changed during the batch; discarding it and re-embedding under the new identity")
@@ -312,25 +389,28 @@ func (s sqliteToolStore) resolveEmbeddings(
 			s.embeddingDim.Store(int64(n))
 		}
 
-		if err := fillMisses(blobs, hashes, keys, tools, missIndexByKey, embeddings, verified); err != nil {
-			return nil, nil, err
+		shareable, err := fillMisses(blobs, hashes, keys, tools, missIndexByKey, embeddings, verified)
+		if err != nil {
+			return nil, nil, nil, err
 		}
 
-		return blobs, hashes, nil
+		return blobs, hashes, shareable, nil
 	}
 }
 
-// fillMisses encodes the freshly embedded vectors into their tools' slots.
+// fillMisses encodes the freshly embedded vectors into their tools' slots and
+// returns the ones that may be shared, keyed by cache key.
 // When the attempt's identity was not verified on both sides of the batch,
-// the fresh rows are committed hashless — searchable but never reusable. A
-// hashed row here would be permanent poison if the backend is later rolled
-// back to the fallback model: the next verified build would derive the very
-// identity these keys name, cache-hit the mislabelled vectors, and re-key
-// nothing.
+// the fresh rows are committed hashless — searchable but never reusable — and
+// none is shared. A hashed row here would be permanent poison if the backend
+// is later rolled back to the fallback model: the next verified build would
+// derive the very identity these keys name, cache-hit the mislabelled
+// vectors, and re-key nothing; a shared one would poison every replica.
 func fillMisses(
 	blobs [][]byte, hashes []sql.NullString, keys []string,
 	tools []server.ServerTool, missIndexByKey map[string]int, embeddings [][]float32, verified bool,
-) error {
+) (map[string][]byte, error) {
+	shareable := make(map[string][]byte, len(missIndexByKey))
 	for i, key := range keys {
 		if blobs[i] != nil {
 			continue
@@ -339,14 +419,142 @@ func fillMisses(
 		if !ok {
 			// Unreachable, but a missing key would otherwise index 0 and store
 			// another tool's vector under this name.
-			return fmt.Errorf("no embedding resolved for tool %s", tools[i].Tool.Name)
+			return nil, fmt.Errorf("no embedding resolved for tool %s", tools[i].Tool.Name)
 		}
 		blobs[i] = encodeEmbedding(embeddings[idx])
 		if !verified {
 			hashes[i] = sql.NullString{}
+			continue
+		}
+		shareable[key] = blobs[i]
+	}
+	return shareable, nil
+}
+
+// buildTurn is one build's hold on the store's embedding turn. Builds that
+// start together on a cold store would otherwise each embed the whole
+// catalogue; taking turns lets each re-check the store and find the rows the
+// build before it committed. Builds whose tools are all stored never wait.
+//
+// The turn only ever saves work. A build waits for it at most wait, then
+// embeds without it, as every build did before the turn existed, so a holder
+// stuck on a hung backend delays the builds behind it by that much and no
+// more. A build tries for the turn once, whether or not it gets it.
+type buildTurn struct {
+	sem   *semaphore.Weighted
+	wait  time.Duration
+	tried bool
+	held  bool
+}
+
+// take waits up to t.wait for the turn. It returns an error only when ctx
+// ends first. A waiter does not inherit the holder's outcome: a holder's
+// failure may be its own cancellation, or concern tools the waiter lacks.
+func (t *buildTurn) take(ctx context.Context) error {
+	t.tried = true
+	waitCtx, cancel := context.WithTimeout(ctx, t.wait)
+	defer cancel()
+	if err := t.sem.Acquire(waitCtx, 1); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("waiting for the embedding turn: %w", ctxErr)
+		}
+		slog.Debug("embedding turn still held; embedding without it", "waited", t.wait)
+		return nil
+	}
+	t.held = true
+	return nil
+}
+
+func (t *buildTurn) release() {
+	if t.held {
+		t.held = false
+		t.sem.Release(1)
+	}
+}
+
+// reuseEmbeddings fills blobs with the reusable vectors for keys and returns
+// the texts still to embed (see partitionMisses). It reads this store's rows,
+// then the shared cache for the rest. With misses left it tries for the turn,
+// once per build, and reads this store again, which now holds whatever the
+// build ahead of it committed.
+//
+// The shared cache is read only on the first look, which no build takes while
+// holding the turn. A slow Redis therefore delays only the build waiting on it,
+// never the builds queued behind that one for the turn.
+func (s sqliteToolStore) reuseEmbeddings(
+	ctx context.Context, blobs [][]byte, keys, texts []string, turn *buildTurn,
+) (map[string]int, []string, error) {
+	found, err := s.cachedEmbeddings(ctx, keys)
+	if err != nil {
+		return nil, nil, err
+	}
+	shared := 0
+	if !turn.tried {
+		shared = s.addSharedEmbeddings(ctx, keys, found)
+	}
+	missIndexByKey, missTexts, reused := partitionMisses(blobs, keys, texts, found)
+
+	if len(missTexts) > 0 && !turn.tried {
+		if err := turn.take(ctx); err != nil {
+			return nil, nil, err
+		}
+		committed, err := s.cachedEmbeddings(ctx, keys)
+		if err != nil {
+			return nil, nil, err
+		}
+		maps.Copy(found, committed)
+		missIndexByKey, missTexts, reused = partitionMisses(blobs, keys, texts, found)
+	}
+
+	slog.Debug("resolved tool embeddings",
+		"tools", len(keys), "reused", reused, "reused_shared", shared, "embedded", len(missTexts))
+	return missIndexByKey, missTexts, nil
+}
+
+// addSharedEmbeddings adds to found the usable shared vectors for the keys
+// found lacks, and returns how many it added. A failed lookup is logged and
+// costs only reuse.
+func (s sqliteToolStore) addSharedEmbeddings(ctx context.Context, keys []string, found map[string][]byte) int {
+	if s.sharedEmbeddings == nil {
+		return 0
+	}
+	var missing []string
+	for _, key := range keys {
+		if _, ok := found[key]; !ok {
+			missing = append(missing, key)
 		}
 	}
-	return nil
+	if len(missing) == 0 {
+		return 0
+	}
+	shared, err := s.sharedEmbeddings.GetEmbeddings(ctx, missing)
+	if err != nil {
+		slog.Warn("shared embedding lookup failed; embedding the missing tools here", "error", err)
+		return 0
+	}
+	added := 0
+	for key, blob := range shared {
+		if len(blob) <= maxSharedEmbeddingBytes && s.usableEmbedding(blob) {
+			found[key] = blob
+			added++
+		}
+	}
+	if unusable := len(shared) - added; unusable > 0 {
+		slog.Warn("ignoring unusable shared embeddings, they will be recomputed", "count", unusable)
+	}
+	return added
+}
+
+// shareEmbeddings publishes vectors to the shared cache. A failed write is
+// logged: the vectors are in this store, and a replica that misses them
+// recomputes them.
+func (s sqliteToolStore) shareEmbeddings(ctx context.Context, vectors map[string][]byte) {
+	if s.sharedEmbeddings == nil || len(vectors) == 0 {
+		return
+	}
+	if err := s.sharedEmbeddings.PutEmbeddings(ctx, vectors); err != nil {
+		slog.Warn("could not publish embeddings to the shared cache", "count", len(vectors), "error", err)
+	}
 }
 
 // partitionMisses fills blobs with the cached vectors and returns the texts
@@ -454,7 +662,6 @@ func (s sqliteToolStore) cachedEmbeddings(ctx context.Context, keys []string) (m
 	}
 	defer func() { _ = rows.Close() }()
 
-	wantBytes := int(s.embeddingDim.Load()) * 4
 	cached := make(map[string][]byte, len(keys))
 	var unusable int
 	for rows.Next() {
@@ -463,7 +670,7 @@ func (s sqliteToolStore) cachedEmbeddings(ctx context.Context, keys []string) (m
 		if err := rows.Scan(&hash, &blob); err != nil {
 			return nil, fmt.Errorf("failed to scan cached embedding: %w", err)
 		}
-		if len(blob) == 0 || (wantBytes > 0 && len(blob) != wantBytes) {
+		if !s.usableEmbedding(blob) {
 			unusable++
 			continue
 		}
@@ -475,10 +682,17 @@ func (s sqliteToolStore) cachedEmbeddings(ctx context.Context, keys []string) (m
 
 	if unusable > 0 {
 		slog.Warn("ignoring unusable stored embeddings, they will be recomputed",
-			"count", unusable, "expected_bytes", wantBytes)
+			"count", unusable, "expected_bytes", s.embeddingDim.Load()*4)
 	}
 
 	return cached, nil
+}
+
+// usableEmbedding reports whether a stored vector may be reused: a non-empty
+// whole number of float32s and, once the backend's width is known, that wide.
+func (s sqliteToolStore) usableEmbedding(blob []byte) bool {
+	wantBytes := int(s.embeddingDim.Load()) * 4
+	return len(blob) > 0 && len(blob)%4 == 0 && (wantBytes == 0 || len(blob) == wantBytes)
 }
 
 // embeddedText builds the exact string sent to the embedding backend. The
@@ -616,11 +830,17 @@ func (s sqliteToolStore) Search(ctx context.Context, q types.SearchQuery, allowe
 // to closing the pool itself.
 //
 // Close may be called more than once: a keep-alive connection that was already
-// released reports sql.ErrConnDone, which is not a failure.
+// released reports sql.ErrConnDone, which is not a failure, and the shared
+// embedding cache tolerates a second Close.
 func (s sqliteToolStore) Close() error {
 	var embErr error
 	if s.embeddingClient != nil {
 		embErr = s.embeddingClient.Close()
+	}
+
+	var sharedErr error
+	if s.sharedEmbeddings != nil {
+		sharedErr = s.sharedEmbeddings.Close()
 	}
 
 	var keepAliveErr error
@@ -631,7 +851,7 @@ func (s sqliteToolStore) Close() error {
 	}
 
 	dbErr := s.db.Close()
-	return errors.Join(embErr, keepAliveErr, dbErr)
+	return errors.Join(embErr, sharedErr, keepAliveErr, dbErr)
 }
 
 // searchFTS5 performs a full-text search using FTS5 MATCH with BM25 ranking.
@@ -766,7 +986,10 @@ func (s sqliteToolStore) searchSemantic(
 		// Filter by semantic distance threshold.
 		// This is meaningful only for cosine distance (semantic search).
 		// FTS5 ranks are normalized BM25 scores, not true distance measures.
-		if dist > s.semanticDistanceThreshold {
+		// A vector with NaN or Inf components, which only a replaced shared
+		// value can carry, gives a NaN distance. NaN compares false against
+		// the threshold and would break the sort below, so it is skipped.
+		if math.IsNaN(dist) || dist > s.semanticDistanceThreshold {
 			continue
 		}
 

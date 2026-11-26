@@ -112,7 +112,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: 'stable'
           cache: false # No cache for release builds — prevents cache poisoning attacks
@@ -202,7 +202,7 @@ jobs:
 
       - name: Generate Homebrew tap token
         id: homebrew-tap-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
           private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
@@ -352,10 +352,33 @@ jobs:
 #                                            "$fn"
 #          done <<<"$checksums"
 
+  extract-release-actor:
+    name: Extract Release Actor
+    runs-on: ubuntu-slim
+    permissions: {}
+    outputs:
+      triggered_by: ${{ steps.extract.outputs.triggered_by }}
+    steps:
+      - name: Extract actor from release body
+        id: extract
+        env:
+          RELEASE_BODY: ${{ github.event.release.body }}
+        run: |
+          # create-release-tag.yml embeds this HTML comment in the release notes; parse it back out here.
+          # head -n 1 keeps only the first match: a second Release-Triggered-By comment
+          # (for example from a merged PR title folded into --generate-notes) must not
+          # turn this into a multi-line GITHUB_OUTPUT write.
+          TRIGGERED_BY=$(echo "$RELEASE_BODY" | grep -oP '(?<=<!-- Release-Triggered-By: )[^[:space:]]+(?= -->)' | head -n 1 || true)
+          if [ -z "$TRIGGERED_BY" ]; then
+            echo "No Release-Triggered-By comment in the release notes; the notice will fall back to github.actor."
+          fi
+          echo "triggered_by=$TRIGGERED_BY" >> "$GITHUB_OUTPUT"
+
   notify-release-failure:
     name: Notify Release Failure
     needs:
       - verify-release
+      - extract-release-actor
       - compute-build-flags
       - release-binaries
       - image-build-and-push
@@ -366,7 +389,7 @@ jobs:
     permissions: {}
     steps:
       - name: Send Slack Notification
-        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        uses: slackapi/slack-github-action@0bc3581177d9a0f8d555e07689384b376528e8fa # v4.1.0
         with:
           webhook: ${{ secrets.SLACK_TOOLHIVE_RELEASE_WEBHOOK_URL }}
           webhook-type: incoming-webhook

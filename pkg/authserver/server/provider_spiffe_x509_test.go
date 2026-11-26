@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
@@ -69,7 +70,7 @@ func TestNewAuthorizationServerSPIFFEX509ClientAuthentication(t *testing.T) {
 			t.Parallel()
 
 			resolverCalls := 0
-			resolver := func(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+			resolver := func(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod, time.Time) (fosite.Client, error) {
 				resolverCalls++
 				return resolvedClient, nil
 			}
@@ -167,10 +168,7 @@ func TestStaticSPIFFEClientCannotAuthenticateByDefaultStrategy(t *testing.T) {
 
 	signingKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
-	spiffeClient, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://mcp.example.com"}, nil,
-	)
-	require.NoError(t, err)
+	spiffeClient := spiffetest.Client(t)
 	hashed, err := registration.SHA256Hasher.Hash(context.Background(), []byte("control-secret"))
 	require.NoError(t, err)
 	control := &fosite.DefaultClient{ID: "control-client", Secret: hashed}
@@ -190,7 +188,7 @@ func TestStaticSPIFFEClientCannotAuthenticateByDefaultStrategy(t *testing.T) {
 	require.NoError(t, err)
 	now := time.Now()
 	assertion, err := jwt.Signed(signer).Claims(jwt.Claims{
-		Issuer: "spiffe-client", Subject: "spiffe-client", Audience: jwt.Audience{testIssuer + "/oauth/token"},
+		Issuer: "spiffe-client", Subject: "spiffe-client", Audience: jwt.Audience{testIssuer},
 		ID: "assertion-jti", IssuedAt: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(now.Add(time.Minute)),
 	}).Serialize()
 	require.NoError(t, err)

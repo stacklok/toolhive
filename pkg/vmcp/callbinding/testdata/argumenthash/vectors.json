@@ -1,0 +1,155 @@
+{
+  "description": "Argument hash vectors, the canonical copy shared by the client that asks for a call-bound token and the vMCP that checks it. In vectors, arguments is the params.arguments value exactly as sent (absent when the member is missing), canonical is its RFC 8785 serialization, and sha256 is the lowercase hex SHA-256 of canonical's UTF-8 bytes. gateway_refuses is true when the vMCP refuses a tools/call carrying these arguments with -32600 Invalid Request before it computes the hash, because member names collide after case folding; the hash must still match, but an end-to-end tools/call cannot use the vector. Each entry in refusals is a params.arguments value exactly as sent that the argument hash must refuse, because it is not exactly one JSON object or is not I-JSON (RFC 7493). arguments_text holds the raw bytes as a JSON string; arguments_base64 holds them as standard base64 and is used only when the raw bytes are not valid UTF-8. Exactly one of the two is present. A refusal yields no hash. See \"vMCP: accept an access token for the one call its authorization_details names, once\" (stacklok/toolhive#7062).",
+  "vectors": [
+    {
+      "name": "absent arguments",
+      "canonical": "{}",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "name": "null arguments",
+      "arguments": null,
+      "canonical": "{}",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "name": "empty object",
+      "arguments": { },
+      "canonical": "{}",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "name": "RFC 8785 section 3.2.4 example without 1E30",
+      "arguments": {
+        "numbers": [333333333.33333329, 4.50, 2e-3, 0.000000000000000000000000001],
+        "string": "\u20ac$\u000F\u000aA'\u0042\u0022\u005c\\\"\/",
+        "literals": [null, true, false]
+      },
+      "canonical": "{\"literals\":[null,true,false],\"numbers\":[333333333.3333333,4.5,0.002,1e-27],\"string\":\"\u20ac$\\u000f\\nA'B\\\"\\\\\\\\\\\"/\"}",
+      "sha256": "670b2058ab2793b25083f61d252e6e830859c658656569de160897232b6b69cc"
+    },
+    {
+      "name": "RFC 8785 section 3.2.3 sorting example",
+      "arguments": {
+        "\u20ac": "Euro Sign",
+        "\r": "Carriage Return",
+        "\ufb33": "Hebrew Letter Dalet With Dagesh",
+        "1": "One",
+        "\ud83d\ude00": "Emoji: Grinning Face",
+        "\u0080": "Control",
+        "\u00f6": "Latin Small Letter O With Diaeresis"
+      },
+      "canonical": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\u0080\":\"Control\",\"\u00f6\":\"Latin Small Letter O With Diaeresis\",\"\u20ac\":\"Euro Sign\",\"\ud83d\ude00\":\"Emoji: Grinning Face\",\"\ufb33\":\"Hebrew Letter Dalet With Dagesh\"}",
+      "sha256": "5e321556d22018a9656991a9e94f77ec175fa193e52a2429d312f8419ec8b08c"
+    },
+    {
+      "name": "keys sort by UTF-16 code units, not UTF-8 bytes",
+      "arguments": {"\uffff": 1, "\ufb33": 2, "😀": 3, "\ud800\udc00": 4},
+      "canonical": "{\"\ud800\udc00\":4,\"\ud83d\ude00\":3,\"\ufb33\":2,\"\uffff\":1}",
+      "sha256": "5805e225e8d7b53d8ee590f10df5c9184508b27339533fb47dc9ab8e3da2be5b"
+    },
+    {
+      "name": "ASCII key order",
+      "gateway_refuses": true,
+      "arguments": {"b": 1, "a": 2, "aa": 3, "A": 4, "": 5, "ab": 6},
+      "canonical": "{\"\":5,\"A\":4,\"a\":2,\"aa\":3,\"ab\":6,\"b\":1}",
+      "sha256": "a9607e3eb4c35ccd262f5fc0d7ed6d9051dc7ce6b1db35c6608ad4b669bdbe0b"
+    },
+    {
+      "name": "string escapes",
+      "arguments": {"s": "\u0000\u0001\u001f\u007f \b\f\n\r\t \u0008\u0009\u000a\u000c\u000d \/ \u2028\u2029 \"\\"},
+      "canonical": "{\"s\":\"\\u0000\\u0001\\u001f\u007f \\b\\f\\n\\r\\t \\b\\t\\n\\f\\r / \u2028\u2029 \\\"\\\\\"}",
+      "sha256": "c9f563ab1fb7c2bcf523d8e9c9a7730d56b82ad3590f5e1e57e69658c3ae89e2"
+    },
+    {
+      "name": "Unicode escapes and surrogate pairs",
+      "arguments": {"s": "\u0041\u00e9\u4E2D\uD83D\uDE00\ud83d\ude00😀é"},
+      "canonical": "{\"s\":\"A\u00e9\u4e2d\ud83d\ude00\ud83d\ude00\ud83d\ude00\u00e9\"}",
+      "sha256": "eeae9a92b3b65734d7dfe915919651b4a9932fa622920a29bbf6fe21beec5fba"
+    },
+    {
+      "name": "escaped backslash before u is not a surrogate escape",
+      "arguments": {"s": "\\ud800"},
+      "canonical": "{\"s\":\"\\\\ud800\"}",
+      "sha256": "a86a4141ca6e4fac7f6f0a7c2d50df969d76f164732bac8e85263f1fb11243e5"
+    },
+    {
+      "name": "literals",
+      "arguments": {"t": true, "f": false, "n": null},
+      "canonical": "{\"f\":false,\"n\":null,\"t\":true}",
+      "sha256": "22e00dc2f7b01420f940fbdbfbdf34fa0667cc6500186495023ba37722cbd05e"
+    },
+    {
+      "name": "nesting",
+      "arguments": {"z": {"y": [3, {"b": true, "a": null}], "x": "v"}, "a": [[], {}, [[{"d": {"c": []}}]]]},
+      "canonical": "{\"a\":[[],{},[[{\"d\":{\"c\":[]}}]]],\"z\":{\"x\":\"v\",\"y\":[3,{\"a\":null,\"b\":true}]}}",
+      "sha256": "87b2ee7bc37ed1bb5ac68f3449258a2763d1aa6e339aaf76c530202eff32502d"
+    },
+    {
+      "name": "insignificant whitespace",
+      "arguments": 
+      {	"a" : [ 1 ,
+        2 ] ,  "b":{ } },
+      "canonical": "{\"a\":[1,2],\"b\":{}}",
+      "sha256": "8c547cce7ccb1b89359479c0b71a0a4b62acfc54a2b2780fd34aaeb75f9e44b7"
+    },
+    {
+      "name": "RFC 8785 Appendix B numbers within I-JSON",
+      "arguments": {"n": [0, -0, 5e-324, -5e-324, 9007199254740992, -9007199254740992, 9.999999999999997e-7, 0.000001, 333333333.3333332, 333333333.33333325, 333333333.3333333, 333333333.3333334, 333333333.33333343, -0.0000033333333333333333, 1424953923781206.2]},
+      "canonical": "{\"n\":[0,0,5e-324,-5e-324,9007199254740992,-9007199254740992,9.999999999999997e-7,0.000001,333333333.3333332,333333333.33333325,333333333.3333333,333333333.3333334,333333333.33333343,-0.0000033333333333333333,1424953923781206.2]}",
+      "sha256": "9a881a6a78795bf752b1d6b2e8792f42c47c8f5e5fc6bd8e5858e40bda16f0b1"
+    },
+    {
+      "name": "number notation",
+      "arguments": {"n": [1E3, 1e+3, 1.5e2, -1.0, 100, 0.1, 1e-7, 1.5e-7, 123e-9, 0.0000012, -1.5e-10, 0.30000000000000004, -0.0, 0e10, 1.00000000000000000000001]},
+      "canonical": "{\"n\":[1000,1000,150,-1,100,0.1,1e-7,1.5e-7,1.23e-7,0.0000012,-1.5e-10,0.30000000000000004,0,0,1]}",
+      "sha256": "b313eb5999dd3cce1aa87cc26d89f08fe373f42c7845658585599d7c41959ada"
+    },
+    {
+      "name": "large and negative integers up to 2^53",
+      "arguments": {"n": [4.5e15, 1e15, 9.007199254740992e15, 90071992547409920e-1, 9007199254740991, -9007199254740991, -42, 0.9007199254740992e16]},
+      "canonical": "{\"n\":[4500000000000000,1000000000000000,9007199254740992,9007199254740992,9007199254740991,-9007199254740991,-42,9007199254740992]}",
+      "sha256": "f7a00a0dae139c506035aa4c7c62a4026c8d4f1ab6804ebf530b6bbb86cfb349"
+    }
+  ],
+  "refusals": [
+    {"name": "2^53+1", "arguments_text": "{\"n\":9007199254740993}"},
+    {"name": "-(2^53+1)", "arguments_text": "{\"n\":-9007199254740993}"},
+    {"name": "2^53+1 in exponent form", "arguments_text": "{\"n\":9.007199254740993e15}"},
+    {"name": "2^53+0.5 rounding to 2^53", "arguments_text": "{\"n\":9007199254740992.5}"},
+    {"name": "2^53+2", "arguments_text": "{\"n\":9007199254740994}"},
+    {"name": "1e21 (RFC 8785 Appendix B)", "arguments_text": "{\"n\":1e+21}"},
+    {"name": "1e23 (RFC 8785 Appendix B)", "arguments_text": "{\"n\":1e+23}"},
+    {"name": "295147905179352830000 (RFC 8785 Appendix B)", "arguments_text": "{\"n\":295147905179352830000}"},
+    {"name": "largest double (RFC 8785 Appendix B)", "arguments_text": "{\"n\":1.7976931348623157e+308}"},
+    {"name": "nested beyond 2^53", "arguments_text": "{\"a\":[{\"n\":-1e300}]}"},
+    {"name": "1e400", "arguments_text": "{\"n\":1e400}"},
+    {"name": "-1e400", "arguments_text": "{\"n\":-1e400}"},
+    {"name": "RFC 8785 section 3.2.4 example with 1E30", "arguments_text": "{\"numbers\":[333333333.33333329,1E30,4.50,2e-3,0.000000000000000000000000001],\"literals\":[null,true,false]}"},
+    {"name": "invalid UTF-8 in value", "arguments_base64": "eyJzIjoi/yJ9"},
+    {"name": "invalid UTF-8 in key", "arguments_base64": "eyLDKCI6MX0="},
+    {"name": "truncated UTF-8", "arguments_base64": "eyJzIjoi4oIifQ=="},
+    {"name": "UTF-8 encoded surrogate", "arguments_base64": "eyJzIjoi7aCAIn0="},
+    {"name": "lone \\ud800", "arguments_text": "{\"s\":\"\\ud800\"}"},
+    {"name": "lone \\udc00", "arguments_text": "{\"s\":\"\\udc00\"}"},
+    {"name": "lone \\ud800 in key", "arguments_text": "{\"\\ud800\":1}"},
+    {"name": "\\ud800 then a letter", "arguments_text": "{\"s\":\"\\ud800A\"}"},
+    {"name": "\\ud800 then \\u0041", "arguments_text": "{\"s\":\"\\ud800\\u0041\"}"},
+    {"name": "two high surrogates", "arguments_text": "{\"s\":\"\\ud800\\ud800\"}"},
+    {"name": "reversed pair", "arguments_text": "{\"s\":\"\\ude00\\ud83d\"}"},
+    {"name": "\\ud800 after escaped backslash", "arguments_text": "{\"s\":\"\\\\\\ud800\"}"},
+    {"name": "duplicate keys", "arguments_text": "{\"a\":1,\"a\":2}"},
+    {"name": "duplicate keys by escape", "arguments_text": "{\"a\":1,\"\\u0061\":2}"},
+    {"name": "nested duplicate keys", "arguments_text": "{\"o\":{\"k\":1,\"k\":1}}"},
+    {"name": "top-level array", "arguments_text": "[1,2]"},
+    {"name": "top-level string", "arguments_text": "\"x\""},
+    {"name": "top-level number", "arguments_text": "1"},
+    {"name": "top-level true", "arguments_text": "true"},
+    {"name": "malformed", "arguments_text": "{\"a\":1"},
+    {"name": "trailing value", "arguments_text": "{}{}"},
+    {"name": "trailing garbage", "arguments_text": "{} x"},
+    {"name": "byte order mark before the object", "arguments_text": "\ufeff{}"},
+    {"name": "no-break space before null", "arguments_text": "\u00a0null"},
+    {"name": "vertical tab only", "arguments_text": "\u000b"}
+  ]
+}

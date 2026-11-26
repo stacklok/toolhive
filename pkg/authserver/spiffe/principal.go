@@ -14,11 +14,9 @@ const (
 // SPIFFE workload. Methods are explicit so introducing another credential type
 // cannot silently broaden a policy.
 //
-// It is declared here, in this leaf package, rather than as authserver's own
-// type: package server's SPIFFEClientResolver (spiffe_client_auth.go) needs a
-// method type for its resolver signature, and package server cannot import
-// authserver (authserver imports server). authserver.SPIFFEAuthenticationMethod
-// stays its own independent plain type; the two are related only by a small
-// explicit conversion at the one call site that constructs the resolver
-// closure (see authserver.newSPIFFEClientResolver).
+// It is declared here, in this leaf package: package server's
+// SPIFFEClientResolver (spiffe_client_auth.go) needs a method type for its
+// resolver signature, and package server cannot import authserver (authserver
+// imports server). authserver.SPIFFEAuthenticationMethod is an alias for this
+// type, so values pass between the two without conversion.
 type SPIFFEAuthenticationMethod string

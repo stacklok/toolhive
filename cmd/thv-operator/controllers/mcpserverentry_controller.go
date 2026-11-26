@@ -295,8 +295,8 @@ func (r *MCPServerEntryReconciler) validateExternalAuthConfigRef(
 		return false, err
 	}
 
-	// Surface a source-level validation failure (for example, an OBO config
-	// rejected by an upstream-only build with EnterpriseRequired) on the
+	// Surface a source-level validation failure (for example, a malformed OBO
+	// config reported as Valid=False / InvalidConfig) on the
 	// consumer before checking the type support matrix. The source failure is
 	// more specific than consumer compatibility and is terminal until either
 	// resource changes, so return false without an error to avoid a retry loop.

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -128,10 +129,11 @@ func newToolSessionFactory(
 
 // fakeCore is a configurable core.VMCP for Serve-path tests. It advertises a fixed
 // tool/resource set, counts ListTools/ListResources/CallTool invocations (so tests
-// can assert the "exactly once per session" aggregation contract), and resolves
-// Lookup* against the advertised set. It is the Serve-path counterpart to the mock
-// session factory: the factory establishes the session record, the core supplies the
-// advertised set and call routing.
+// can assert the "exactly once per session" aggregation contract), records the
+// subject each List* call received, and resolves Lookup* against the advertised
+// set. It is the Serve-path counterpart to the mock session factory: the factory
+// establishes the session record, the core supplies the advertised set and call
+// routing.
 type fakeCore struct {
 	tools             []vmcp.Tool
 	resources         []vmcp.Resource
@@ -191,6 +193,38 @@ type fakeCore struct {
 	// not just a collapse where one key goes missing.
 	callIdentitiesMu sync.Mutex
 	callIdentities   map[string]*auth.Identity
+
+	// listSubjectsMu guards listSubjects, the subject (empty for a nil
+	// identity) each List* call received, keyed by MCP method name.
+	listSubjectsMu sync.Mutex
+	listSubjects   map[string][]string
+
+	// subjectLists, when it has an entry for the calling subject, replaces the
+	// tools/resources/templates/prompts the List* methods return for that
+	// subject, so a test can tell whose list a response carries. Nil by
+	// default: every caller then gets the fields above.
+	subjectLists map[string]*subjectList
+}
+
+// subjectList is a per-subject override of fakeCore's advertised lists.
+type subjectList struct {
+	tools             []vmcp.Tool
+	resources         []vmcp.Resource
+	resourceTemplates []vmcp.ResourceTemplate
+	prompts           []vmcp.Prompt
+}
+
+// listsFor returns the lists to advertise to identity: its subjectLists entry
+// when one exists, otherwise the fakeCore-wide fields.
+func (f *fakeCore) listsFor(identity *auth.Identity) subjectList {
+	if identity != nil {
+		if l, ok := f.subjectLists[identity.Subject]; ok {
+			return *l
+		}
+	}
+	return subjectList{
+		tools: f.tools, resources: f.resources, resourceTemplates: f.resourceTemplates, prompts: f.prompts,
+	}
 }
 
 // ctxBox wraps a context.Context for atomic.Pointer storage on fakeCore.
@@ -198,10 +232,11 @@ type ctxBox struct{ ctx context.Context }
 
 var _ core.VMCP = (*fakeCore)(nil)
 
-func (f *fakeCore) ListTools(ctx context.Context, _ *auth.Identity) ([]vmcp.Tool, error) {
+func (f *fakeCore) ListTools(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, error) {
 	f.listToolsCalls.Add(1)
+	f.recordListSubject("tools/list", identity)
 	f.lastListToolsCtx.Store(&ctxBox{ctx: ctx})
-	return f.tools, nil
+	return f.listsFor(identity).tools, nil
 }
 
 func (f *fakeCore) CallTool(
@@ -249,6 +284,27 @@ func (f *fakeCore) recordCallIdentity(args map[string]any, identity *auth.Identi
 	f.callIdentities[key] = identity
 }
 
+// recordListSubject appends identity's subject (empty for nil) under method; see listSubjects.
+func (f *fakeCore) recordListSubject(method string, identity *auth.Identity) {
+	subject := ""
+	if identity != nil {
+		subject = identity.Subject
+	}
+	f.listSubjectsMu.Lock()
+	defer f.listSubjectsMu.Unlock()
+	if f.listSubjects == nil {
+		f.listSubjects = make(map[string][]string)
+	}
+	f.listSubjects[method] = append(f.listSubjects[method], subject)
+}
+
+// listSubjectsFor returns a copy of the subjects the given list method received.
+func (f *fakeCore) listSubjectsFor(method string) []string {
+	f.listSubjectsMu.Lock()
+	defer f.listSubjectsMu.Unlock()
+	return slices.Clone(f.listSubjects[method])
+}
+
 // callIdentityFor returns the identity CallTool observed for the request whose
 // "caller" argument equals key, or nil if no such call was recorded.
 func (f *fakeCore) callIdentityFor(key string) *auth.Identity {
@@ -257,15 +313,17 @@ func (f *fakeCore) callIdentityFor(key string) *auth.Identity {
 	return f.callIdentities[key]
 }
 
-func (f *fakeCore) ListResources(ctx context.Context, _ *auth.Identity) ([]vmcp.Resource, error) {
+func (f *fakeCore) ListResources(ctx context.Context, identity *auth.Identity) ([]vmcp.Resource, error) {
 	f.listResourcesCalls.Add(1)
+	f.recordListSubject("resources/list", identity)
 	f.lastListResourcesCtx.Store(&ctxBox{ctx: ctx})
-	return f.resources, nil
+	return f.listsFor(identity).resources, nil
 }
 
-func (f *fakeCore) ListResourceTemplates(context.Context, *auth.Identity) ([]vmcp.ResourceTemplate, error) {
+func (f *fakeCore) ListResourceTemplates(_ context.Context, identity *auth.Identity) ([]vmcp.ResourceTemplate, error) {
 	f.listResourceTemplatesCalls.Add(1)
-	return f.resourceTemplates, nil
+	f.recordListSubject("resources/templates/list", identity)
+	return f.listsFor(identity).resourceTemplates, nil
 }
 
 func (f *fakeCore) ReadResource(_ context.Context, _ *auth.Identity, uri string) (*vmcp.ResourceReadResult, error) {
@@ -280,10 +338,11 @@ func (f *fakeCore) ReadResource(_ context.Context, _ *auth.Identity, uri string)
 	}, nil
 }
 
-func (f *fakeCore) ListPrompts(ctx context.Context, _ *auth.Identity) ([]vmcp.Prompt, error) {
+func (f *fakeCore) ListPrompts(ctx context.Context, identity *auth.Identity) ([]vmcp.Prompt, error) {
 	f.listPromptsCalls.Add(1)
+	f.recordListSubject("prompts/list", identity)
 	f.lastListPromptsCtx.Store(&ctxBox{ctx: ctx})
-	return f.prompts, nil
+	return f.listsFor(identity).prompts, nil
 }
 
 func (f *fakeCore) GetPrompt(
@@ -1404,6 +1463,55 @@ func TestServeToolCallTerminatesOnBindingFailure(t *testing.T) {
 
 	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return !ok },
 		2*time.Second, 10*time.Millisecond, "a binding failure must terminate the session (fail-closed)")
+}
+
+func TestServeEnforceSessionBinding_Delegated(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, owner, caller string }{
+		{"wrong client", delegatedOwnerToken, "other-client"},
+		{"wrong actor issuer", delegatedOwnerToken, "other-actor-issuer"},
+		{"delegated caller", "interactive", delegatedOwnerToken},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv, sessionID := newDelegatedBindingSession(t, tc.owner)
+			caller := delegatedOwnershipIdentities()[tc.caller]
+			err := srv.enforceSessionBinding(auth.WithIdentity(t.Context(), caller), sessionID, caller)
+			require.ErrorIs(t, err, sessiontypes.ErrUnauthorizedCaller)
+		})
+	}
+}
+
+func TestServeEnforceSessionBinding_DelegatedRenewedToken(t *testing.T) {
+	t.Parallel()
+
+	srv, sessionID := newDelegatedBindingSession(t, delegatedOwnerToken)
+	caller := delegatedOwnershipIdentities()["renewed"]
+	ctx := auth.WithIdentity(t.Context(), caller)
+	require.NoError(t, srv.enforceSessionBinding(ctx, sessionID, caller))
+	_, exists := srv.vmcpSessionMgr.GetMultiSession(ctx, sessionID)
+	require.True(t, exists, "a renewed token must not terminate the session")
+}
+
+// newDelegatedBindingSession creates a session owned by the named ownership
+// test identity on a Serve-built server.
+func newDelegatedBindingSession(t *testing.T, owner string) (*Server, string) {
+	t.Helper()
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: ownershipTestTool}}}
+	srv, err := Serve(t.Context(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
+		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: vmcpsession.NewSessionFactory(nil)},
+		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, srv.Stop(context.Background())) })
+
+	sessionID := srv.vmcpSessionMgr.Generate()
+	ownerCtx := auth.WithIdentity(t.Context(), delegatedOwnershipIdentities()[owner])
+	_, err = srv.vmcpSessionMgr.CreateSession(ownerCtx, sessionID, nil)
+	require.NoError(t, err)
+	return srv, sessionID
 }
 
 // TestServeCoreResourceHandler covers the Serve resource path: the core's resource is

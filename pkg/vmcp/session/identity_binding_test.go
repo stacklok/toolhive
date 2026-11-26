@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/binding"
@@ -29,9 +30,8 @@ func nilBackendConnector() backendConnector {
 	}
 }
 
-// identityWithClaims builds an *auth.Identity whose Claims map is set verbatim
-// from claims. Used in tests that need specific claim values without setting
-// the Subject field (binding extraction reads only Claims["iss"] and Claims["sub"]).
+// identityWithClaims builds an *auth.Identity with the supplied token and claims,
+// leaving the separate Subject field unset.
 func identityWithClaims(token string, claims map[string]any) *auth.Identity {
 	return &auth.Identity{
 		PrincipalInfo: auth.PrincipalInfo{Claims: claims},
@@ -51,6 +51,16 @@ func TestMakeSession_StoresIdentityBinding(t *testing.T) {
 			name:        "authenticated_oidc",
 			identity:    identityWithClaims("bearer-token", map[string]any{"iss": "https://idp.example", "sub": "user-42"}),
 			wantBinding: "https://idp.example\x00user-42",
+		},
+		{
+			name:        "delegated_without_actor",
+			identity:    delegatedSessionIdentity("client", ""),
+			wantBinding: "https://idp.example\x00alice\x00delegated\x00client",
+		},
+		{
+			name:        "delegated_with_actor",
+			identity:    delegatedSessionIdentity("client", "actor"),
+			wantBinding: "https://idp.example\x00alice\x00delegated\x00client\x00actor-issuer\x00actor",
 		},
 		{
 			name:        "nil_identity_anonymous",
@@ -92,20 +102,35 @@ func TestMakeSession_StoresIdentityBinding(t *testing.T) {
 	}
 }
 
-// TestMakeSession_RejectsBoundSessionWithoutIdentifyingClaims verifies the
-// ordering invariant from the factory through to BindSession: creating a session
-// with an identity that carries no valid (iss, sub) pair returns an error from
-// MakeSessionWithID.
-func TestMakeSession_RejectsBoundSessionWithoutIdentifyingClaims(t *testing.T) {
+func TestMakeSession_RejectsUnbindableIdentityBeforeConnecting(t *testing.T) {
 	t.Parallel()
 
-	factory := newSessionFactoryWithConnector(nilBackendConnector())
-
-	// Token is present but Claims are empty, so BindSession's extractBindingID fails.
-	identity := identityWithClaims("x", map[string]any{})
-
-	_, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), identity, nil, nil)
-	require.Error(t, err, "session creation must fail when bound identity lacks identifying claims")
+	for _, tc := range []struct {
+		name     string
+		identity *auth.Identity
+	}{
+		{"token without identifying claims", identityWithClaims("token", nil)},
+		{"delegated without client", delegatedSessionIdentity("", "actor")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			connectorCalled := false
+			factory := newSessionFactoryWithConnector(func(
+				_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink,
+			) (internalbk.Session, *vmcp.CapabilityList, error) {
+				connectorCalled = true
+				return nil, nil, nil
+			})
+			backends := []*vmcp.Backend{{ID: "test-backend", Name: "test-backend"}}
+			sess, err := factory.MakeSessionWithID(t.Context(), uuid.NewString(), tc.identity, backends, nil)
+			if sess != nil {
+				t.Cleanup(func() { assert.NoError(t, sess.Close()) })
+			}
+			assert.ErrorIs(t, err, sessionbinding.ErrInvalidBinding)
+			assert.Nil(t, sess)
+			assert.False(t, connectorCalled, "an unbindable identity must not reach the connector")
+		})
+	}
 }
 
 func TestRestoreSession_ErrorCases(t *testing.T) {
@@ -116,6 +141,7 @@ func TestRestoreSession_ErrorCases(t *testing.T) {
 		storedMetadata  map[string]string
 		wantNotFoundErr bool // true → must be ErrSessionNotFound; false → must NOT be
 		wantErrContains string
+		wantNotContains string
 	}{
 		{
 			// A session carrying the legacy MetadataKeyTokenHash but no
@@ -138,6 +164,15 @@ func TestRestoreSession_ErrorCases(t *testing.T) {
 			wantNotFoundErr: false,
 			wantErrContains: "absent",
 		},
+		{
+			name: "malformed_identity_binding_not_exposed",
+			storedMetadata: map[string]string{
+				MetadataKeyBackendIDs:      "",
+				MetadataKeyIdentityBinding: "private-binding-value-must-not-appear",
+			},
+			wantErrContains: "stored identity binding is malformed",
+			wantNotContains: "private-binding-value-must-not-appear",
+		},
 	}
 
 	for _, tt := range tests {
@@ -157,6 +192,9 @@ func TestRestoreSession_ErrorCases(t *testing.T) {
 			}
 			if tt.wantErrContains != "" {
 				assert.Contains(t, err.Error(), tt.wantErrContains)
+			}
+			if tt.wantNotContains != "" {
+				assert.NotContains(t, err.Error(), tt.wantNotContains)
 			}
 		})
 	}
@@ -195,6 +233,53 @@ func TestRestoreSession_PreservesIdentityBindingAndAcceptsMatchingCaller(t *test
 	if err != nil {
 		assert.ErrorIs(t, err, ErrToolNotFound,
 			"restored session must accept matching caller; any error must be ErrToolNotFound (not auth)")
+	}
+}
+
+func TestRestoreSession_DelegatedBindingRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	const clientBinding = "https://idp.example\x00alice\x00delegated\x00client"
+	for _, tc := range []struct {
+		name, actor, otherActor, binding string
+	}{
+		{"without actor", "", "actor", clientBinding},
+		{"with actor", "actor", "other-actor", clientBinding + "\x00actor-issuer\x00actor"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			factory := newSessionFactoryWithConnector(nilBackendConnector())
+			id := uuid.NewString()
+			owner := delegatedSessionIdentity("client", tc.actor)
+			original, err := factory.MakeSessionWithID(ctx, id, owner, nil, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { assert.NoError(t, original.Close()) })
+
+			restored, err := factory.RestoreSession(ctx, id, original.GetMetadata(), nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { assert.NoError(t, restored.Close()) })
+			assert.Equal(t, tc.binding, restored.GetMetadata()[MetadataKeyIdentityBinding])
+
+			interactive := identityWithClaims("interactive-token", map[string]any{"iss": "https://idp.example", "sub": "alice"})
+			interactive.AdmissionRoute = auth.AdmissionRouteInteractive
+			for _, call := range []struct {
+				name    string
+				caller  *auth.Identity
+				wantErr error
+			}{
+				{"matching caller reaches routing", owner, ErrToolNotFound},
+				{"another client", delegatedSessionIdentity("other-client", tc.actor), sessiontypes.ErrUnauthorizedCaller},
+				{"another actor", delegatedSessionIdentity("client", tc.otherActor), sessiontypes.ErrUnauthorizedCaller},
+				{"interactive caller", interactive, sessiontypes.ErrUnauthorizedCaller},
+			} {
+				t.Run(call.name, func(t *testing.T) {
+					t.Parallel()
+					_, err := restored.CallTool(t.Context(), call.caller, "nonexistent", nil, nil)
+					assert.ErrorIs(t, err, call.wantErr)
+				})
+			}
+		})
 	}
 }
 
@@ -276,4 +361,16 @@ func TestRestoreSession_PassesNilIdentityToConnector(t *testing.T) {
 	require.True(t, connectorCalled, "connector must be invoked when a backend is present")
 	assert.Nil(t, capturedIdentity,
 		"RestoreSession must pass nil identity to the connector — no partial *auth.Identity should be fabricated")
+}
+
+func delegatedSessionIdentity(clientID, actor string) *auth.Identity {
+	identity := identityWithClaims("delegated-token", map[string]any{"iss": "https://idp.example", "sub": "alice"})
+	identity.AdmissionRoute = auth.AdmissionRouteDelegated
+	if clientID != "" {
+		identity.Claims["client_id"] = clientID
+	}
+	if actor != "" {
+		identity.Claims["act"] = map[string]any{"iss": "actor-issuer", "sub": actor}
+	}
+	return identity
 }

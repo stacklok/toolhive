@@ -982,6 +982,64 @@ func TestSameHostRedirectPolicy_Integration(t *testing.T) {
 	})
 }
 
+// TestBuild_TokenFileRestrictsRedirects checks that a client carrying a bearer
+// token from a file never sends that token to a host a redirect names.
+// oauth2.Transport re-attaches the token on every hop, so the stdlib's
+// cross-domain Authorization stripping does not apply.
+func TestBuild_TokenFileRestrictsRedirects(t *testing.T) {
+	t.Parallel()
+
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("secret-token"), 0o600))
+
+	var sinkHits atomic.Int32
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sinkHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(sink.Close)
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/same":
+			http.Redirect(w, r, "/ok", http.StatusFound)
+		case "/ok":
+			_, _ = w.Write([]byte(r.Header.Get("Authorization")))
+		default:
+			// Same IP, different port: SameHostRedirectPolicy treats it as cross-host.
+			http.Redirect(w, r, sink.URL+"/jwks", http.StatusFound)
+		}
+	}))
+	t.Cleanup(origin.Close)
+
+	client, err := NewHttpClientBuilder().
+		WithPrivateIPs(true).
+		WithInsecureAllowHTTP(true).
+		WithTokenFromFile(tokenFile).
+		Build()
+	require.NoError(t, err)
+
+	t.Run("cross-host redirect is refused", func(t *testing.T) {
+		t.Parallel()
+		resp, err := client.Get(origin.URL + "/jwks") //nolint:bodyclose // err path, no body
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		require.ErrorIs(t, err, ErrRedirectRefused)
+		assert.Zero(t, sinkHits.Load(), "token-bearing request must not reach the redirect target")
+	})
+
+	t.Run("same-host redirect keeps the token", func(t *testing.T) {
+		t.Parallel()
+		resp, err := client.Get(origin.URL + "/same")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, "Bearer secret-token", string(body))
+	})
+}
+
 // TestBuild_BoundsIdleConnectionPool guards the transport fields against being
 // dropped again. Zero values mean "retain idle connections forever" and
 // "unlimited", which turns every dropped client into a permanently held socket

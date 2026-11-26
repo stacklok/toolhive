@@ -633,9 +633,8 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 	}
 }
 
-// makeSession is the shared implementation for MakeSession and MakeSessionWithID.
-// It builds the base session via makeBaseSession, then applies the session-binding
-// security wrapper using the caller's identity.
+// makeSession resolves the identity binding once, before initializing any
+// backends, then persists it and applies the session-binding security wrapper.
 func (f *defaultMultiSessionFactory) makeSession(
 	ctx context.Context,
 	sessID string,
@@ -643,12 +642,13 @@ func (f *defaultMultiSessionFactory) makeSession(
 	backends []*vmcp.Backend,
 	sink backend.ListChangedSink,
 ) (MultiSession, error) {
+	bindingID, err := security.ResolveBinding(identity)
+	if err != nil {
+		return nil, err
+	}
 	baseSession := f.makeBaseSession(ctx, sessID, identity, backends, nil, sink)
 
-	// Apply session binding: extracts the (iss, sub) identity tuple, stores it in
-	// session metadata under MetadataKeyIdentityBinding, and wraps the session with
-	// validation logic that checks every subsequent caller against that binding.
-	decorated, err := security.BindSession(baseSession, identity)
+	decorated, err := security.BindSession(baseSession, bindingID)
 	if err != nil {
 		_ = baseSession.Close()
 		return nil, err
@@ -711,7 +711,7 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 	// complete identity on req.Context() from TokenValidator.Middleware. See #5336.
 	if !binding.IsUnauthenticated(storedBinding) {
 		if _, _, ok := binding.Parse(storedBinding); !ok {
-			return nil, fmt.Errorf("RestoreSession: stored identity binding is malformed: %q", storedBinding)
+			return nil, fmt.Errorf("RestoreSession: stored identity binding is malformed")
 		}
 	}
 

@@ -2440,7 +2440,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 	})
 
 	t.Run("DeleteUpstreamTokensForProvider leaves sibling intact", func(t *testing.T) {
-		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", &UpstreamTokens{
 				ProviderID: "provider-a", AccessToken: "a", ExpiresAt: time.Now().Add(time.Hour),
 			}))
@@ -2460,6 +2460,11 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			all, err := s.GetAllUpstreamTokens(ctx, "session-1")
 			require.NoError(t, err)
 			assert.Len(t, all, 1)
+
+			idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "session-1")
+			assert.False(t, setHas(mr, idxKey, redisUpstreamKey(s.keyPrefix, "session-1", "provider-a")))
+			assert.True(t, setHas(mr, idxKey, redisUpstreamKey(s.keyPrefix, "session-1", "provider-b")),
+				"sibling's session index member must stay")
 		})
 	})
 
@@ -6164,4 +6169,237 @@ func TestRedisStorage_ReconcileConfiguredClient_WarnsOnceAcrossWatchRetry(t *tes
 	require.Len(t, warns, 1, "the aborted first attempt must not log")
 	assert.Equal(t, []string{"a", "c"}, warns[0]["old_scopes"], "the WARN reports the row the winning attempt replaced")
 	assert.Equal(t, []string{"a", "b"}, warns[0]["new_scopes"])
+}
+
+func TestRedisStorage_UserIdentityContract(t *testing.T) {
+	t.Parallel()
+	runUserIdentityStorageContract(t, func(t *testing.T) UserStorage {
+		t.Helper()
+		s, _ := newTestRedisStorage(t)
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	})
+}
+
+func TestRedisStorage_CreateProviderIdentity_FailedUserSetWriteLeavesNoLink(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	now := time.Now()
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-1", CreatedAt: now, UpdatedAt: now}))
+
+	// A string at the user's provider-set key makes SADD fail with WRONGTYPE.
+	require.NoError(t, mr.Set(redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-1"), "not-a-set"))
+
+	err := s.CreateProviderIdentity(ctx, contractIdentity("user-1", "provider-a", "subject-1"))
+	require.Error(t, err)
+
+	_, err = s.GetProviderIdentity(ctx, "provider-a", "subject-1")
+	assert.True(t, errors.Is(err, ErrNotFound), "got %v", err)
+
+	// The identity can be linked once the set is healthy again.
+	mr.Del(redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-1"))
+	require.NoError(t, s.CreateProviderIdentity(ctx, contractIdentity("user-1", "provider-a", "subject-1")))
+}
+
+// setHas reports set membership, treating a missing set as empty.
+func setHas(mr *miniredis.Miniredis, key, member string) bool {
+	ok, err := mr.IsMember(key, member)
+	return err == nil && ok
+}
+
+// upstreamRowInvariant reports whether the row exists, is in the session
+// index and is in the user set; the three must always agree.
+func upstreamRowInvariant(s *RedisStorage, mr *miniredis.Miniredis, userID string) (row, idx, user bool) {
+	key := redisUpstreamKey(s.keyPrefix, "session-1", "provider-a")
+	return mr.Exists(key),
+		setHas(mr, redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "session-1"), key),
+		setHas(mr, redisSetKey(s.keyPrefix, KeyTypeUserUpstream, userID), key)
+}
+
+func TestRedisStorage_DeleteUpstreamTokensForProvider_Atomic(t *testing.T) {
+	t.Parallel()
+
+	userTokens := func(userID string) *UpstreamTokens {
+		return &UpstreamTokens{
+			ProviderID: "provider-a", AccessToken: "a", RefreshToken: "r",
+			UserID: userID, ExpiresAt: time.Now().Add(time.Hour),
+		}
+	}
+
+	t.Run("removes the member from both index sets", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", userTokens("user-1")))
+			row, idx, user := upstreamRowInvariant(s, mr, "user-1")
+			require.True(t, row && idx && user)
+
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
+
+			row, idx, user = upstreamRowInvariant(s, mr, "user-1")
+			assert.False(t, row)
+			assert.False(t, idx)
+			assert.False(t, user)
+		})
+	})
+
+	t.Run("delete then store keeps the invariant", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", userTokens("user-1")))
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", userTokens("user-1")))
+			row, idx, user := upstreamRowInvariant(s, mr, "user-1")
+			assert.True(t, row)
+			assert.True(t, idx)
+			assert.True(t, user)
+		})
+	})
+
+	t.Run("rows without a usable user ID are removed without error", func(t *testing.T) {
+		rows := map[string]string{
+			"nullMarker placeholder": nullMarker,
+			"empty user_id":          `{"provider_id":"provider-a","user_id":""}`,
+			"null user_id":           `{"provider_id":"provider-a","user_id":null}`,
+			"missing user_id":        `{"provider_id":"provider-a"}`,
+			"not JSON":               `not-json{`,
+			"JSON scalar":            `42`,
+		}
+		for name, raw := range rows {
+			t.Run(name, func(t *testing.T) {
+				withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+					key := redisUpstreamKey(s.keyPrefix, "session-1", "provider-a")
+					idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "session-1")
+					require.NoError(t, s.client.Set(ctx, key, raw, time.Hour).Err())
+					require.NoError(t, s.client.SAdd(ctx, idxKey, key).Err())
+					userSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, "some-user")
+					require.NoError(t, s.client.SAdd(ctx, userSetKey, key).Err())
+
+					require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
+
+					assert.False(t, mr.Exists(key))
+					assert.False(t, setHas(mr, idxKey, key))
+					assert.True(t, setHas(mr, userSetKey, key), "user set removal must be skipped without a usable user_id")
+				})
+			})
+		}
+	})
+
+	t.Run("wrong-type index key fails the call and changes nothing", func(t *testing.T) {
+		cases := map[string]func(s *RedisStorage) string{
+			"session index": func(s *RedisStorage) string { return redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "session-1") },
+			"user set":      func(s *RedisStorage) string { return redisSetKey(s.keyPrefix, KeyTypeUserUpstream, "user-1") },
+		}
+		for name, badKeyOf := range cases {
+			t.Run(name, func(t *testing.T) {
+				withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+					key := redisUpstreamKey(s.keyPrefix, "session-1", "provider-a")
+					idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "session-1")
+					userSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, "user-1")
+					badKey := badKeyOf(s)
+
+					require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", userTokens("user-1")))
+					require.NoError(t, s.client.Set(ctx, badKey, "not-a-set", 0).Err())
+
+					err := s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a")
+					require.Error(t, err)
+					assert.Contains(t, err.Error(), "WRONGTYPE")
+
+					assert.True(t, mr.Exists(key), "row must survive a failed delete")
+					if badKey != idxKey {
+						assert.True(t, setHas(mr, idxKey, key))
+					}
+					if badKey != userSetKey {
+						assert.True(t, setHas(mr, userSetKey, key))
+					}
+
+					// Repair the index, then the retry removes everything.
+					mr.Del(badKey)
+					require.NoError(t, s.client.SAdd(ctx, badKey, key).Err())
+
+					require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
+					row, idx, user := upstreamRowInvariant(s, mr, "user-1")
+					assert.False(t, row)
+					assert.False(t, idx)
+					assert.False(t, user)
+				})
+			})
+		}
+	})
+
+	// A non-atomic delete reads or removes the row with a standalone command,
+	// leaving a window in which a concurrent store under a different owner
+	// lands before the index cleanup. The hook stores the row as user-2 right
+	// after any standalone command naming the row; with a single Lua script
+	// the key only appears inside EVAL/EVALSHA, so the hook must never fire.
+	// The fired count is the regression guard; the invariant checks only
+	// confirm the final state is consistent.
+	t.Run("delete sends no standalone command on the row", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			other := NewRedisStorageWithClient(redis.NewClient(&redis.Options{Addr: mr.Addr()}), "test:auth:")
+			t.Cleanup(func() { _ = other.Close() })
+
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", userTokens("user-1")))
+
+			hook := &storeAfterRowCommandHook{
+				key: redisUpstreamKey(s.keyPrefix, "session-1", "provider-a"),
+				store: func() error {
+					return other.StoreUpstreamTokens(context.Background(), "session-1", "provider-a", userTokens("user-2"))
+				},
+			}
+			s.client.AddHook(hook)
+
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
+
+			row, idx, user2 := upstreamRowInvariant(s, mr, "user-2")
+			_, _, user1 := upstreamRowInvariant(s, mr, "user-1")
+			assert.Equal(t, row, idx, "row exists=%v but session index member=%v", row, idx)
+			assert.Equal(t, row, user2, "row exists=%v but user-2 set member=%v", row, user2)
+			assert.False(t, user1, "user-1 set must not reference the row")
+			assert.Zero(t, hook.fired.Load(), "delete must be a single script, not a standalone command on the row")
+		})
+	})
+}
+
+// storeAfterRowCommandHook runs store once, right after any standalone
+// command naming key completes. Script invocations are excluded: the key
+// appears in their KEYS list but they are a single atomic step.
+type storeAfterRowCommandHook struct {
+	key   string
+	store func() error
+	fired atomic.Int32
+}
+
+func (*storeAfterRowCommandHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *storeAfterRowCommandHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		err := next(ctx, cmd)
+		args := cmd.Args()
+		if h.touchesRow(args) && h.fired.CompareAndSwap(0, 1) {
+			if storeErr := h.store(); storeErr != nil {
+				return storeErr
+			}
+		}
+		return err
+	}
+}
+
+func (*storeAfterRowCommandHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func (h *storeAfterRowCommandHook) touchesRow(args []any) bool {
+	if len(args) < 2 {
+		return false
+	}
+	switch strings.ToLower(fmt.Sprint(args[0])) {
+	case "eval", "evalsha", "eval_ro", "evalsha_ro", "script":
+		return false
+	}
+	for _, a := range args[1:] {
+		if a == h.key {
+			return true
+		}
+	}
+	return false
 }

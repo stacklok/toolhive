@@ -43,8 +43,8 @@ type MCPServerEntrySpec struct {
 
 	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource when connecting
 	// to the remote MCP server. Supported types are tokenExchange, headerInjection,
-	// unauthenticated, awsSts, upstreamInject, xaa, and obo when an enterprise handler
-	// is registered. Unsupported types are reported in status.conditions with Reason:
+	// unauthenticated, awsSts, upstreamInject, xaa, and obo.
+	// Unsupported types are reported in status.conditions with Reason:
 	// UnsupportedAuthType. The referenced MCPExternalAuthConfig must exist in the same
 	// namespace as this MCPServerEntry.
 	// +optional

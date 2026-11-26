@@ -1357,11 +1357,10 @@ func deriveExpectedIssuerFromDiscoveryURL(discoveryURL string) (string, error) {
 	//      issuer https://host/v1/mcp.
 	//   2. A trailing slash with no tenant, e.g.
 	//      /.well-known/oauth-authorization-server/ — TrimPrefix leaves
-	//      a stray "/", which would yield a spurious issuer
-	//      "https://host/" that fails the §3.3 byte-equality check
-	//      against the upstream's declared "https://host". Normalise
-	//      that stray "/" back to empty so case (2.2) and the bare
-	//      suffix case derive the same origin issuer.
+	//      a stray "/", which would yield an issuer "https://host/".
+	//      The §3.3 check tolerates a trailing "/" on an origin-only
+	//      issuer, but normalise it back to empty anyway so case (2.2)
+	//      and the bare suffix case derive the same origin issuer.
 	case strings.HasPrefix(u.Path, oauthSuffix+"/"):
 		u.Path = strings.TrimPrefix(u.Path, oauthSuffix)
 		if u.Path == "/" {

@@ -99,20 +99,52 @@ func ValidateAudienceAllowed(resource string, allowedAudiences []string) error {
 	return errResourceNotPermitted(resource)
 }
 
-// resourceScopedClient is implemented by clients (e.g. SPIFFE clients) that
-// keep an RFC 8707 resource allowlist independent of GetAudience. Resources and
-// audiences are independent request dimensions: permission in one must never
-// imply permission in the other. A client that does not implement this
-// interface falls back to GetAudience, preserving behavior for clients (e.g.
-// delegate clients) that only ever had one list.
-type resourceScopedClient interface {
+// GrantSingleResource grants the one RFC 8707 resource a SPIFFE client asked
+// for as the token audience. It refuses the "audience" parameter and any
+// request without exactly one resource, and requires the resource to match
+// permitted exactly (a sub-path of a permitted resource is refused) and to be
+// an allowed audience of the server. Every refusal is ErrInvalidTarget with a
+// hint naming the cause.
+func GrantSingleResource(requester fosite.AccessRequester, permitted, allowedAudiences []string) error {
+	form := requester.GetRequestForm()
+	resources := form["resource"]
+	switch {
+	case len(form["audience"]) != 0:
+		return ErrInvalidTarget.WithHint("The audience parameter is not accepted for this client; use the resource parameter.")
+	case len(resources) == 0 || (len(resources) == 1 && resources[0] == ""):
+		return ErrInvalidTarget.WithHint("Exactly one resource parameter is required.")
+	case len(resources) > 1:
+		return ErrInvalidTarget.WithHint("Exactly one resource parameter is allowed.")
+	}
+	resource := resources[0]
+	if err := ValidateAudienceURI(resource); err != nil {
+		return ErrInvalidTarget.WithHint(
+			"The resource parameter must be an absolute http or https URI with a host and no fragment.")
+	}
+	if !slices.Contains(permitted, resource) {
+		return ErrInvalidTarget.WithHint(
+			"The requested resource is not permitted for this client; it must exactly match a permitted resource.")
+	}
+	if err := ValidateAudienceAllowed(resource, allowedAudiences); err != nil {
+		return ErrInvalidTarget.WithHint("The requested resource is not an allowed audience of this authorization server.")
+	}
+	requester.GrantAudience(resource)
+	return nil
+}
+
+// ResourceScopedClient is implemented by clients (SPIFFE clients) whose RFC 8707
+// resource allowlist is their only target list; their GetAudience is nil. A
+// client that does not implement this interface falls back to GetAudience,
+// preserving behavior for clients (e.g. delegate clients) that only ever had
+// one list. Token exchange also uses it to select the single-resource rule.
+type ResourceScopedClient interface {
 	Resources() []string
 }
 
 // ClientResources returns the resources client may request: its own resource
 // allowlist if it keeps one, otherwise its audiences.
 func ClientResources(client fosite.Client) []string {
-	if rc, ok := client.(resourceScopedClient); ok {
+	if rc, ok := client.(ResourceScopedClient); ok {
 		return rc.Resources()
 	}
 	return client.GetAudience()
@@ -129,10 +161,10 @@ func ClientResources(client fosite.Client) []string {
 // For a client that keeps no separate resource list, the callback checks the
 // same audiences this check does, so a request accepted here does not fail the
 // callback's audience check later, and one refused here fails with
-// invalid_target before the user logs in upstream. A client that keeps its own
-// resource list (a SPIFFE client) is checked against that list here but against
-// GetAudience at the callback; such clients are token-exchange only and never
-// reach /authorize, so the two never meet today.
+// invalid_target before the user logs in upstream. A SPIFFE client is checked
+// against its resource list here but has no audiences at the callback; such
+// clients have no response types and never reach /authorize, so the two never
+// meet today.
 //
 // With fosite's default path-prefix strategy, scheme and host are compared
 // exactly, and the client's path must equal the resource path or be a
@@ -160,10 +192,18 @@ func ValidateClientAudience(resource string, client fosite.Client, match fosite.
 // no resource allowlist: such a client may request nothing. Clients with a
 // resource allowlist, such as SPIFFE clients, are checked against it.
 func ValidateIDJAGClientAudience(resource string, client fosite.Client, match fosite.AudienceMatchingStrategy) error {
-	if _, scoped := client.(resourceScopedClient); !scoped && registration.DCRIssued(client) {
+	if IsUnscopedDCRClient(client) {
 		return nil
 	}
 	return ValidateClientAudience(resource, client, match)
+}
+
+// IsUnscopedDCRClient reports whether client was registered by DCR or CIMD and
+// has no resource allowlist of its own, so no per-client check narrows the
+// resources it may request.
+func IsUnscopedDCRClient(client fosite.Client) bool {
+	_, scoped := client.(ResourceScopedClient)
+	return !scoped && registration.DCRIssued(client)
 }
 
 // errResourceNotPermitted is the single refusal both the server-level and the

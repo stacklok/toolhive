@@ -244,10 +244,14 @@ published, so no backend falls back to a different credential or to no
 authentication; the previously published configuration stays in place.
 
 MCPExternalAuthConfig resources can be referenced via two paths:
-- `externalAuthConfigRef` — for outgoing auth. The supported type subset depends on whether the consumer is MCPServer, MCPRemoteProxy, VirtualMCPServer, or MCPServerEntry.
+- `externalAuthConfigRef` — for outgoing auth, including Entra on-behalf-of (`obo`). The supported type subset depends on whether the consumer is MCPServer, MCPRemoteProxy, VirtualMCPServer, or MCPServerEntry.
 - `authServerRef` — for the embedded auth server type (`embeddedAuthServer`) only. This dedicated reference path makes it possible to configure both incoming auth (embedded auth server) and outgoing auth (e.g., AWS STS) on the same workload resource.
 
 **Referenced by MCPServer, MCPRemoteProxy, VirtualMCPServer, and MCPServerEntry** using `externalAuthConfigRef`. MCPServer and MCPRemoteProxy may also use `authServerRef` for `embeddedAuthServer`.
+
+**Entra on-behalf-of (`type: obo`)**: the MCPExternalAuthConfig reconciler validates what the schema cannot (a tenant, `clientId`, `clientSecretRef`, at least one of `audience`/`scopes`, a `cacheSkew` that is non-negative and at most MaxInt32 seconds, and a usable tenant/authority) and reports a violation as `Valid=False / Reason=InvalidConfig` without requeueing. For MCPServer and MCPRemoteProxy the operator (`cmd/thv-operator/pkg/controllerutil/obo.go`) appends an `obo` middleware config to the RunConfig and mounts the client secret into the proxyrunner pod as `TOOLHIVE_OBO_CLIENT_SECRET`; a workload that references an `obo` config without `oidcConfigRef` is rejected with `ExternalAuthConfigValidated=False / Reason=InvalidConfig`, because OBO needs an authenticated user token. VirtualMCPServer mounts each OBO backend's secret under a per-config name (`TOOLHIVE_OBO_CLIENT_SECRET_<CONFIG_NAME>_<HASH8>`, where `<HASH8>` is the first 8 hex characters of the SHA-256 of the config name, so `my-cfg` and `my.cfg` stay distinct) so several OBO backends in one pod do not collide. See [Virtual MCP outgoing authentication](10-virtual-mcp-architecture.md#outgoing-authentication) and the [OBO middleware](../middleware.md#9-on-behalf-of-obo-middleware).
+
+**Referenced config failures on consumers**: when a referenced MCPExternalAuthConfig is `Valid=False`, MCPServer and MCPRemoteProxy copy its reason onto their `ExternalAuthConfigValidated` condition with the message `Referenced MCPExternalAuthConfig '<name>' is invalid: <source message>`, or without the `: <source message>` suffix when the source message is empty. The prefix tells a copied `InvalidConfig` from one the consumer set itself, such as the obo incoming-auth rejection, so the copied one clears when the source heals even if its `ConfigHash` is unchanged.
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
 
@@ -262,8 +266,10 @@ Defines shared OIDC provider configuration that can be referenced by multiple wo
 MCPOIDCConfig eliminates OIDC configuration duplication — define an identity provider once and reference it from any number of workloads. A single issuer URL change updates all referencing workloads automatically.
 
 **Configuration source variants** (mutually exclusive, CEL enforced):
-- `kubernetesServiceAccount` — Uses Kubernetes service account tokens with auto-discovered JWKS
+- `kubernetesServiceAccount` — Uses Kubernetes service account tokens with auto-discovered JWKS. Optional `serviceAccount` and `namespace` restrict which callers are accepted by checking the token's `sub` claim: `serviceAccount` requires exactly `system:serviceaccount:<namespace>:<serviceAccount>` (namespace defaults to the referencing workload's), `namespace` alone accepts any service account in that namespace, and leaving both empty applies no subject restriction. The operator resolves these into `RequiredSubject` / `RequiredSubjectPrefix` on the token validator, which rejects mismatches with `invalid_token` (`invalid subject`) and logs the rejected subject at WARN. To fetch discovery and JWKS from the API server, the workload sends its own service account token, but by default only when the URL it fetches (`jwksUrl` if set, otherwise the issuer) is an https URL on `kubernetes.default.svc` or `kubernetes.default.svc.cluster.local`. `useClusterAuth: true` sends it unconditionally (for example on a custom cluster domain), and `false` never does.
 - `inline` — Explicit issuer, JWKS URL, client credentials (secrets via `clientSecretRef`)
+
+**Issuer authentication token**: `kubernetesServiceAccount` with `useClusterAuth` (the default) sends the pod's service-account token on OIDC discovery and JWKS requests, so it works against an API server without anonymous discovery access; `inline.jwksAuthTokenPath` does the same with any token file. MCPServer, MCPRemoteProxy, and VirtualMCPServer all honor it. For a VirtualMCPServer, the operator rejects a relative path or one containing `..` with `AuthConfigured=False` (`AuthInvalid`) and does not write the ConfigMap. vMCP refuses to start if the configured file is missing, with an error naming `jwksAuthTokenPath`. A client that sends this token follows only same-host redirects and refuses HTTPS-to-HTTP downgrades, so a discovery, JWKS, or introspection endpoint that redirects to another host fails instead of receiving the token.
 
 **Per-server overrides** live in the workload's `oidcConfigRef` field (not the shared spec):
 - `audience` (required) — Must be unique per server to prevent token replay
@@ -340,8 +346,11 @@ Defines a proxy for remote MCP servers with authentication, authorization, audit
 - `authzConfig` - Authorization policies
 - `telemetryConfigRef` - Reference to shared MCPTelemetryConfig (replaces deprecated inline `telemetry`)
 - `toolConfigRef` - Tool filtering and renaming
+- `resources` - CPU/memory requests and limits for the proxy container
 
 OIDC is optional — omit `oidcConfigRef` for unauthenticated proxies.
+
+**Default resources**: unless the user removes them, the proxy container gets default requests and limits (requests: 50m CPU / 64Mi memory; limits: 200m CPU / 256Mi memory). User values override them per field, from `resources` or from the `toolhive` container in `podTemplateSpec`, with `podTemplateSpec` taking precedence. The controller layers all three sources before it applies the `podTemplateSpec` strategic merge patch. If the user sets a limit without a request, the default request is dropped, so Kubernetes copies the limit into the request at Pod creation, as it would with no defaults. A limits-only proxy therefore keeps its QoS class and reservation. If the user sets a request without a limit and the request is above the default limit, the limit is raised to match. For example, `requests.memory: 512Mi` on its own yields a 512Mi memory limit rather than the 256Mi default. A `null` in `podTemplateSpec` removes that default instead. Proxies that predate these defaults roll once on operator upgrade to pick them up.
 
 **Combined auth pattern**: `authServerRef` and `externalAuthConfigRef` can be used together on the same MCPRemoteProxy to enable both incoming client authentication (embedded auth server) and outgoing remote service authentication (e.g., AWS STS) simultaneously. This is the primary use case for `authServerRef` on MCPRemoteProxy. If both fields point to an `embeddedAuthServer` resource, the controller produces a validation error.
 

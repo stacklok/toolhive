@@ -232,11 +232,25 @@ When stdio transport is selected, the proxy mode determines which HTTP protocol 
 
 ### Session Ownership
 
-Ordinary proxies use `pkg/auth/sessionbinding` to bind each session to the
-validated request identity's issuer and subject under `vmcp.identity.binding`.
-The complete bound record is inserted conditionally (memory/Redis SET NX) before
-publishing an ID or SSE endpoint. Refreshed tokens for the same principal work;
-changing either issuer or subject does not.
+Ordinary proxies and vMCP use `pkg/auth/sessionbinding` to bind sessions to the
+validated request identity under `vmcp.identity.binding`. Interactive and
+unspecified routes, including sessionless grants without the delegated-access
+marker (RFC 8693 token exchange and unmarked JWT-bearer), keep the two-field
+`iss + "\x00" + sub` binding. The delegated binding (`AdmissionRouteDelegated`)
+contains `iss`, `sub`, the `delegated` route tag, `client_id`, and, when present,
+the current actor's `act.iss` and `act.sub`. It excludes `jti`, `exp`, and
+`authorization_details`, so renewed tokens work if the full binding matches.
+Delegated sessions cannot be reused by interactive or unspecified callers, and
+vice versa, even for the same issuer and user. See the
+[admission route rules](17-token-exchange-delegation.md#delegated-access-marker)
+for the validator configuration this isolation requires.
+
+Tokens on unrecognised routes cannot create or use sessions. Delegated tokens
+with a missing or invalid `client_id`, a malformed `act` (including a malformed
+nested actor) or an explicit `act: null` are also refused. `client_id` must be a nonempty string without NUL
+bytes. An absent `act` is allowed; a present `act` requires nonempty `iss` and
+`sub` strings without NUL bytes. Ordinary proxies insert the complete bound
+record conditionally (memory/Redis SET NX) before publishing an ID or SSE endpoint.
 
 Ownership is checked after authentication, before forwarding, stream replacement,
 delete, or backend recovery. SSE-to-stdio uses the `session_id` query parameter;
@@ -255,13 +269,49 @@ actually absent identity uses the unauthenticated sentinel. Non-nil identities
 `iss` and `sub` claims without NUL bytes. Ownership never comes from outbound
 Authorization headers. Shared metadata does not replace live-stream affinity.
 
-vMCP applies the same check (`sessionbinding.Validate`) to every request carrying
-`Mcp-Session-Id`, with the shared carrier parsing. Its 404 is a plain-text
+vMCP applies the same check (`sessionbinding.Validate`) to every Legacy request
+carrying `Mcp-Session-Id`, with the shared carrier parsing. Its 404 is a plain-text
 `Session terminated` rather than the proxies' JSON-RPC body, so go-sdk clients
-re-initialize. See *Session
-Ownership* in [Virtual MCP](10-virtual-mcp-architecture.md).
+re-initialize. See [vMCP Session Ownership](10-virtual-mcp-architecture.md#session-ownership).
+
+**Rolling upgrades.** Older replicas do not understand a delegated binding, and
+how they react depends on the version:
+
+- Ordinary proxies (streamable, transparent and HTTP+SSE) check session owners
+  only from v0.51.0. Before that they did not read the binding at all, so a
+  streamable `DELETE` removed a session without checking who owned it.
+- vMCP rejects an unparsable binding when it restores a session, and on each
+  per-operation check, since v0.29.0. It answers 404 to every session request
+  with such a binding only since v0.57.0.
+
+A proxy replica older than v0.51.0, or a vMCP replica older than v0.57.0, that
+shares the session store may serve, change or delete a delegated session. Do
+not serve delegated sessions from a store that such replicas share.
+
+In the other direction, an older replica that creates a session for a delegated
+token writes the two-field binding, the same one the user's interactive session
+has. Plan the rollout by case:
+
+1. First-time enablement: upgrade every replica before enabling delegated
+   subject resolution (`SubjectMode` set to `resolve`, a Go-only setting; see
+   [Subject mode](17-token-exchange-delegation.md#subject-mode-go-only)).
+2. Delegated subject resolution was already enabled while older replicas ran:
+   the sessions those replicas created for delegated tokens carry the two-field
+   binding, and an interactive token of the same user still matches it after the
+   upgrade. Invalidate those sessions, or wait for them to expire, before
+   relying on cross-route isolation. Do not rewrite two-field records as
+   delegated ones: the original route cannot be recovered.
 
 ### Middleware Integration
+
+Token exchange's host adapter and host tests live in `pkg/auth/tokenexchange`;
+`factory.go` handles runner setup and lifecycle, while `middleware.go` holds
+runtime behavior and configuration. Reusable RFC 8693 exchange and normalization
+remain in `pkg/oauthproto/tokenexchange`.
+The host depends on the reusable package, never the reverse. Runner startup uses
+`GetSupportedMiddlewareFactories` to select the host factory by `tokenexchange`;
+there is no token-exchange `init()` registration. See the
+[Go API migration](../middleware.md#8-token-exchange-middleware) for moved symbols.
 
 All proxy types integrate with the middleware chain:
 

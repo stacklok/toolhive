@@ -82,15 +82,7 @@ func TestIntegration_EmbeddedAuthServer_SPIFFERedisRestartAndCollision(t *testin
 			},
 		}}
 		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{
-			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-				TrustDomainRef:   "production",
-				PrincipalPattern: "spiffe://example.org/ns/default/agent",
-				ClientID:         "spiffe-client",
-				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-				Scopes:           []string{"openid"},
-				Audiences:        []string{"https://mcp.example.com"},
-				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-			}},
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{testSPIFFEAssociation("spiffe-client", "spiffe://example.org/ns/default/agent")},
 		}
 		return cfg
 	}

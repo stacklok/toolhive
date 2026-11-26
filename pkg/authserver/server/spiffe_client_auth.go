@@ -48,7 +48,7 @@ var (
 
 // SPIFFEClientResolver resolves a verified SPIFFE identity to its configured
 // OAuth client. It is the seam that lets the client-authentication strategy
-// here reach the association registry and storage constructed in package
+// here reach the association registry constructed in package
 // authserver, which this package cannot import (authserver imports server).
 // clientID is an exact selector. The X.509 arm always passes the request's
 // client_id, which it requires. Only the JWT arm may pass an empty clientID,
@@ -58,9 +58,12 @@ var (
 // explicit discriminator, so the two arms share a single resolution path
 // instead of each inventing its own. spiffeID is passed explicitly rather
 // than pulled from ctx, so an identity resolved from the wrong source cannot
-// be mistaken for a verified one.
+// be mistaken for a verified one. credentialExpiry is the expiry of the
+// verified SVID (the X.509 leaf's NotAfter or the JWT-SVID's exp); the resolver
+// carries it on the client so grant handlers can bound token lifetimes by it.
 type SPIFFEClientResolver func(
 	ctx context.Context, spiffeID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod,
+	credentialExpiry time.Time,
 ) (fosite.Client, error)
 
 // SPIFFEX509ClientMatcher reports whether clientID names an association that
@@ -147,13 +150,15 @@ func authenticateSPIFFEX509Client(
 			"stage", "mixed credentials", "client_id", clientID)
 		return nil, fosite.ErrInvalidClient
 	}
-	verifiedID, err := verifySPIFFEX509(r, source)
+	verifiedID, credentialExpiry, err := verifySPIFFEX509(r, source)
 	if err != nil {
 		slog.Debug("SPIFFE X.509 client authentication rejected",
 			"stage", "certificate verification", "error", err, "client_id", clientID)
 		return nil, fosite.ErrInvalidClient
 	}
-	client, err := resolver(ctx, verifiedID.String(), clientID, spiffeauth.SPIFFEAuthenticationMethodX509)
+	client, err := resolver(
+		ctx, verifiedID.String(), clientID, spiffeauth.SPIFFEAuthenticationMethodX509, credentialExpiry,
+	)
 	if !validResolvedSPIFFEClient(client, err, clientID) {
 		slog.Debug("SPIFFE X.509 client authentication rejected",
 			"stage", "resolver", "error", err, "client_id", clientID, "spiffe_id", verifiedID.String())
@@ -184,32 +189,32 @@ func rejectedSPIFFEX509Request(r *http.Request, form url.Values) bool {
 // and a leaf without exactly one URI SAN. A chain longer than
 // maxClientCertificateChainLength is rejected first. A missing or malformed certificate
 // is always rejected; there is no fallback to public or secret-based client
-// authentication.
-func verifySPIFFEX509(r *http.Request, source x509bundle.Source) (spiffeid.ID, error) {
+// authentication. It also returns the leaf certificate's NotAfter, the SVID expiry.
+func verifySPIFFEX509(r *http.Request, source x509bundle.Source) (spiffeid.ID, time.Time, error) {
 	if source == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-		return spiffeid.ID{}, errClientCertificateRequired
+		return spiffeid.ID{}, time.Time{}, errClientCertificateRequired
 	}
 	if len(r.TLS.PeerCertificates) > maxClientCertificateChainLength {
-		return spiffeid.ID{}, errClientChainTooLong
+		return spiffeid.ID{}, time.Time{}, errClientChainTooLong
 	}
 	leaf := r.TLS.PeerCertificates[0]
 	id, err := spiffeauth.SPIFFEIDFromCertificate(leaf)
 	if err != nil {
-		return spiffeid.ID{}, err
+		return spiffeid.ID{}, time.Time{}, err
 	}
 	if leaf.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
-		return spiffeid.ID{}, fmt.Errorf("%w: key usage lacks digitalSignature", errInvalidX509SVIDLeaf)
+		return spiffeid.ID{}, time.Time{}, fmt.Errorf("%w: key usage lacks digitalSignature", errInvalidX509SVIDLeaf)
 	}
 	if err := validSPIFFEX509RequiredExtensions(leaf); err != nil {
-		return spiffeid.ID{}, err
+		return spiffeid.ID{}, time.Time{}, err
 	}
 	if err := validSPIFFEX509ExtendedKeyUsage(leaf); err != nil {
-		return spiffeid.ID{}, err
+		return spiffeid.ID{}, time.Time{}, err
 	}
 	if _, _, err := x509svid.Verify(r.TLS.PeerCertificates, source); err != nil {
-		return spiffeid.ID{}, err
+		return spiffeid.ID{}, time.Time{}, err
 	}
-	return id, nil
+	return id, leaf.NotAfter, nil
 }
 
 // validSPIFFEX509RequiredExtensions checks that the leaf has a critical
@@ -318,7 +323,9 @@ func authenticateSPIFFEJWTClient(
 			"stage", "assertion lifetime exceeds limit", "client_id", clientID, "spiffe_id", svid.ID.String())
 		return nil, fosite.ErrInvalidClient
 	}
-	client, err := resolver(ctx, svid.ID.String(), clientID, spiffeauth.SPIFFEAuthenticationMethodJWT)
+	client, err := resolver(
+		ctx, svid.ID.String(), clientID, spiffeauth.SPIFFEAuthenticationMethodJWT, svid.Expiry,
+	)
 	if !validResolvedSPIFFEClient(client, err, clientID) {
 		slog.Debug("SPIFFE JWT-SVID client authentication rejected",
 			"stage", "resolver", "error", err, "client_id", clientID, "spiffe_id", svid.ID.String())

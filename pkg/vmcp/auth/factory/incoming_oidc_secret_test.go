@@ -51,6 +51,21 @@ func TestOIDCTokenValidatorConfig_ClientSecretEnv(t *testing.T) {
 	assert.Equal(t, "test-audience", got.Audience)
 }
 
+func TestOIDCTokenValidatorConfig_RequiredSubject(t *testing.T) {
+	t.Parallel()
+
+	got, err := oidcTokenValidatorConfig(&config.OIDCConfig{
+		Issuer:                "https://kubernetes.default.svc",
+		Audience:              "test-audience",
+		RequiredSubject:       "system:serviceaccount:clients:agent",
+		RequiredSubjectPrefix: "system:serviceaccount:clients:",
+	}, stubEnvReader{})
+
+	require.NoError(t, err)
+	assert.Equal(t, "system:serviceaccount:clients:agent", got.RequiredSubject)
+	assert.Equal(t, "system:serviceaccount:clients:", got.RequiredSubjectPrefix)
+}
+
 func TestOIDCTokenValidatorConfig_MissingClientSecretEnv(t *testing.T) {
 	t.Parallel()
 

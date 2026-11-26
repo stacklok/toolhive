@@ -12,6 +12,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestNormalizeInboundGrants(t *testing.T) {
@@ -46,28 +47,27 @@ func TestNormalizeInboundGrants(t *testing.T) {
 			want: &NormalizedInboundGrants{},
 		},
 		{
-			// Regression test: SPIFFE client-auth associations always
-			// require the token-exchange grant (see validateSPIFFEGrants),
-			// so a SPIFFE-only configuration must not leave
-			// Capabilities.TokenExchange false -- that would disable the
-			// RFC 8693 grant handler server-wide. This exact fix was
-			// previously lost during a rebase because its only regression
-			// coverage lived in a different package (pkg/authserver/runner);
-			// this case guards it directly where the logic lives.
-			name: "SPIFFE client auth alone sets the token exchange capability",
-			cfg: &RunConfig{
-				InboundGrants: &InboundGrantsRunConfig{
-					SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
-						TrustDomainRef:   "prod",
-						PrincipalPattern: "spiffe://example.org/ns/default/agent",
-						ClientID:         "spiffe-agent",
-						Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-						Scopes:           []string{"openid"},
-						Audiences:        []string{"https://mcp.example.com"},
-						GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
-					}},
+			name: "SPIFFE token exchange association sets the token exchange capability",
+			cfg: &RunConfig{InboundGrants: &InboundGrantsRunConfig{
+				SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{spiffeTokenExchangeAssociation("spiffe-agent")},
+			}},
+			want: &NormalizedInboundGrants{Capabilities: InboundGrantCapabilities{TokenExchange: true}},
+		},
+		{
+			name: "SPIFFE client credentials association alone leaves token exchange disabled",
+			cfg: &RunConfig{InboundGrants: &InboundGrantsRunConfig{
+				SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{spiffeClientCredentialsAssociation("spiffe-cc")},
+			}},
+			want: &NormalizedInboundGrants{},
+		},
+		{
+			name: "mixed SPIFFE associations set the token exchange capability",
+			cfg: &RunConfig{InboundGrants: &InboundGrantsRunConfig{
+				SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{
+					spiffeClientCredentialsAssociation("spiffe-cc"),
+					spiffeTokenExchangeAssociation("spiffe-agent"),
 				},
-			},
+			}},
 			want: &NormalizedInboundGrants{Capabilities: InboundGrantCapabilities{TokenExchange: true}},
 		},
 		{
@@ -166,6 +166,28 @@ func TestNormalizeInboundGrants(t *testing.T) {
 				DeprecatedFields: []DeprecatedFieldPath{{
 					Path: "trusted_issuers[0].jwt_bearer_grant", Replacement: "inbound_grants.jwt_bearer.issuer_policies",
 				}},
+			},
+		},
+		{
+			name: "canonical JWT bearer threads AcceptedAssertionTypes into the trusted issuer's grant policy",
+			cfg: &RunConfig{
+				TrustedIssuers: []tokenexchange.TrustedIssuer{issuer},
+				InboundGrants: &InboundGrantsRunConfig{JWTBearer: &JWTBearerInboundGrantRunConfig{
+					IssuerPolicies: []JWTBearerIssuerPolicyRunConfig{{
+						IssuerRef: "idp", MaxAssertionAge: "5m",
+						AcceptedAssertionTypes: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG},
+					}},
+				}},
+			},
+			want: &NormalizedInboundGrants{
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					Name: "idp", IssuerURL: "https://idp.example.com",
+					JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+						MaxAssertionAge:        "5m",
+						AcceptedAssertionTypes: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG},
+					},
+				}},
+				Capabilities: InboundGrantCapabilities{JWTBearer: true},
 			},
 		},
 	}
@@ -325,7 +347,7 @@ func TestInboundGrantsRunConfigSerializationLayouts(t *testing.T) {
 		},
 		{
 			name:             "canonical YAML",
-			input:            "trusted_issuers:\n  - name: idp\n    issuer_url: https://idp.example.com\n    expected_audience: \"\"\ninbound_grants:\n  spiffe_client_auth:\n    - trust_domain_ref: prod\n      principal_pattern: spiffe://example.org/agent\n      client_id: agent\n      methods: [spiffe_x509]\n      audiences: [resource]\n      scopes: [openid]\n      grant_types: [\"urn:ietf:params:oauth:grant-type:token-exchange\"]\n  token_exchange:\n    issuer_policies:\n      - issuer_ref: idp\n        expected_audience: resource\n        allowed_delegate_clients: [delegate]\n  jwt_bearer:\n    issuer_policies:\n      - issuer_ref: idp\n        max_assertion_age: 5m\n        subject_bindings:\n          - subject: workload\n            allowed_resources: [resource]\n",
+			input:            "trusted_issuers:\n  - name: idp\n    issuer_url: https://idp.example.com\n    expected_audience: \"\"\ninbound_grants:\n  spiffe_client_auth:\n    - trust_domain_ref: prod\n      principal_pattern: spiffe://example.org/agent\n      client_id: agent\n      methods: [spiffe_x509]\n      audiences: [resource]\n      resources: [\"https://resource.example.com\"]\n      scopes: [openid]\n      grant_types: [\"urn:ietf:params:oauth:grant-type:token-exchange\"]\n  token_exchange:\n    issuer_policies:\n      - issuer_ref: idp\n        expected_audience: resource\n        allowed_delegate_clients: [delegate]\n  jwt_bearer:\n    issuer_policies:\n      - issuer_ref: idp\n        max_assertion_age: 5m\n        subject_bindings:\n          - subject: workload\n            allowed_resources: [resource]\n",
 			unmarshal:        func(data []byte, cfg *RunConfig) error { return yaml.Unmarshal(data, cfg) },
 			marshal:          func(cfg *RunConfig) ([]byte, error) { return yaml.Marshal(cfg) },
 			serializedFields: []string{"inbound_grants:", "token_exchange:", "jwt_bearer:", "spiffe_client_auth:", "issuer_ref:"},
@@ -392,4 +414,77 @@ func cloneRunConfigForTest(t *testing.T, cfg *RunConfig) *RunConfig {
 	var cloned RunConfig
 	require.NoError(t, json.Unmarshal(data, &cloned))
 	return &cloned
+}
+
+func spiffeTokenExchangeAssociation(clientID string) SPIFFEClientAuthRunConfig {
+	return SPIFFEClientAuthRunConfig{
+		TrustDomainRef:   "prod",
+		PrincipalPattern: "spiffe://example.org/ns/default/" + clientID,
+		ClientID:         clientID,
+		Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+		Scopes:           []string{"openid"},
+		Resources:        []string{"https://mcp.example.com"},
+		GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
+	}
+}
+
+func spiffeClientCredentialsAssociation(clientID string) SPIFFEClientAuthRunConfig {
+	return SPIFFEClientAuthRunConfig{
+		TrustDomainRef:   "prod",
+		PrincipalPattern: "spiffe://example.org/ns/default/" + clientID,
+		ClientID:         clientID,
+		Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+		Scopes:           []string{"openid"},
+		Resources:        []string{"https://mcp.example.com"},
+		GrantTypes:       []string{oauthproto.GrantTypeClientCredentials},
+	}
+}
+
+func TestNormalizeInboundGrantsCarriesSubjectModeFields(t *testing.T) {
+	t.Parallel()
+
+	issuer := func(policy *tokenexchange.JWTBearerGrantPolicy) []tokenexchange.TrustedIssuer {
+		return []tokenexchange.TrustedIssuer{{Name: "idp", IssuerURL: "https://idp.example.com", JWTBearerGrant: policy}}
+	}
+	tests := []struct {
+		name   string
+		config func(actors []string) *RunConfig
+	}{
+		{
+			name: "legacy jwt_bearer_grant",
+			config: func(actors []string) *RunConfig {
+				return &RunConfig{TrustedIssuers: issuer(&tokenexchange.JWTBearerGrantPolicy{
+					MaxAssertionAge: "1h", SubjectMode: tokenexchange.SubjectModeResolve, ActorIssuers: actors,
+				})}
+			},
+		},
+		{
+			name: "inbound_grants issuer policy",
+			config: func(actors []string) *RunConfig {
+				return &RunConfig{
+					TrustedIssuers: issuer(nil),
+					InboundGrants: &InboundGrantsRunConfig{JWTBearer: &JWTBearerInboundGrantRunConfig{
+						IssuerPolicies: []JWTBearerIssuerPolicyRunConfig{{
+							IssuerRef: "idp", MaxAssertionAge: "1h",
+							SubjectMode: tokenexchange.SubjectModeResolve, ActorIssuers: actors,
+						}},
+					}},
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			actors := []string{"https://actor.example.com"}
+
+			got, err := NormalizeInboundGrants(tt.config(actors))
+			require.NoError(t, err)
+			actors[0] = "changed"
+
+			policy := got.TrustedIssuers[0].JWTBearerGrant
+			assert.Equal(t, tokenexchange.SubjectModeResolve, policy.SubjectMode)
+			assert.Equal(t, []string{"https://actor.example.com"}, policy.ActorIssuers)
+		})
+	}
 }

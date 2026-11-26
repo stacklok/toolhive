@@ -351,6 +351,36 @@ spec:
                               description: JWTBearerIssuerPolicyConfig binds RFC 7523
                                 policy to a named trusted issuer.
                               properties:
+                                acceptedAssertionTypes:
+                                  description: |-
+                                    AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                    jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"
+                                    are accepted, which is the behavior before this field existed. Set
+                                    ["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a
+                                    Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot
+                                    be redeemed on the credential-free plain jwt-bearer path. Set
+                                    ["jwt_bearer"] to refuse ID-JAG.
+
+                                    When "id_jag" is listed explicitly and acceptedAudiences is set, it must
+                                    include this AS's own issuer identifier (the ID-JAG's "aud" per
+                                    draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                    token endpoint URL. When acceptedAudiences is empty the issuer is
+                                    accepted by default, unless it is also listed as an allowed audience
+                                    (resource), which fails startup. Subject bindings are shared between both forms, so
+                                    each binding also authorizes a plain jwt-bearer assertion from that
+                                    subject whenever "jwt_bearer" is accepted.
+                                  items:
+                                    description: |-
+                                      JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                      jwt-bearer grant may accept for a trusted issuer.
+                                    enum:
+                                    - jwt_bearer
+                                    - id_jag
+                                    type: string
+                                  maxItems: 2
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: set
                                 acceptedAudiences:
                                   description: |-
                                     AcceptedAudiences identifies this authorization server's accepted
@@ -442,21 +472,20 @@ spec:
                             authenticate with a JWT-SVID or an X.509-SVID and have no client secret.
                             Trust material comes from the declared bundle source (see
                             SPIFFETrustDomainConfig's doc comment).
-
-                            GrantTypes is deliberately not exposed here: the runtime only accepts
-                            exactly the RFC 8693 token-exchange grant for a SPIFFE client
-                            (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
-                            always supplies it instead of letting it be configured.
                           properties:
                             audiences:
-                              description: Audiences are RFC 8693 token audiences
-                                this association may request.
+                              description: |-
+                                Deprecated: ignored; use resources.
+
+                                The field was required in earlier releases and is still accepted so
+                                existing objects keep validating. A non-empty value is reported by the
+                                DeprecatedInboundGrantConfiguration condition and has no effect on token
+                                targeting.
                               items:
                                 maxLength: 2048
                                 minLength: 1
                                 type: string
                               maxItems: 50
-                              minItems: 1
                               type: array
                               x-kubernetes-list-type: set
                             clientId:
@@ -466,6 +495,27 @@ spec:
                               maxLength: 253
                               minLength: 1
                               type: string
+                            grantTypes:
+                              default:
+                              - urn:ietf:params:oauth:grant-type:token-exchange
+                              description: |-
+                                GrantTypes contains the OAuth grants permitted for this association.
+                                It defaults to the token-exchange grant when omitted, which is what the
+                                operator configured before this field existed. List client_credentials
+                                to opt in to the SPIFFE-bound client credentials grant. The list alone
+                                decides which grants the association may use: client authentication does
+                                not confer any grant, and there is no separate per-grant enable switch.
+                                Use urn:ietf:params:oauth:grant-type:token-exchange for RFC 8693 token
+                                exchange.
+                              items:
+                                enum:
+                                - client_credentials
+                                - urn:ietf:params:oauth:grant-type:token-exchange
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             methods:
                               description: |-
                                 Methods are the credential types this association may authenticate
@@ -499,9 +549,10 @@ spec:
                                 which is derived at reconcile time and not available on this CRD, so
                                 allowlist membership is validated at reconcile time, not admission.
                                 Shape (a well-formed absolute HTTP(S) URI) is independent of that
-                                derived allowlist and is validated here. Distinct from Audiences: a
-                                resource permission does not imply the same value is also a permitted
-                                token audience, or vice versa.
+                                derived allowlist and is validated here. Required, with at least one
+                                entry, for every association: client_credentials and token exchange each
+                                take exactly one resource per request and grant it as the token
+                                audience.
                               items:
                                 maxLength: 2048
                                 minLength: 1
@@ -528,7 +579,6 @@ spec:
                               minLength: 1
                               type: string
                           required:
-                          - audiences
                           - clientId
                           - methods
                           - principalPattern
@@ -540,6 +590,8 @@ spec:
                               segments
                             rule: self.principalPattern.split('/').all(segment, segment
                               != '.' && segment != '..')
+                          - message: resources is required
+                            rule: has(self.resources) && size(self.resources) > 0
                         maxItems: 100
                         type: array
                         x-kubernetes-list-type: atomic
@@ -687,9 +739,12 @@ spec:
                     default: false
                     description: |-
                       InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
-                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
-                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
-                      flag, that combination is rejected at reconcile time: a loopback http://
+                      Dynamic Client Registration (DCR), delegate clients and SPIFFE
+                      associations that have spiffe_jwt in methods and client_credentials in
+                      grantTypes on the same association, when issuer is a plain-HTTP loopback
+                      URL (e.g. "http://localhost:8080"). Without this
+                      flag, that combination is rejected at admission, and reconcile additionally
+                      requires the issuer host to be loopback. A loopback http://
                       issuer is normally fine for local development since the traffic never
                       leaves the machine, but confidential clients send secrets over cleartext.
                       Forcing TLS onto every loopback deployment instead would just push
@@ -720,8 +775,10 @@ spec:
 
                       One combination is rejected at admission on all three CRDs regardless of the
                       above: setting this field alongside confidential client registration or
-                      delegate clients, which would issue or use client secrets in cleartext over
-                      an unauthenticated endpoint (see the XValidation rule on
+                      delegate clients, or a SPIFFE association that has spiffe_jwt in methods and
+                      client_credentials in grantTypes on the same association, which would issue
+                      or use client secrets or JWT-SVIDs in cleartext over an unauthenticated
+                      endpoint (see the XValidation rule on
                       EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
@@ -1423,6 +1480,36 @@ spec:
                             This legacy field is deprecated; configure RFC 7523 policy under
                             inboundGrants.jwtBearer.issuerPolicies.
                           properties:
+                            acceptedAssertionTypes:
+                              description: |-
+                                AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"
+                                are accepted, which is the behavior before this field existed. Set
+                                ["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a
+                                Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot
+                                be redeemed on the credential-free plain jwt-bearer path. Set
+                                ["jwt_bearer"] to refuse ID-JAG.
+
+                                When "id_jag" is listed explicitly and acceptedAudiences is set, it must
+                                include this AS's own issuer identifier (the ID-JAG's "aud" per
+                                draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                token endpoint URL. When acceptedAudiences is empty the issuer is
+                                accepted by default, unless it is also listed as an allowed audience
+                                (resource), which fails startup. Subject bindings are shared between both forms, so
+                                each binding also authorizes a plain jwt-bearer assertion from that
+                                subject whenever "jwt_bearer" is accepted.
+                              items:
+                                description: |-
+                                  JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                  jwt-bearer grant may accept for a trusted issuer.
+                                enum:
+                                - jwt_bearer
+                                - id_jag
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             acceptedAudiences:
                               description: |-
                                 AcceptedAudiences identifies this authorization server's accepted
@@ -1681,6 +1768,20 @@ spec:
                                 runtime rather than being pre-provisioned, and ClientID must be left empty.
                                 Mutually exclusive with ClientID.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -2138,6 +2239,20 @@ spec:
                                 and ClientSecretRef must be omitted. If neither discoveryUrl nor
                                 registrationEndpoint is set, discovery is derived from issuerUrl.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -2516,27 +2631,36 @@ spec:
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
                     || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches(''^[A-Za-z][A-Za-z0-9+.-]*://.+''))'
                 - message: insecureAllowHTTP cannot be combined with confidential
-                    client registration or delegateClients; client secrets would be
-                    issued or used in cleartext over an unauthenticated endpoint
+                    client registration, delegateClients or JWT-SVID SPIFFE associations
+                    that grant client_credentials; client secrets or JWT-SVIDs would
+                    be issued or used in cleartext over an unauthenticated endpoint
                   rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
                     ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
                     || (has(self.delegateClients) && size(self.delegateClients) >
                     0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
                     && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
-                    > 0)))'
+                    > 0) || (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
+                    in a.methods && has(a.grantTypes) && ''client_credentials'' in
+                    a.grantTypes))))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: confidential client registration or delegateClients with
-                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
-                    to be explicitly enabled; the issuer must still be loopback
+                - message: confidential client registration, delegateClients or JWT-SVID
+                    SPIFFE associations that grant client_credentials with an HTTP
+                    issuer require insecureAllowConfidentialOverLoopbackHTTP to be
+                    explicitly enabled; the issuer must still be loopback
                   rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
                     && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
                     || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
                     || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
                     || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
-                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
+                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0)
+                    && !(has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
+                    in a.methods && has(a.grantTypes) && ''client_credentials'' in
+                    a.grantTypes)))'
                 - message: canonical tokenExchange conflicts with legacy delegateClients
                     or RFC 8693 trusted issuer policy
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
@@ -3469,6 +3593,15 @@ spec:
                               the OIDC middleware needs to fetch its JWKS from that address.
                               Use with caution - only enable for trusted internal IDPs or testing.
                             type: boolean
+                          jwksAuthTokenPath:
+                            description: |-
+                              JWKSAuthTokenPath is the absolute file path to a bearer token that the
+                              OIDC middleware sends with OIDC discovery and JWKS requests to the issuer.
+                              Needed when the issuer requires authentication for those endpoints, such
+                              as the Kubernetes API server. Typically populated by the Kubernetes
+                              operator from MCPOIDCConfig.spec.inline.jwksAuthTokenPath or with the
+                              pod's service-account token when using Kubernetes service-account auth.
+                            type: string
                           jwksUrl:
                             description: |-
                               JWKSURL is the explicit JWKS endpoint URL.
@@ -3480,6 +3613,18 @@ spec:
                               ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
                               Use with caution - only enable for trusted internal IDPs or testing
                             type: boolean
+                          requiredSubject:
+                            description: |-
+                              RequiredSubject, when set, requires the token's "sub" claim to equal this value exactly.
+                              Tokens with a missing or empty "sub" claim are rejected.
+                              If RequiredSubjectPrefix is also set, both checks must pass.
+                            type: string
+                          requiredSubjectPrefix:
+                            description: |-
+                              RequiredSubjectPrefix, when set, requires the token's "sub" claim to start with this value.
+                              Tokens with a missing or empty "sub" claim are rejected.
+                              If RequiredSubject is also set, both checks must pass.
+                            type: string
                           resource:
                             description: |-
                               Resource is the OAuth 2.0 resource indicator (RFC 8707).
@@ -3867,17 +4012,21 @@ spec:
                             obo:
                               description: |-
                                 OBO contains configuration for on-behalf-of (OBO) auth strategy.
-                                Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
-                                an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                                Used when Type = "obo".
                               properties:
                                 audience:
-                                  description: Audience is the target audience (resource
-                                    URI) for the exchanged token.
+                                  description: |-
+                                    Audience is the backend resource (Application ID URI or client ID) for the
+                                    exchanged token. Used when Scopes is empty, sent to Entra as
+                                    <audience>/.default (see exchange.Target).
                                   type: string
                                 cacheSkewSeconds:
                                   description: |-
                                     CacheSkewSeconds is the number of seconds to subtract from a cached token's
-                                    expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                    expiry when deciding whether to refresh it. When nil or zero the token
+                                    cache's default skew (60 seconds) applies; negative values are rejected.
+                                    The int32 type caps it at math.MaxInt32, the bound the operator enforces
+                                    on the CRD's CacheSkew.
                                     The operator CRD stores this as CacheSkew *metav1.Duration and converts it
                                     to an integer-seconds value for the vMCP runtime contract.
                                   format: int32
@@ -3907,9 +4056,11 @@ spec:
                                     SubjectTokenProviderName selects which upstream provider's token to use as the
                                     subject (assertion) token for the OBO exchange. When set, the token is looked
                                     up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
-                                    inbound end-user token (Identity.Token) is used directly.
-                                    Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
-                                    converter maps both to the runtime contract without renaming.
+                                    inbound end-user token (Identity.Token) is used directly. Behind an embedded
+                                    auth server an omitted value defaults to its upstream provider, and is an
+                                    error when it has more than one (see DefaultSubjectProviderName).
+                                    Matches the operator CRD's SubjectTokenProviderName field; the OBO
+                                    converter maps it to the runtime contract without renaming.
                                   type: string
                                 tokenUrl:
                                   description: TokenURL is the Entra token endpoint
@@ -4171,17 +4322,21 @@ spec:
                           obo:
                             description: |-
                               OBO contains configuration for on-behalf-of (OBO) auth strategy.
-                              Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
-                              an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                              Used when Type = "obo".
                             properties:
                               audience:
-                                description: Audience is the target audience (resource
-                                  URI) for the exchanged token.
+                                description: |-
+                                  Audience is the backend resource (Application ID URI or client ID) for the
+                                  exchanged token. Used when Scopes is empty, sent to Entra as
+                                  <audience>/.default (see exchange.Target).
                                 type: string
                               cacheSkewSeconds:
                                 description: |-
                                   CacheSkewSeconds is the number of seconds to subtract from a cached token's
-                                  expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                  expiry when deciding whether to refresh it. When nil or zero the token
+                                  cache's default skew (60 seconds) applies; negative values are rejected.
+                                  The int32 type caps it at math.MaxInt32, the bound the operator enforces
+                                  on the CRD's CacheSkew.
                                   The operator CRD stores this as CacheSkew *metav1.Duration and converts it
                                   to an integer-seconds value for the vMCP runtime contract.
                                 format: int32
@@ -4211,9 +4366,11 @@ spec:
                                   SubjectTokenProviderName selects which upstream provider's token to use as the
                                   subject (assertion) token for the OBO exchange. When set, the token is looked
                                   up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
-                                  inbound end-user token (Identity.Token) is used directly.
-                                  Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
-                                  converter maps both to the runtime contract without renaming.
+                                  inbound end-user token (Identity.Token) is used directly. Behind an embedded
+                                  auth server an omitted value defaults to its upstream provider, and is an
+                                  error when it has more than one (see DefaultSubjectProviderName).
+                                  Matches the operator CRD's SubjectTokenProviderName field; the OBO
+                                  converter maps it to the runtime contract without renaming.
                                 type: string
                               tokenUrl:
                                 description: TokenURL is the Entra token endpoint
@@ -4963,8 +5120,8 @@ spec:
                   supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure
                   dynamic discovery of credentials, rather than requiring secrets to be embedded in config.
                   Referenced MCPExternalAuthConfig types supported by VirtualMCPServer are tokenExchange,
-                  headerInjection, unauthenticated, awsSts, upstreamInject, xaa, and obo when an
-                  enterprise handler is registered. Unsupported types are reported per backend in
+                  headerInjection, unauthenticated, awsSts, upstreamInject, xaa, and obo.
+                  Unsupported types are reported per backend in
                   status.conditions with Reason: UnsupportedAuthType.
                 properties:
                   backends:
@@ -4977,8 +5134,8 @@ spec:
                             ExternalAuthConfigRef references an MCPExternalAuthConfig resource.
                             Only used when Type is "externalAuthConfigRef". Supported referenced types are
                             tokenExchange, headerInjection, unauthenticated, awsSts, upstreamInject, xaa,
-                            and obo when an enterprise handler is registered. Unsupported types are reported
-                            for the affected backend in status.conditions with Reason: UnsupportedAuthType.
+                            and obo. Unsupported types are reported for the affected backend in
+                            status.conditions with Reason: UnsupportedAuthType.
                           properties:
                             name:
                               description: Name is the name of the MCPExternalAuthConfig
@@ -5009,8 +5166,8 @@ spec:
                           ExternalAuthConfigRef references an MCPExternalAuthConfig resource.
                           Only used when Type is "externalAuthConfigRef". Supported referenced types are
                           tokenExchange, headerInjection, unauthenticated, awsSts, upstreamInject, xaa,
-                          and obo when an enterprise handler is registered. Unsupported types are reported
-                          for the affected backend in status.conditions with Reason: UnsupportedAuthType.
+                          and obo. Unsupported types are reported for the affected backend in
+                          status.conditions with Reason: UnsupportedAuthType.
                         properties:
                           name:
                             description: Name is the name of the MCPExternalAuthConfig
@@ -5896,6 +6053,36 @@ spec:
                               description: JWTBearerIssuerPolicyConfig binds RFC 7523
                                 policy to a named trusted issuer.
                               properties:
+                                acceptedAssertionTypes:
+                                  description: |-
+                                    AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                    jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"
+                                    are accepted, which is the behavior before this field existed. Set
+                                    ["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a
+                                    Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot
+                                    be redeemed on the credential-free plain jwt-bearer path. Set
+                                    ["jwt_bearer"] to refuse ID-JAG.
+
+                                    When "id_jag" is listed explicitly and acceptedAudiences is set, it must
+                                    include this AS's own issuer identifier (the ID-JAG's "aud" per
+                                    draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                    token endpoint URL. When acceptedAudiences is empty the issuer is
+                                    accepted by default, unless it is also listed as an allowed audience
+                                    (resource), which fails startup. Subject bindings are shared between both forms, so
+                                    each binding also authorizes a plain jwt-bearer assertion from that
+                                    subject whenever "jwt_bearer" is accepted.
+                                  items:
+                                    description: |-
+                                      JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                      jwt-bearer grant may accept for a trusted issuer.
+                                    enum:
+                                    - jwt_bearer
+                                    - id_jag
+                                    type: string
+                                  maxItems: 2
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: set
                                 acceptedAudiences:
                                   description: |-
                                     AcceptedAudiences identifies this authorization server's accepted
@@ -5987,21 +6174,20 @@ spec:
                             authenticate with a JWT-SVID or an X.509-SVID and have no client secret.
                             Trust material comes from the declared bundle source (see
                             SPIFFETrustDomainConfig's doc comment).
-
-                            GrantTypes is deliberately not exposed here: the runtime only accepts
-                            exactly the RFC 8693 token-exchange grant for a SPIFFE client
-                            (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
-                            always supplies it instead of letting it be configured.
                           properties:
                             audiences:
-                              description: Audiences are RFC 8693 token audiences
-                                this association may request.
+                              description: |-
+                                Deprecated: ignored; use resources.
+
+                                The field was required in earlier releases and is still accepted so
+                                existing objects keep validating. A non-empty value is reported by the
+                                DeprecatedInboundGrantConfiguration condition and has no effect on token
+                                targeting.
                               items:
                                 maxLength: 2048
                                 minLength: 1
                                 type: string
                               maxItems: 50
-                              minItems: 1
                               type: array
                               x-kubernetes-list-type: set
                             clientId:
@@ -6011,6 +6197,27 @@ spec:
                               maxLength: 253
                               minLength: 1
                               type: string
+                            grantTypes:
+                              default:
+                              - urn:ietf:params:oauth:grant-type:token-exchange
+                              description: |-
+                                GrantTypes contains the OAuth grants permitted for this association.
+                                It defaults to the token-exchange grant when omitted, which is what the
+                                operator configured before this field existed. List client_credentials
+                                to opt in to the SPIFFE-bound client credentials grant. The list alone
+                                decides which grants the association may use: client authentication does
+                                not confer any grant, and there is no separate per-grant enable switch.
+                                Use urn:ietf:params:oauth:grant-type:token-exchange for RFC 8693 token
+                                exchange.
+                              items:
+                                enum:
+                                - client_credentials
+                                - urn:ietf:params:oauth:grant-type:token-exchange
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             methods:
                               description: |-
                                 Methods are the credential types this association may authenticate
@@ -6044,9 +6251,10 @@ spec:
                                 which is derived at reconcile time and not available on this CRD, so
                                 allowlist membership is validated at reconcile time, not admission.
                                 Shape (a well-formed absolute HTTP(S) URI) is independent of that
-                                derived allowlist and is validated here. Distinct from Audiences: a
-                                resource permission does not imply the same value is also a permitted
-                                token audience, or vice versa.
+                                derived allowlist and is validated here. Required, with at least one
+                                entry, for every association: client_credentials and token exchange each
+                                take exactly one resource per request and grant it as the token
+                                audience.
                               items:
                                 maxLength: 2048
                                 minLength: 1
@@ -6073,7 +6281,6 @@ spec:
                               minLength: 1
                               type: string
                           required:
-                          - audiences
                           - clientId
                           - methods
                           - principalPattern
@@ -6085,6 +6292,8 @@ spec:
                               segments
                             rule: self.principalPattern.split('/').all(segment, segment
                               != '.' && segment != '..')
+                          - message: resources is required
+                            rule: has(self.resources) && size(self.resources) > 0
                         maxItems: 100
                         type: array
                         x-kubernetes-list-type: atomic
@@ -6232,9 +6441,12 @@ spec:
                     default: false
                     description: |-
                       InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
-                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
-                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
-                      flag, that combination is rejected at reconcile time: a loopback http://
+                      Dynamic Client Registration (DCR), delegate clients and SPIFFE
+                      associations that have spiffe_jwt in methods and client_credentials in
+                      grantTypes on the same association, when issuer is a plain-HTTP loopback
+                      URL (e.g. "http://localhost:8080"). Without this
+                      flag, that combination is rejected at admission, and reconcile additionally
+                      requires the issuer host to be loopback. A loopback http://
                       issuer is normally fine for local development since the traffic never
                       leaves the machine, but confidential clients send secrets over cleartext.
                       Forcing TLS onto every loopback deployment instead would just push
@@ -6265,8 +6477,10 @@ spec:
 
                       One combination is rejected at admission on all three CRDs regardless of the
                       above: setting this field alongside confidential client registration or
-                      delegate clients, which would issue or use client secrets in cleartext over
-                      an unauthenticated endpoint (see the XValidation rule on
+                      delegate clients, or a SPIFFE association that has spiffe_jwt in methods and
+                      client_credentials in grantTypes on the same association, which would issue
+                      or use client secrets or JWT-SVIDs in cleartext over an unauthenticated
+                      endpoint (see the XValidation rule on
                       EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
@@ -6968,6 +7182,36 @@ spec:
                             This legacy field is deprecated; configure RFC 7523 policy under
                             inboundGrants.jwtBearer.issuerPolicies.
                           properties:
+                            acceptedAssertionTypes:
+                              description: |-
+                                AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"
+                                are accepted, which is the behavior before this field existed. Set
+                                ["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a
+                                Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot
+                                be redeemed on the credential-free plain jwt-bearer path. Set
+                                ["jwt_bearer"] to refuse ID-JAG.
+
+                                When "id_jag" is listed explicitly and acceptedAudiences is set, it must
+                                include this AS's own issuer identifier (the ID-JAG's "aud" per
+                                draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                token endpoint URL. When acceptedAudiences is empty the issuer is
+                                accepted by default, unless it is also listed as an allowed audience
+                                (resource), which fails startup. Subject bindings are shared between both forms, so
+                                each binding also authorizes a plain jwt-bearer assertion from that
+                                subject whenever "jwt_bearer" is accepted.
+                              items:
+                                description: |-
+                                  JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                  jwt-bearer grant may accept for a trusted issuer.
+                                enum:
+                                - jwt_bearer
+                                - id_jag
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             acceptedAudiences:
                               description: |-
                                 AcceptedAudiences identifies this authorization server's accepted
@@ -7226,6 +7470,20 @@ spec:
                                 runtime rather than being pre-provisioned, and ClientID must be left empty.
                                 Mutually exclusive with ClientID.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -7683,6 +7941,20 @@ spec:
                                 and ClientSecretRef must be omitted. If neither discoveryUrl nor
                                 registrationEndpoint is set, discovery is derived from issuerUrl.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -8061,27 +8333,36 @@ spec:
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
                     || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches(''^[A-Za-z][A-Za-z0-9+.-]*://.+''))'
                 - message: insecureAllowHTTP cannot be combined with confidential
-                    client registration or delegateClients; client secrets would be
-                    issued or used in cleartext over an unauthenticated endpoint
+                    client registration, delegateClients or JWT-SVID SPIFFE associations
+                    that grant client_credentials; client secrets or JWT-SVIDs would
+                    be issued or used in cleartext over an unauthenticated endpoint
                   rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
                     ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
                     || (has(self.delegateClients) && size(self.delegateClients) >
                     0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
                     && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
-                    > 0)))'
+                    > 0) || (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
+                    in a.methods && has(a.grantTypes) && ''client_credentials'' in
+                    a.grantTypes))))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: confidential client registration or delegateClients with
-                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
-                    to be explicitly enabled; the issuer must still be loopback
+                - message: confidential client registration, delegateClients or JWT-SVID
+                    SPIFFE associations that grant client_credentials with an HTTP
+                    issuer require insecureAllowConfidentialOverLoopbackHTTP to be
+                    explicitly enabled; the issuer must still be loopback
                   rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
                     && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
                     || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
                     || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
                     || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
-                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
+                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0)
+                    && !(has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
+                    in a.methods && has(a.grantTypes) && ''client_credentials'' in
+                    a.grantTypes)))'
                 - message: canonical tokenExchange conflicts with legacy delegateClients
                     or RFC 8693 trusted issuer policy
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
@@ -9014,6 +9295,15 @@ spec:
                               the OIDC middleware needs to fetch its JWKS from that address.
                               Use with caution - only enable for trusted internal IDPs or testing.
                             type: boolean
+                          jwksAuthTokenPath:
+                            description: |-
+                              JWKSAuthTokenPath is the absolute file path to a bearer token that the
+                              OIDC middleware sends with OIDC discovery and JWKS requests to the issuer.
+                              Needed when the issuer requires authentication for those endpoints, such
+                              as the Kubernetes API server. Typically populated by the Kubernetes
+                              operator from MCPOIDCConfig.spec.inline.jwksAuthTokenPath or with the
+                              pod's service-account token when using Kubernetes service-account auth.
+                            type: string
                           jwksUrl:
                             description: |-
                               JWKSURL is the explicit JWKS endpoint URL.
@@ -9025,6 +9315,18 @@ spec:
                               ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
                               Use with caution - only enable for trusted internal IDPs or testing
                             type: boolean
+                          requiredSubject:
+                            description: |-
+                              RequiredSubject, when set, requires the token's "sub" claim to equal this value exactly.
+                              Tokens with a missing or empty "sub" claim are rejected.
+                              If RequiredSubjectPrefix is also set, both checks must pass.
+                            type: string
+                          requiredSubjectPrefix:
+                            description: |-
+                              RequiredSubjectPrefix, when set, requires the token's "sub" claim to start with this value.
+                              Tokens with a missing or empty "sub" claim are rejected.
+                              If RequiredSubject is also set, both checks must pass.
+                            type: string
                           resource:
                             description: |-
                               Resource is the OAuth 2.0 resource indicator (RFC 8707).
@@ -9412,17 +9714,21 @@ spec:
                             obo:
                               description: |-
                                 OBO contains configuration for on-behalf-of (OBO) auth strategy.
-                                Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
-                                an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                                Used when Type = "obo".
                               properties:
                                 audience:
-                                  description: Audience is the target audience (resource
-                                    URI) for the exchanged token.
+                                  description: |-
+                                    Audience is the backend resource (Application ID URI or client ID) for the
+                                    exchanged token. Used when Scopes is empty, sent to Entra as
+                                    <audience>/.default (see exchange.Target).
                                   type: string
                                 cacheSkewSeconds:
                                   description: |-
                                     CacheSkewSeconds is the number of seconds to subtract from a cached token's
-                                    expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                    expiry when deciding whether to refresh it. When nil or zero the token
+                                    cache's default skew (60 seconds) applies; negative values are rejected.
+                                    The int32 type caps it at math.MaxInt32, the bound the operator enforces
+                                    on the CRD's CacheSkew.
                                     The operator CRD stores this as CacheSkew *metav1.Duration and converts it
                                     to an integer-seconds value for the vMCP runtime contract.
                                   format: int32
@@ -9452,9 +9758,11 @@ spec:
                                     SubjectTokenProviderName selects which upstream provider's token to use as the
                                     subject (assertion) token for the OBO exchange. When set, the token is looked
                                     up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
-                                    inbound end-user token (Identity.Token) is used directly.
-                                    Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
-                                    converter maps both to the runtime contract without renaming.
+                                    inbound end-user token (Identity.Token) is used directly. Behind an embedded
+                                    auth server an omitted value defaults to its upstream provider, and is an
+                                    error when it has more than one (see DefaultSubjectProviderName).
+                                    Matches the operator CRD's SubjectTokenProviderName field; the OBO
+                                    converter maps it to the runtime contract without renaming.
                                   type: string
                                 tokenUrl:
                                   description: TokenURL is the Entra token endpoint
@@ -9716,17 +10024,21 @@ spec:
                           obo:
                             description: |-
                               OBO contains configuration for on-behalf-of (OBO) auth strategy.
-                              Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
-                              an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                              Used when Type = "obo".
                             properties:
                               audience:
-                                description: Audience is the target audience (resource
-                                  URI) for the exchanged token.
+                                description: |-
+                                  Audience is the backend resource (Application ID URI or client ID) for the
+                                  exchanged token. Used when Scopes is empty, sent to Entra as
+                                  <audience>/.default (see exchange.Target).
                                 type: string
                               cacheSkewSeconds:
                                 description: |-
                                   CacheSkewSeconds is the number of seconds to subtract from a cached token's
-                                  expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                  expiry when deciding whether to refresh it. When nil or zero the token
+                                  cache's default skew (60 seconds) applies; negative values are rejected.
+                                  The int32 type caps it at math.MaxInt32, the bound the operator enforces
+                                  on the CRD's CacheSkew.
                                   The operator CRD stores this as CacheSkew *metav1.Duration and converts it
                                   to an integer-seconds value for the vMCP runtime contract.
                                 format: int32
@@ -9756,9 +10068,11 @@ spec:
                                   SubjectTokenProviderName selects which upstream provider's token to use as the
                                   subject (assertion) token for the OBO exchange. When set, the token is looked
                                   up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
-                                  inbound end-user token (Identity.Token) is used directly.
-                                  Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
-                                  converter maps both to the runtime contract without renaming.
+                                  inbound end-user token (Identity.Token) is used directly. Behind an embedded
+                                  auth server an omitted value defaults to its upstream provider, and is an
+                                  error when it has more than one (see DefaultSubjectProviderName).
+                                  Matches the operator CRD's SubjectTokenProviderName field; the OBO
+                                  converter maps it to the runtime contract without renaming.
                                 type: string
                               tokenUrl:
                                 description: TokenURL is the Entra token endpoint
@@ -10508,8 +10822,8 @@ spec:
                   supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure
                   dynamic discovery of credentials, rather than requiring secrets to be embedded in config.
                   Referenced MCPExternalAuthConfig types supported by VirtualMCPServer are tokenExchange,
-                  headerInjection, unauthenticated, awsSts, upstreamInject, xaa, and obo when an
-                  enterprise handler is registered. Unsupported types are reported per backend in
+                  headerInjection, unauthenticated, awsSts, upstreamInject, xaa, and obo.
+                  Unsupported types are reported per backend in
                   status.conditions with Reason: UnsupportedAuthType.
                 properties:
                   backends:
@@ -10522,8 +10836,8 @@ spec:
                             ExternalAuthConfigRef references an MCPExternalAuthConfig resource.
                             Only used when Type is "externalAuthConfigRef". Supported referenced types are
                             tokenExchange, headerInjection, unauthenticated, awsSts, upstreamInject, xaa,
-                            and obo when an enterprise handler is registered. Unsupported types are reported
-                            for the affected backend in status.conditions with Reason: UnsupportedAuthType.
+                            and obo. Unsupported types are reported for the affected backend in
+                            status.conditions with Reason: UnsupportedAuthType.
                           properties:
                             name:
                               description: Name is the name of the MCPExternalAuthConfig
@@ -10554,8 +10868,8 @@ spec:
                           ExternalAuthConfigRef references an MCPExternalAuthConfig resource.
                           Only used when Type is "externalAuthConfigRef". Supported referenced types are
                           tokenExchange, headerInjection, unauthenticated, awsSts, upstreamInject, xaa,
-                          and obo when an enterprise handler is registered. Unsupported types are reported
-                          for the affected backend in status.conditions with Reason: UnsupportedAuthType.
+                          and obo. Unsupported types are reported for the affected backend in
+                          status.conditions with Reason: UnsupportedAuthType.
                         properties:
                           name:
                             description: Name is the name of the MCPExternalAuthConfig

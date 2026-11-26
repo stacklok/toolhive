@@ -357,7 +357,7 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}client-idx` | Sorted set of DCR-issued client IDs counted against the DCR client cap, scored by expiry (Unix ms) | None; entries are trimmed as their score passes |
 | `{prefix}user:{user_id}` | User account | None |
 | `{prefix}provider:{len}:{provider_id}:{subject}` | Provider identity linkage | None |
-| `{prefix}upstream:{session_id}` | Upstream IDP tokens | Matches token lifetime |
+| `{prefix}upstream:{session_id}:{provider}` | Upstream IDP tokens, one key per provider | Access token expiry + 30 days; session expiry + 30 days if the token has no expiry; none if neither is set |
 | `{prefix}pending:{handle_or_state}` | Browser-bound consent handle or upstream callback state | Remaining time until the initial `CreatedAt` + 10 minutes; deadline checked before consent/callback consumption |
 | `{prefix}consent:session:{digest}` | SHA-256 digest of the browser session cookie secret (never the raw secret) | Remaining fixed lifetime, at most 7 days |
 | `{prefix}consent:approval:{pair_hash}` | One approval per user/client; `pair_hash` is SHA-256 of the JSON-encoded `[userID, clientID]` pair | Remaining fixed lifetime, at most 30 days |
@@ -386,7 +386,7 @@ When upgrading to the release that adds the 60 second clock margin for `private_
 
 When upgrading to the release that adds upstream subject identifiers (`sub_id` and the `https://toolhive.dev/upstream_subject` claim), see [Storage and upgrades](arch/11-auth-server-storage.md#storage-and-upgrades): replicas running an older version drop the stored upstream identity during a rolling upgrade or after a rollback, and can issue a stored `sub_id` or upstream subject claim again without checking the disclosure setting.
 
-The DCR client cap registers a client with one Lua script that touches both `{prefix}client:{client_id}` and `{prefix}client-idx`, so on Redis Cluster the key prefix must contain a `{...}` hash tag; a prefix without one fails every DCR registration with `CROSSSLOT`. The operator's `DeriveKeyPrefix` always includes one. `{prefix}client-idx` has no TTL, so under an `allkeys-lru` or `allkeys-random` `maxmemory-policy` Redis may evict it, which resets the cap count and the `toolhive_authserver_dcr_clients` gauge to zero until new registrations rebuild it or a restart reruns the backfill. Use `noeviction` or a `volatile-*` policy.
+The DCR client cap registers a client with one Lua script that touches both `{prefix}client:{client_id}` and `{prefix}client-idx`, and a user's first login links the upstream identity with one Lua script that touches `{prefix}user:{user_id}`, `{prefix}provider:...` and `{prefix}user:providers:{user_id}`. On Redis Cluster the key prefix must therefore contain a `{...}` hash tag; a prefix without one fails every DCR registration and every first login with `CROSSSLOT`. The operator's `DeriveKeyPrefix` always includes one. `{prefix}client-idx` has no TTL, so under an `allkeys-lru` or `allkeys-random` `maxmemory-policy` Redis may evict it, which resets the cap count and the `toolhive_authserver_dcr_clients` gauge to zero until new registrations rebuild it or a restart reruns the backfill. Use `noeviction` or a `volatile-*` policy.
 
 ### Secondary Indexes
 
@@ -396,7 +396,8 @@ Redis Sets are used as secondary indexes for efficient lookups:
 |---|---|
 | `{prefix}reqid:access:{request_id}` | Request ID → access token signatures |
 | `{prefix}reqid:refresh:{request_id}` | Request ID → refresh token signatures |
-| `{prefix}user:upstream:{user_id}` | User → upstream token session IDs |
+| `{prefix}upstream:idx:{session_id}` | Session → that session's upstream token row keys (full keys), one per provider. Its TTL is extended to outlive its longest-lived member; if any member never expires, the index has no TTL |
+| `{prefix}user:upstream:{user_id}` | User → upstream token row keys (full keys), one per session and provider (for example `{prefix}upstream:{session_id}:{provider}`) |
 | `{prefix}user:providers:{user_id}` | User → provider identity keys |
 
 These indexes enable grant-wide operations like token revocation (finding all tokens for a request ID) and user-scoped queries (finding all upstream tokens for a user).
@@ -405,7 +406,7 @@ These indexes enable grant-wide operations like token revocation (finding all to
 
 The storage implementation uses different strategies depending on the consistency requirements of each operation:
 
-- **Lua scripts** for strict atomicity: upstream token storage with user reverse-index cleanup, last-used timestamp updates
+- **Lua scripts** for strict atomicity: upstream token storage with user reverse-index cleanup, last-used timestamp updates, provider identity linking (user check, set-if-absent link, and reverse-index entry)
 - **Pipelines** (`MULTI`/`EXEC`) for batched operations: authorization code invalidation, token session creation with secondary index updates
 - **Individual commands** with best-effort cleanup: token revocation, refresh token rotation. These operations use `SMEMBERS` + individual `DEL` calls, meaning partial failures are possible but safe (orphaned keys expire via TTL)
 

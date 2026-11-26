@@ -84,6 +84,11 @@ func (s *RedisSessionDataStorage) LoadMetadata(ctx context.Context, id string) (
 	return decodeRedisSessionData(data, err)
 }
 
+// ErrUndecodableSessionData reports a value under the session key prefix that
+// is not session metadata. Other features keep keys under the same prefix, so
+// an ID naming one of them reads a value of another kind.
+var ErrUndecodableSessionData = errors.New("failed to deserialize session metadata")
+
 // decodeRedisSessionData maps a Redis read result to session metadata.
 func decodeRedisSessionData(data []byte, err error) (map[string]string, error) {
 	if err != nil {
@@ -94,7 +99,7 @@ func decodeRedisSessionData(data []byte, err error) (map[string]string, error) {
 	}
 	var metadata map[string]string
 	if err := json.Unmarshal(data, &metadata); err != nil {
-		return nil, fmt.Errorf("failed to deserialize session metadata: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrUndecodableSessionData, err)
 	}
 	return metadata, nil
 }

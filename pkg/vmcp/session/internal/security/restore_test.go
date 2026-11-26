@@ -61,6 +61,19 @@ func TestRestoreSessionBinding(t *testing.T) {
 			},
 		},
 		{
+			name:          "delegated_without_actor",
+			storedBinding: "https://idp.example\x00alice\x00delegated\x00client",
+		},
+		{
+			name:          "delegated_with_actor",
+			storedBinding: "https://idp.example\x00alice\x00delegated\x00client\x00actor-issuer\x00actor",
+		},
+		{
+			name:          "delegated_incomplete_actor",
+			storedBinding: "https://idp.example\x00alice\x00delegated\x00client\x00actor-issuer",
+			wantErr:       true,
+		},
+		{
 			name:          "corrupted_binding_no_nul",
 			storedBinding: "no-nul-here",
 			wantErr:       true,

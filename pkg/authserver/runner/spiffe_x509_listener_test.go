@@ -137,15 +137,7 @@ func TestEmbeddedAuthServer_SPIFFEX509ClientAuthOverTLS(t *testing.T) {
 	trusted := newSPIFFETestAuthority(t, "ca-1")
 	untrusted := newSPIFFETestAuthority(t, "ca-2")
 	tokenURL, roots, _ := startSPIFFEX509TLSServer(t, trusted, func(cfg *authserver.RunConfig) {
-		cfg.InboundGrants.SPIFFEClientAuth = append(cfg.InboundGrants.SPIFFEClientAuth, authserver.SPIFFEClientAuthRunConfig{
-			TrustDomainRef:   "production",
-			PrincipalPattern: spiffeX509TestOtherPrincipal,
-			ClientID:         spiffeX509TestOtherClientID,
-			Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-			Scopes:           []string{"openid"},
-			Audiences:        []string{"https://mcp.example.com"},
-			GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-		})
+		cfg.InboundGrants.SPIFFEClientAuth = append(cfg.InboundGrants.SPIFFEClientAuth, testSPIFFEAssociation(spiffeX509TestOtherClientID, spiffeX509TestOtherPrincipal))
 	})
 
 	postToken := func(t *testing.T, svid tls.Certificate, clientID string) (int, string) {
@@ -187,8 +179,8 @@ func TestEmbeddedAuthServer_SPIFFEX509ClientAuthOverTLS(t *testing.T) {
 }
 
 // TestEmbeddedAuthServer_SPIFFEClientCannotRedeemIDJAG proves a SPIFFE
-// association client, which is restricted to token exchange, is refused when it
-// redeems an ID-JAG through the jwt-bearer grant, while a delegate client that
+// association client, whose grant_types never include jwt-bearer, is refused when
+// it redeems an ID-JAG through the jwt-bearer grant, while a delegate client that
 // lists jwt-bearer redeems the same kind of assertion over the same listener.
 func TestEmbeddedAuthServer_SPIFFEClientCannotRedeemIDJAG(t *testing.T) {
 	t.Parallel()
@@ -289,6 +281,8 @@ func TestEmbeddedAuthServer_SPIFFEClientCannotRedeemIDJAG(t *testing.T) {
 	})
 }
 
+// signSPIFFESubjectToken signs a subject token shaped like a client_credentials
+// token issued to the SPIFFE workload: its sub is the workload's SPIFFE ID.
 func signSPIFFESubjectToken(
 	t *testing.T, srv *EmbeddedAuthServer, clientID, scope string, mayAct map[string]any, audiences ...string,
 ) string {
@@ -306,7 +300,7 @@ func signSPIFFESubjectToken(
 		extra["may_act"] = mayAct
 	}
 	token, err := jwt.Signed(signer).Claims(jwt.Claims{
-		Issuer: spiffeX509TestIssuer, Subject: "test-user", Audience: jwt.Audience(audiences),
+		Issuer: spiffeX509TestIssuer, Subject: spiffeX509TestPrincipal, Audience: jwt.Audience(audiences),
 		Expiry: jwt.NewNumericDate(now.Add(30 * time.Minute)), IssuedAt: jwt.NewNumericDate(now),
 	}).Claims(extra).Serialize()
 	require.NoError(t, err)
@@ -336,6 +330,91 @@ func TestEmbeddedAuthServer_SPIFFEOnlyTokenExchangeOverTLS(t *testing.T) {
 	})
 	require.Equal(t, http.StatusOK, status, "token response: %v", body)
 	assert.NotEmpty(t, body["access_token"])
+}
+
+// TestEmbeddedAuthServer_SPIFFEClientCredentialsOnlyDoesNotEnableTokenExchange
+// pins that a deployment whose only inbound capability is a SPIFFE association
+// granting client_credentials registers no token-exchange handler: the grant
+// works, and a token-exchange request is refused with no token issued.
+func TestEmbeddedAuthServer_SPIFFEClientCredentialsOnlyDoesNotEnableTokenExchange(t *testing.T) {
+	t.Parallel()
+
+	const resource = "https://mcp.example.com"
+	trusted := newSPIFFETestAuthority(t, "ca-1")
+	tokenURL, roots, srv := startSPIFFEX509TLSServer(t, trusted, func(cfg *authserver.RunConfig) {
+		cfg.Upstreams = nil
+		cfg.InboundGrants.SPIFFEClientAuth[0].GrantTypes = []string{oauthproto.GrantTypeClientCredentials}
+	})
+
+	tests := []struct {
+		name      string
+		form      func(t *testing.T) url.Values
+		wantCode  int
+		wantError string
+	}{
+		{
+			name: "client_credentials issues a token",
+			form: func(*testing.T) url.Values {
+				return url.Values{
+					"grant_type": {oauthproto.GrantTypeClientCredentials},
+					"client_id":  {spiffeX509TestClientID},
+					"scope":      {"openid"},
+					"resource":   {resource},
+				}
+			},
+			wantCode: http.StatusOK,
+		},
+		{
+			name: "token exchange is refused",
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				return url.Values{
+					"grant_type":         {oauthproto.GrantTypeTokenExchange},
+					"subject_token":      {signSPIFFESubjectToken(t, srv, spiffeX509TestClientID, "openid", nil, resource)},
+					"subject_token_type": {oauthproto.TokenTypeAccessToken},
+					"client_id":          {spiffeX509TestClientID},
+					"scope":              {"openid"},
+					"resource":           {resource},
+				}
+			},
+			wantCode:  http.StatusBadRequest,
+			wantError: "invalid_request",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			svid := trusted.issueSVID(t)
+			status, body := postTokenOverTLS(t, tokenURL, roots, &svid, "", tt.form(t))
+			require.Equal(t, tt.wantCode, status, "token response: %v", body)
+			if tt.wantError == "" {
+				assert.NotEmpty(t, body["access_token"])
+				return
+			}
+			assert.Equal(t, tt.wantError, body["error"], "token response: %v", body)
+			assert.NotContains(t, body, "access_token")
+		})
+	}
+}
+
+// TestEmbeddedAuthServer_SPIFFEAssociationWithoutResourcesIsRejected pins that
+// an association with no resources fails at startup, whatever its grant types.
+func TestEmbeddedAuthServer_SPIFFEAssociationWithoutResourcesIsRejected(t *testing.T) {
+	t.Parallel()
+
+	for _, grant := range []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeClientCredentials} {
+		t.Run(grant, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, _ := spiffeX509TestConfig(t, newSPIFFETestAuthority(t, "ca-1"), func(cfg *authserver.RunConfig) {
+				cfg.InboundGrants.SPIFFEClientAuth[0].GrantTypes = []string{grant}
+				cfg.InboundGrants.SPIFFEClientAuth[0].Resources = nil
+			})
+			_, err := NewEmbeddedAuthServer(context.Background(), cfg, WithListenerHost("127.0.0.1"))
+			require.ErrorContains(t, err, "resources is required")
+		})
+	}
 }
 
 // TestEmbeddedAuthServer_SPIFFETokenExchangeOverTLS completes RFC 8693
@@ -473,11 +552,11 @@ func TestEmbeddedAuthServer_SPIFFETokenExchangeOverTLS(t *testing.T) {
 			wantError:  "invalid_scope",
 		},
 		{
-			name: "audience outside the association audiences is invalid_target",
+			name: "audience parameter is invalid_target",
 			build: func(t *testing.T) request {
 				t.Helper()
 				svid := trusted.issueSVID(t)
-				// The subject token covers otherAudience: only the association refuses it.
+				// The subject token covers otherAudience: only the targeting rule refuses it.
 				form := exchangeForm(subjectToken(t, spiffeX509TestClientID, "openid", nil, otherAudience), spiffeX509TestClientID,
 					url.Values{"audience": {otherAudience}})
 				form.Del("resource")
@@ -485,7 +564,7 @@ func TestEmbeddedAuthServer_SPIFFETokenExchangeOverTLS(t *testing.T) {
 			},
 			wantStatus: http.StatusBadRequest,
 			wantError:  "invalid_target",
-			wantDesc:   "not permitted to request audience",
+			wantDesc:   "audience parameter is not accepted",
 		},
 		{
 			name: "subject token issued to another client without may_act is invalid_grant",
@@ -561,7 +640,13 @@ func TestEmbeddedAuthServer_SPIFFETokenExchangeOverTLS(t *testing.T) {
 			assert.Equal(t, []any{resource}, claims["aud"])
 			act, ok := claims["act"].(map[string]any)
 			require.True(t, ok, "claims: %v", claims)
-			assert.Equal(t, tt.wantIssued, act["sub"])
+			// A SPIFFE client's act.sub names the workload, not the client ID
+			// shared by every workload of the association.
+			wantActor := tt.wantIssued
+			if wantActor == spiffeX509TestClientID {
+				wantActor = spiffeX509TestPrincipal
+			}
+			assert.Equal(t, wantActor, act["sub"])
 		})
 	}
 }
@@ -574,6 +659,27 @@ func TestEmbeddedAuthServer_SPIFFETokenExchangeOverTLS(t *testing.T) {
 func startSPIFFEX509TLSServer(
 	t *testing.T, trusted spiffeTestAuthority, configure func(*authserver.RunConfig),
 ) (string, *x509.CertPool, *EmbeddedAuthServer) {
+	t.Helper()
+
+	cfg, listenerPair := spiffeX509TestConfig(t, trusted, configure)
+	srv, err := NewEmbeddedAuthServer(context.Background(), cfg, WithListenerHost("127.0.0.1"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, srv.Close()) })
+	require.NotNil(t, srv.tlsListener)
+	srv.tlsListener.port = 0
+	require.NoError(t, srv.Start())
+	addr := srv.tlsListener.listener.Addr().(*net.TCPAddr)
+
+	roots := x509.NewCertPool()
+	roots.AddCert(listenerPair.cert)
+	return fmt.Sprintf("https://127.0.0.1:%d/oauth/token", addr.Port), roots, srv
+}
+
+// spiffeX509TestConfig builds the RunConfig startSPIFFEX509TLSServer starts,
+// together with the listener certificate pair.
+func spiffeX509TestConfig(
+	t *testing.T, trusted spiffeTestAuthority, configure func(*authserver.RunConfig),
+) (*authserver.RunConfig, testCertificate) {
 	t.Helper()
 
 	bundlePath := filepath.Join(t.TempDir(), "bundle.json")
@@ -607,32 +713,13 @@ func startSPIFFEX509TLSServer(
 			},
 		}},
 		InboundGrants: &authserver.InboundGrantsRunConfig{
-			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-				TrustDomainRef:   "production",
-				PrincipalPattern: spiffeX509TestPrincipal,
-				ClientID:         spiffeX509TestClientID,
-				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-				Scopes:           []string{"openid"},
-				Audiences:        []string{"https://mcp.example.com"},
-				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-			}},
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{testSPIFFEAssociation(spiffeX509TestClientID, spiffeX509TestPrincipal)},
 		},
 	}
 	if configure != nil {
 		configure(cfg)
 	}
-
-	srv, err := NewEmbeddedAuthServer(context.Background(), cfg, WithListenerHost("127.0.0.1"))
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, srv.Close()) })
-	require.NotNil(t, srv.tlsListener)
-	srv.tlsListener.port = 0
-	require.NoError(t, srv.Start())
-	addr := srv.tlsListener.listener.Addr().(*net.TCPAddr)
-
-	roots := x509.NewCertPool()
-	roots.AddCert(listenerPair.cert)
-	return fmt.Sprintf("https://127.0.0.1:%d/oauth/token", addr.Port), roots, srv
+	return cfg, listenerPair
 }
 
 // postTokenOverTLS posts form to tokenURL over a fresh TLS handshake. svid, when

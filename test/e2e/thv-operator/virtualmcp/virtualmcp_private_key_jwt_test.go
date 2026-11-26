@@ -158,7 +158,7 @@ var _ = ginkgo.Describe("VirtualMCPServer private_key_jwt DCR delegation", ginkg
 
 		registered := registerPrivateKeyJWTClient(endpoint, clientKey)
 		subjectToken := mintExternalSubjectTokenWithExtraClaim(oidcLocalPort, externalSub, issuer, "azp", "external-agent")
-		assertion := signPrivateKeyJWTAssertion(clientKey, registered.ClientID, issuer+"/oauth/token", "private-key-jwt-assertion-1")
+		assertion := signPrivateKeyJWTAssertion(clientKey, registered.ClientID, issuer, "private-key-jwt-assertion-1")
 		status, body := requestPrivateKeyJWTExchange(endpoint, registered.ClientID, assertion, subjectToken, issuer)
 		gomega.Expect(status).To(gomega.Equal(http.StatusOK), string(body))
 		var token struct {
@@ -171,7 +171,7 @@ var _ = ginkgo.Describe("VirtualMCPServer private_key_jwt DCR delegation", ginkg
 		gomega.Expect(ok).To(gomega.BeTrue())
 		gomega.Expect(act["sub"]).To(gomega.Equal(registered.ClientID))
 
-		wrongKeyAssertion := signPrivateKeyJWTAssertion(serverKey, registered.ClientID, issuer+"/oauth/token", "private-key-jwt-wrong-key")
+		wrongKeyAssertion := signPrivateKeyJWTAssertion(serverKey, registered.ClientID, issuer, "private-key-jwt-wrong-key")
 		status, body = requestPrivateKeyJWTExchange(endpoint, registered.ClientID, wrongKeyAssertion, subjectToken, issuer)
 		gomega.Expect(status).To(gomega.Equal(http.StatusUnauthorized), string(body))
 

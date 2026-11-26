@@ -6,15 +6,18 @@ package usagemetrics
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/script"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
@@ -43,19 +46,10 @@ func TestMiddleware_Handler(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Initialize a collector for this test
-			collector, err := NewCollector()
-			assert.NoError(t, err)
-			defer func() {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-				defer cancel()
-				collector.Shutdown(ctx)
-			}()
+			collector, _ := newTestCollector(t)
 
 			// Create middleware with collector instance
-			mw := &Middleware{
-				collector: collector,
-			}
+			mw := NewMiddleware(collector)
 			handler := mw.Handler()
 
 			// Create a test request with MCP context
@@ -96,49 +90,47 @@ func TestMiddleware_Handler(t *testing.T) {
 	}
 }
 
-func TestMiddleware_Close(t *testing.T) {
+func TestMiddleware_CountsCodeModeCalls(t *testing.T) {
 	t.Parallel()
 
-	// Initialize collector
-	collector, err := NewCollector()
-	assert.NoError(t, err)
-
-	middleware := &Middleware{
-		collector: collector,
-	}
-
-	// Test that Close returns nil and shuts down collector
-	err = middleware.Close()
-	assert.NoError(t, err)
-}
-
-func TestCreateMiddleware(t *testing.T) {
-	t.Parallel()
+	// matchCallTool stands in for vMCP's matcher: call_tool targeting the code
+	// mode tool.
+	matchCallTool := WithCodeModeCall(func(p *mcp.ParsedMCPRequest) bool {
+		return p.ResourceID == "call_tool" && p.Arguments["tool_name"] == codeModeToolName
+	})
+	callScript := map[string]any{"tool_name": codeModeToolName}
 
 	tests := []struct {
-		name      string
-		config    *types.MiddlewareConfig
-		setupMock func(*mocks.MockMiddlewareRunner) *Middleware
+		name         string
+		opts         []MiddlewareOption
+		method       string
+		tool         string
+		args         map[string]any
+		wantTotal    int64
+		wantCodeMode int64
 	}{
+		{name: "code mode tool call", method: "tools/call", tool: codeModeToolName, wantTotal: 1, wantCodeMode: 1},
+		{name: "other tool call", method: "tools/call", tool: "fetch", wantTotal: 1, wantCodeMode: 0},
+		{name: "code mode name on another method", method: "prompts/get", tool: codeModeToolName},
 		{
-			name: "success",
-			config: func() *types.MiddlewareConfig {
-				params := MiddlewareParams{}
-				paramsJSON, _ := json.Marshal(params)
-				return &types.MiddlewareConfig{
-					Type:       MiddlewareType,
-					Parameters: paramsJSON,
-				}
-			}(),
-			setupMock: func(mockRunner *mocks.MockMiddlewareRunner) *Middleware {
-				var capturedMw *Middleware
-				mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Do(func(_ string, mw types.Middleware) {
-					typedMw, ok := mw.(*Middleware)
-					assert.True(t, ok, "Expected middleware to be of type *Middleware")
-					capturedMw = typedMw
-				})
-				return capturedMw
-			},
+			name: "matcher accepts the call", opts: []MiddlewareOption{matchCallTool},
+			method: "tools/call", tool: "call_tool", args: callScript, wantTotal: 1, wantCodeMode: 1,
+		},
+		{
+			name: "matcher rejects the call", opts: []MiddlewareOption{matchCallTool},
+			method: "tools/call", tool: "call_tool", args: map[string]any{"tool_name": "fetch"}, wantTotal: 1,
+		},
+		{
+			name: "matcher still counts the code mode tool", opts: []MiddlewareOption{matchCallTool},
+			method: "tools/call", tool: codeModeToolName, wantTotal: 1, wantCodeMode: 1,
+		},
+		{
+			name: "matcher ignores other methods", opts: []MiddlewareOption{matchCallTool},
+			method: "prompts/get", tool: "call_tool", args: callScript,
+		},
+		{
+			name:   "no matcher: call_tool is a plain backend tool",
+			method: "tools/call", tool: "call_tool", args: callScript, wantTotal: 1,
 		},
 	}
 
@@ -146,23 +138,365 @@ func TestCreateMiddleware(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create mock controller and runner
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
+			collector, err := NewCollector()
+			require.NoError(t, err) // never started or flushed
+			handler := NewMiddleware(collector, tt.opts...).Handler()(
+				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}))
 
-			mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-			capturedMw := tt.setupMock(mockRunner)
+			req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			parsed := &mcp.ParsedMCPRequest{Method: tt.method, ResourceID: tt.tool, Arguments: tt.args, IsRequest: true}
+			req = req.WithContext(context.WithValue(req.Context(), mcp.MCPRequestContextKey, parsed))
+			handler.ServeHTTP(httptest.NewRecorder(), req)
 
-			// Execute
-			err := CreateMiddleware(tt.config, mockRunner)
-			assert.NoError(t, err)
-
-			// Cleanup the middleware if it was created
-			if capturedMw != nil && capturedMw.collector != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-				defer cancel()
-				capturedMw.collector.Shutdown(ctx)
-			}
+			snap := collector.snapshotCounts()
+			assert.Equal(t, tt.wantTotal, snap.total, "count keeps its meaning: every tools/call, code mode or not")
+			assert.Equal(t, tt.wantCodeMode, snap.codeModeCalls)
+			assert.Zero(t, snap.codeModeToolCalls)
 		})
 	}
+}
+
+// TestCodeModeToolNameMatchesScript pins the local copy of the code mode tool
+// name to the engine's constant, which this package does not import.
+func TestCodeModeToolNameMatchesScript(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, script.ExecuteToolScriptName, codeModeToolName)
+}
+
+func TestMiddleware_Close(t *testing.T) {
+	t.Parallel()
+
+	collector, _ := newTestCollector(t)
+	middleware := NewMiddleware(collector)
+
+	// Test that Close returns nil and shuts down collector
+	assert.NoError(t, middleware.Close())
+	assert.True(t, collector.shutdown.Load())
+}
+
+// profiledRunnerConfig is a runner configuration that describes its server.
+type profiledRunnerConfig struct {
+	*mocks.MockRunnerConfig
+	profile Profile
+}
+
+func (c profiledRunnerConfig) UsageMetricsProfile() Profile { return c.profile }
+
+func TestCreateMiddleware(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		config      func(*gomock.Controller) types.RunnerConfig
+		wantProfile *Profile
+	}{
+		{
+			name: "runner config without a profile",
+			config: func(ctrl *gomock.Controller) types.RunnerConfig {
+				return mocks.NewMockRunnerConfig(ctrl)
+			},
+		},
+		{
+			name: "runner config that provides a profile",
+			config: func(ctrl *gomock.Controller) types.RunnerConfig {
+				return profiledRunnerConfig{
+					MockRunnerConfig: mocks.NewMockRunnerConfig(ctrl),
+					profile:          Profile{Transport: "stdio"},
+				}
+			},
+			wantProfile: &Profile{Transport: "stdio"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+			mockRunner.EXPECT().GetConfig().Return(tt.config(ctrl))
+
+			var captured *Middleware
+			mockRunner.EXPECT().AddMiddleware(MiddlewareType, gomock.Any()).Do(func(_ string, mw types.Middleware) {
+				typed, ok := mw.(*Middleware)
+				require.True(t, ok, "expected *Middleware, got %T", mw)
+				captured = typed
+			})
+
+			paramsJSON, err := json.Marshal(MiddlewareParams{})
+			require.NoError(t, err)
+			err = CreateMiddleware(&types.MiddlewareConfig{Type: MiddlewareType, Parameters: paramsJSON}, mockRunner)
+			require.NoError(t, err)
+
+			require.NotNil(t, captured)
+			require.NotNil(t, captured.collector)
+			// Stop the started collector against a local server.
+			newReportServer(t).attach(captured.collector)
+			t.Cleanup(func() { assert.NoError(t, captured.Close()) })
+
+			if tt.wantProfile == nil {
+				assert.Nil(t, captured.collector.profile)
+				return
+			}
+			require.NotNil(t, captured.collector.profile)
+			assert.Equal(t, *tt.wantProfile, captured.collector.profile())
+		})
+	}
+}
+
+// mcpCall describes one request sent through the parsing and usage metrics
+// middleware chain.
+type mcpCall struct {
+	method string
+	params string
+	// target is the request path and query.
+	target string
+	// sessionHeader is sent as the Mcp-Session-Id request header.
+	sessionHeader string
+	// responseSession is set as the Mcp-Session-Id response header by the
+	// inner handler, the way streamable HTTP servers assign sessions.
+	responseSession string
+	// userAgent is sent as the User-Agent request header.
+	userAgent string
+}
+
+func initializeParams(clientName string) string {
+	return fmt.Sprintf(`{"protocolVersion":"2025-06-18","capabilities":{},`+
+		`"clientInfo":{"name":%q,"version":"1.0.0"}}`, clientName)
+}
+
+// serveMCP sends calls in order through mcp.ParsingMiddleware and the usage
+// metrics middleware, sharing one Middleware so session state carries over.
+func serveMCP(t *testing.T, mw *Middleware, calls []mcpCall) {
+	t.Helper()
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id := r.Header.Get("X-Test-Response-Session"); id != "" {
+			w.Header().Set(sessionIDHeader, id)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := mcp.ParsingMiddleware(mw.Handler()(inner))
+
+	for i, call := range calls {
+		target := call.target
+		if target == "" {
+			target = "/mcp"
+		}
+		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":%q,"params":%s}`, i+1, call.method, call.params)
+		req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if call.sessionHeader != "" {
+			req.Header.Set(sessionIDHeader, call.sessionHeader)
+		}
+		if call.responseSession != "" {
+			req.Header.Set("X-Test-Response-Session", call.responseSession)
+		}
+		if call.userAgent != "" {
+			req.Header.Set(userAgentHeader, call.userAgent)
+		}
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code, "call %d (%s): %s", i, call.method, rr.Body.String())
+	}
+}
+
+func TestMiddleware_AttributesToolCallsToClients(t *testing.T) {
+	t.Parallel()
+
+	const toolCall = `{"name":"echo","arguments":{}}`
+
+	tests := []struct {
+		name  string
+		calls []mcpCall
+		want  map[string]int64
+	}{
+		{
+			name: "streamable HTTP session from initialize response",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), responseSession: "s1"},
+				{method: "tools/call", params: toolCall, sessionHeader: "s1"},
+			},
+			want: map[string]int64{"claude-code": 1},
+		},
+		{
+			name: "SSE session from query parameter",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("Visual Studio Code"), target: "/messages?session_id=x"},
+				{method: "tools/call", params: toolCall, target: "/messages?session_id=x"},
+				{method: "tools/call", params: toolCall, target: "/messages?session_id=x"},
+			},
+			want: map[string]int64{"vscode": 2},
+		},
+		{
+			name: "rejected re-initialize on a session keeps its client",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), responseSession: "s1"},
+				{method: "initialize", params: initializeParams("cursor"), sessionHeader: "s1"},
+				{method: "tools/call", params: toolCall, sessionHeader: "s1"},
+			},
+			want: map[string]int64{"claude-code": 1},
+		},
+		{
+			name: "unknown session",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), responseSession: "s1"},
+				{method: "tools/call", params: toolCall, sessionHeader: "other-session"},
+				{method: "tools/call", params: toolCall},
+			},
+			want: map[string]int64{ClientUnknown: 2},
+		},
+		{
+			name: "Modern request carries clientInfo in _meta",
+			calls: []mcpCall{
+				{
+					method: "tools/call",
+					params: `{"name":"echo","arguments":{},"_meta":{` +
+						`"io.modelcontextprotocol/clientInfo":{"name":"cursor-vscode","version":"1.0.0"}}}`,
+				},
+			},
+			want: map[string]int64{"cursor": 1},
+		},
+		{
+			name: "Modern clientInfo wins over session",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), responseSession: "s1"},
+				{
+					method: "tools/call",
+					params: `{"name":"echo","_meta":{` +
+						`"io.modelcontextprotocol/clientInfo":{"name":"zed"}}}`,
+					sessionHeader: "s1",
+				},
+			},
+			want: map[string]int64{"zed": 1},
+		},
+		{
+			name: "sessionless server falls back to a known User-Agent",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), userAgent: "claude-code/2.0.14"},
+				{method: "tools/call", params: toolCall, userAgent: "claude-code/2.0.14"},
+				{method: "tools/call", params: toolCall, userAgent: "claude-code/2.0.14"},
+			},
+			want: map[string]int64{"claude-code": 2},
+		},
+		{
+			name: "sessionless server with a generic User-Agent stays unknown",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), userAgent: "node"},
+				{method: "tools/call", params: toolCall, userAgent: "node"},
+				{method: "tools/call", params: toolCall, userAgent: "python-httpx/0.28.1"},
+				{method: "tools/call", params: toolCall, userAgent: "Go-http-client/1.1"},
+				{method: "tools/call", params: toolCall},
+			},
+			want: map[string]int64{ClientUnknown: 4},
+		},
+		{
+			name: "session not remembered falls back to a known User-Agent",
+			calls: []mcpCall{
+				{method: "tools/call", params: toolCall, sessionHeader: "before-restart", userAgent: "Cursor/1.7.0"},
+			},
+			want: map[string]int64{"cursor": 1},
+		},
+		{
+			name: "session client wins over User-Agent",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("zed"), responseSession: "s1", userAgent: "claude-code/2.0.14"},
+				{method: "tools/call", params: toolCall, sessionHeader: "s1", userAgent: "claude-code/2.0.14"},
+			},
+			want: map[string]int64{"zed": 1},
+		},
+		{
+			name: "Modern clientInfo wins over User-Agent",
+			calls: []mcpCall{
+				{
+					method: "tools/call",
+					params: `{"name":"echo","_meta":{` +
+						`"io.modelcontextprotocol/clientInfo":{"name":"zed"}}}`,
+					userAgent: "claude-code/2.0.14",
+				},
+			},
+			want: map[string]int64{"zed": 1},
+		},
+		{
+			name: "vMCP User-Agent is attributed to vmcp",
+			calls: []mcpCall{
+				{method: "tools/call", params: toolCall, userAgent: "toolhive/vmcp v0.60.0 release (linux/amd64)"},
+			},
+			want: map[string]int64{"vmcp": 1},
+		},
+		{
+			name: "other methods are not counted",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), responseSession: "s1"},
+				{method: "tools/list", params: `{}`, sessionHeader: "s1"},
+				{method: "prompts/get", params: `{"name":"p"}`, sessionHeader: "s1"},
+				{method: "resources/read", params: `{"uri":"file:///x"}`, sessionHeader: "s1"},
+			},
+			want: map[string]int64{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			collector, err := NewCollector()
+			require.NoError(t, err) // never started or flushed
+
+			serveMCP(t, NewMiddleware(collector), tt.calls)
+
+			snap := collector.snapshotCounts()
+			assert.Equal(t, tt.want, snap.byClient)
+			var sum int64
+			for _, n := range snap.byClient {
+				sum += n
+			}
+			assert.Equal(t, sum, snap.total, "counter total must equal the per-client sum")
+		})
+	}
+}
+
+// TestMiddleware_RecordsSessionBeforeResponse checks that the session is known
+// by the time the initialize response reaches the client, so a tool call sent
+// right after it is attributed.
+func TestMiddleware_RecordsSessionBeforeResponse(t *testing.T) {
+	t.Parallel()
+
+	collector, err := NewCollector()
+	require.NoError(t, err) // never started or flushed
+	mw := NewMiddleware(collector)
+
+	var seen string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(sessionIDHeader, "s1")
+		w.WriteHeader(http.StatusOK)
+		seen = mw.sessions.lookup("s1")
+	})
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":` + initializeParams("claude-code") + `}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	mcp.ParsingMiddleware(mw.Handler()(inner)).ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.Equal(t, "claude-code", seen)
+}
+
+func TestMiddleware_NilCollectorPassesThrough(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusTeapot)
+	})
+	handler := mcp.ParsingMiddleware(NewMiddleware(nil).Handler()(inner))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo"}}`))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.True(t, called)
+	assert.Equal(t, http.StatusTeapot, rr.Code)
+	assert.NoError(t, NewMiddleware(nil).Close())
 }

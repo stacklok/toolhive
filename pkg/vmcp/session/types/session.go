@@ -154,36 +154,29 @@ const (
 	// Legacy: superseded by MetadataKeyIdentityBinding (#5306); removed in the follow-up PR.
 	MetadataKeyTokenSalt = "vmcp.token.salt" //nolint:gosec // This is a metadata key name, not a credential.
 
-	// MetadataKeyIdentityBinding is the session metadata key that holds the
-	// identity-binding string in the format defined by
-	// [pkg/vmcp/session/binding]. Bound sessions store binding.Format(iss, sub);
-	// unauthenticated sessions store binding.UnauthenticatedSentinel.
+	// MetadataKeyIdentityBinding is the session metadata key that holds
+	// the canonical identity binding defined by pkg/auth/sessionbinding, or
+	// the unauthenticated sentinel for an anonymous session.
 	//
 	// Storage is plaintext PII — the Redis/Valkey instance must be access-controlled.
 	MetadataKeyIdentityBinding = "vmcp.identity.binding"
 )
 
-// ShouldAllowAnonymous reports whether a session has no per-user binding and
-// should be treated as anonymous. The identity is bound when Token is set, or
-// when Claims yields a (iss, sub) pair accepted by binding.Format.
+// ShouldAllowAnonymous reports whether to create an anonymous session. An
+// identity with a token, an admission route other than unspecified or
+// interactive, or a valid issuer and subject pair requires a bound session.
 //
-// Fail-closed: a Claims["iss"] or Claims["sub"] that is present but not a
-// string (a misbehaving validator) is treated as bound, with a WARN logged.
-//
-// Contract note: this function answers "should this session be CREATED as
-// anonymous?" using Token presence as a fast path. It does NOT guarantee that
-// a non-anonymous identity will produce a successful binding: an identity with
-// Token != "" but missing iss/sub claims passes this check as bound, then
-// fails in BindSession with an extraction error. In practice this is
-// pathological — all shipping middlewares (JWT validator, LocalUserMiddleware,
-// AnonymousMiddleware) populate Claims. Callers who need "will this identity
-// actually produce a binding?" must use extractBindingID directly, which is
-// deliberately kept internal to the security decorator.
+// A present but non-string issuer or subject also requires a bound session.
+// This is only an anonymous eligibility check: a bound identity may still be
+// rejected if its claims cannot produce a valid binding.
 func ShouldAllowAnonymous(identity *auth.Identity) bool {
 	if identity == nil {
 		return true
 	}
-	if identity.Token != "" {
+	// Validated delegated identities already carry a token. Check the route
+	// as well so synthetic tokenless identities on a delegated or unknown
+	// route cannot be anonymous.
+	if identity.Token != "" || !anonymousRoute(identity.AdmissionRoute) {
 		return false
 	}
 	iss, issOK := claimString(identity.Claims, "iss")
@@ -196,6 +189,13 @@ func ShouldAllowAnonymous(identity *auth.Identity) bool {
 		return false
 	}
 	return true
+}
+
+// anonymousRoute reports whether a tokenless identity on route r may be
+// anonymous: only the routes sessionbinding.FromIdentity binds to a user-only
+// value.
+func anonymousRoute(r auth.AdmissionRoute) bool {
+	return r == auth.AdmissionRouteUnspecified || r == auth.AdmissionRouteInteractive
 }
 
 // claimString returns (value, ok) for a string claim. ok is true when the

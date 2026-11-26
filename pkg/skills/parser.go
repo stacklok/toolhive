@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"unicode"
 
 	"github.com/stacklok/toolhive/pkg/yamlutil"
 )
@@ -27,7 +28,7 @@ var ErrInvalidFrontmatter = errors.New("invalid frontmatter")
 
 // ParseSkillMD parses a SKILL.md file and extracts frontmatter and body.
 func ParseSkillMD(content []byte) (*ParseResult, error) {
-	fm, body, err := extractFrontmatter(content)
+	fm, body, bodyLine, err := extractFrontmatter(content)
 	if err != nil {
 		return nil, err
 	}
@@ -47,16 +48,19 @@ func ParseSkillMD(content []byte) (*ParseResult, error) {
 		Metadata:      fm.Metadata,
 		Requires:      requires,
 		Body:          body,
+		bodyLine:      bodyLine,
 	}, nil
 }
 
 // extractFrontmatter extracts YAML frontmatter from content.
-// Returns the parsed frontmatter and the remaining body content.
-func extractFrontmatter(content []byte) (*SkillFrontmatter, []byte, error) {
+// Returns the parsed frontmatter, the remaining body content, and the 1-based
+// line of content on which the body starts.
+func extractFrontmatter(content []byte) (*SkillFrontmatter, []byte, int, error) {
+	original := content
 	content = bytes.TrimSpace(content)
 
 	if !bytes.HasPrefix(content, frontmatterDelimiter) {
-		return nil, nil, ErrInvalidFrontmatter
+		return nil, nil, 0, ErrInvalidFrontmatter
 	}
 
 	// Skip opening delimiter and optional newline
@@ -75,10 +79,10 @@ func extractFrontmatter(content []byte) (*SkillFrontmatter, []byte, error) {
 	endIdx := bytes.Index(searchLimit, frontmatterDelimiter)
 	if endIdx == -1 {
 		if len(rest) > MaxFrontmatterSize {
-			return nil, nil, fmt.Errorf("%w: frontmatter exceeds maximum size of %d bytes",
+			return nil, nil, 0, fmt.Errorf("%w: frontmatter exceeds maximum size of %d bytes",
 				ErrInvalidFrontmatter, MaxFrontmatterSize)
 		}
-		return nil, nil, ErrInvalidFrontmatter
+		return nil, nil, 0, ErrInvalidFrontmatter
 	}
 
 	frontmatterBytes := rest[:endIdx]
@@ -89,10 +93,16 @@ func extractFrontmatter(content []byte) (*SkillFrontmatter, []byte, error) {
 	// decoding; yaml.Unmarshal's own check is quadratic on repeated keys.
 	var fm SkillFrontmatter
 	if err := yamlutil.Unmarshal(frontmatterBytes, &fm); err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", ErrInvalidFrontmatter, err)
+		return nil, nil, 0, fmt.Errorf("%w: %v", ErrInvalidFrontmatter, err)
 	}
 
-	return &fm, body, nil
+	// body is a suffix of the trimmed content, which starts after the leading
+	// whitespace that TrimSpace removed from original.
+	leading := len(original) - len(bytes.TrimLeftFunc(original, unicode.IsSpace))
+	bodyStart := leading + len(content) - len(body)
+	bodyLine := bytes.Count(original[:bodyStart], []byte("\n")) + 1
+
+	return &fm, body, bodyLine, nil
 }
 
 func toDependencies(refs []string) ([]Dependency, error) {

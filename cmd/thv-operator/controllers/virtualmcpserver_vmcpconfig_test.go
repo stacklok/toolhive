@@ -31,6 +31,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
@@ -2886,7 +2887,9 @@ func externalAuthRef(name string) mcpv1beta1.BackendAuthConfig {
 // the entry would let a backend that relies on it fall back to another
 // credential, or to no auth at all. The failing entry must still be named in
 // status, so the refusal is visible on the resource and not only in the
-// operator log.
+// operator log. When every failing entry references an unsupported type, the
+// failure is terminal: the resource reports Failed with Ready=False and the
+// reconcile is not retried. Any other failure is returned for a retry.
 func TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuth(t *testing.T) {
 	t.Parallel()
 
@@ -2908,6 +2911,9 @@ func TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuth(t *testing.T) 
 		// wantValid lists the entries that did resolve. They are reported True
 		// next to the failing one, so the status says exactly what is wrong.
 		wantValid []string
+		// wantTerminal is set when the failure can only heal through a spec or
+		// referenced config change, and must be reported as a SpecValidationError.
+		wantTerminal bool
 	}{
 		{
 			name: "discovered mode, default of an unsupported type",
@@ -2915,8 +2921,9 @@ func TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuth(t *testing.T) 
 				Source:  "discovered",
 				Default: defaultRef("bearer-auth"),
 			},
-			wantFailed: defaultCondition,
-			wantReason: mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			wantFailed:   defaultCondition,
+			wantReason:   mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			wantTerminal: true,
 		},
 		{
 			name: "discovered mode, declared backend of an unsupported type",
@@ -2925,9 +2932,10 @@ func TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuth(t *testing.T) 
 				Default:  defaultRef("te-auth"),
 				Backends: map[string]mcpv1beta1.BackendAuthConfig{"b1": externalAuthRef("bearer-auth")},
 			},
-			wantFailed: backendCondition,
-			wantReason: mcpv1beta1.ConditionReasonUnsupportedAuthType,
-			wantValid:  []string{defaultCondition},
+			wantFailed:   backendCondition,
+			wantReason:   mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			wantValid:    []string{defaultCondition},
+			wantTerminal: true,
 		},
 		{
 			name: "discovered mode, default references a missing config",
@@ -2944,8 +2952,9 @@ func TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuth(t *testing.T) 
 				Source:  "inline",
 				Default: defaultRef("bearer-auth"),
 			},
-			wantFailed: defaultCondition,
-			wantReason: mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			wantFailed:   defaultCondition,
+			wantReason:   mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			wantTerminal: true,
 		},
 		{
 			name: "inline mode, declared backend of an unsupported type",
@@ -2954,9 +2963,22 @@ func TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuth(t *testing.T) 
 				Default:  defaultRef("te-auth"),
 				Backends: map[string]mcpv1beta1.BackendAuthConfig{"b1": externalAuthRef("bearer-auth")},
 			},
-			wantFailed: backendCondition,
+			wantFailed:   backendCondition,
+			wantReason:   mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			wantValid:    []string{defaultCondition},
+			wantTerminal: true,
+		},
+		{
+			// One unsupported entry next to one that may still appear: the
+			// missing config can heal without a spec change, so keep retrying.
+			name: "inline mode, unsupported default and a backend referencing a missing config",
+			outgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
+				Source:   "inline",
+				Default:  defaultRef("bearer-auth"),
+				Backends: map[string]mcpv1beta1.BackendAuthConfig{"b1": externalAuthRef("does-not-exist")},
+			},
+			wantFailed: defaultCondition,
 			wantReason: mcpv1beta1.ConditionReasonUnsupportedAuthType,
-			wantValid:  []string{defaultCondition},
 		},
 	}
 
@@ -2971,6 +2993,9 @@ func TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuth(t *testing.T) 
 				v1beta1test.WithVMCPGroupRef("test-group"),
 				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
 				v1beta1test.WithVMCPOutgoingAuth(tt.outgoingAuth),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Generation = 2
+				}),
 			)
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(testScheme).
@@ -2985,6 +3010,9 @@ func TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuth(t *testing.T) 
 			statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
 			err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusCollector)
 			require.Error(t, err, "an unresolved declared entry must fail the config build")
+			var specErr *SpecValidationError
+			require.Equal(t, tt.wantTerminal, stderrors.As(err, &specErr),
+				"terminal failures must be a SpecValidationError and others must not, got %T: %v", err, err)
 
 			configMap := &corev1.ConfigMap{}
 			err = fakeClient.Get(ctx, types.NamespacedName{
@@ -3004,6 +3032,20 @@ func TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuth(t *testing.T) 
 				require.NotNil(t, valid, "%s resolved and must be reported", conditionType)
 				assert.Equal(t, metav1.ConditionTrue, valid.Status)
 			}
+
+			ready := meta.FindStatusCondition(vmcpServer.Status.Conditions, mcpv1beta1.ConditionTypeVirtualMCPServerReady)
+			if !tt.wantTerminal {
+				assert.NotEqual(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcpServer.Status.Phase,
+					"a retryable failure must not be reported as terminal")
+				return
+			}
+			assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcpServer.Status.Phase)
+			assert.Equal(t, specErr.Message, vmcpServer.Status.Message)
+			assert.Contains(t, vmcpServer.Status.Message, "bearerToken")
+			assert.Equal(t, int64(2), vmcpServer.Status.ObservedGeneration)
+			require.NotNil(t, ready, "a terminal failure must be reflected in Ready")
+			assert.Equal(t, metav1.ConditionFalse, ready.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, ready.Reason)
 		})
 	}
 }
@@ -3063,7 +3105,8 @@ func TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuthKeepsPublishedC
 
 	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
 	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusCollector)
-	require.Error(t, err, "a default that stopped resolving must fail the config build")
+	var specErr *SpecValidationError
+	require.ErrorAs(t, err, &specErr, "an unsupported default is terminal and must not be retried")
 
 	current := &corev1.ConfigMap{}
 	require.NoError(t, fakeClient.Get(ctx, configMapKey, current))
@@ -3080,6 +3123,94 @@ func TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuthKeepsPublishedC
 	require.NotNil(t, failed, "the unresolved default must be reported in status")
 	assert.Equal(t, metav1.ConditionFalse, failed.Status)
 	assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, failed.Reason)
+	assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcpServer.Status.Phase,
+		"the resource must not claim to serve the new generation while the old config is published")
+}
+
+// TestUnsupportedDeclaredAuthMessage covers which outgoing auth failures make
+// the config build terminal: only declared entries count, and every one of
+// them must reference an unsupported type.
+func TestUnsupportedDeclaredAuthMessage(t *testing.T) {
+	t.Parallel()
+
+	unsupported := func(authType mcpv1beta1.ExternalAuthType) error {
+		return fmt.Errorf("failed to convert backend auth config: %w",
+			&externalauthsupport.UnsupportedTypeError{
+				Consumer: externalauthsupport.ConsumerVirtualMCPServer,
+				AuthType: authType,
+			})
+	}
+	defaultErr := func(err error) AuthConfigError {
+		return AuthConfigError{Context: authContextDefault, Error: err}
+	}
+	backendErr := func(name string, err error) AuthConfigError {
+		return AuthConfigError{Context: authContextBackendPrefix + name, BackendName: name, Error: err}
+	}
+	discoveredErr := func(name string, err error) AuthConfigError {
+		return AuthConfigError{Context: authContextDiscoveredPrefix + name, BackendName: name, Error: err}
+	}
+	missing := stderrors.New("failed to get MCPExternalAuthConfig default/missing: not found")
+
+	tests := []struct {
+		name       string
+		authErrors []AuthConfigError
+		// wantEntries is empty when the failure is not terminal.
+		wantEntries string
+	}{
+		{
+			name: "no failures",
+		},
+		{
+			name:        "unsupported default",
+			authErrors:  []AuthConfigError{defaultErr(unsupported(mcpv1beta1.ExternalAuthTypeBearerToken))},
+			wantEntries: "default (bearerToken)",
+		},
+		{
+			name: "unsupported default and backends are listed in a stable order",
+			authErrors: []AuthConfigError{
+				defaultErr(unsupported(mcpv1beta1.ExternalAuthTypeBearerToken)),
+				backendErr("zeta", unsupported(mcpv1beta1.ExternalAuthTypeBearerToken)),
+				backendErr("alpha", unsupported(mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer)),
+			},
+			wantEntries: "backends.alpha (embeddedAuthServer), backends.zeta (bearerToken), default (bearerToken)",
+		},
+		{
+			name:       "declared failure with another cause",
+			authErrors: []AuthConfigError{defaultErr(missing)},
+		},
+		{
+			name: "unsupported entry next to a failure with another cause",
+			authErrors: []AuthConfigError{
+				defaultErr(unsupported(mcpv1beta1.ExternalAuthTypeBearerToken)),
+				backendErr("b1", missing),
+			},
+		},
+		{
+			name:       "only discovered failures",
+			authErrors: []AuthConfigError{discoveredErr("b1", unsupported(mcpv1beta1.ExternalAuthTypeBearerToken))},
+		},
+		{
+			name: "discovered failure with another cause does not block a terminal declared one",
+			authErrors: []AuthConfigError{
+				backendErr("b1", unsupported(mcpv1beta1.ExternalAuthTypeBearerToken)),
+				discoveredErr("b2", missing),
+			},
+			wantEntries: "backends.b1 (bearerToken)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			message := unsupportedDeclaredAuthMessage(tt.authErrors)
+			if tt.wantEntries == "" {
+				assert.Empty(t, message)
+				return
+			}
+			assert.Contains(t, message, ": "+tt.wantEntries+";")
+		})
+	}
 }
 
 // TestConvertBackendsToStaticBackends_WithCABundlePathMap tests that CA bundle paths

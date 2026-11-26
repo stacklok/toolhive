@@ -221,6 +221,15 @@ func (r *VirtualMCPServerReconciler) reconcileResources(
 			return ctrl.Result{}, true, statusErr
 		}
 
+		// A spec the user must fix ends the reconcile here, without requeue.
+		// Continuing would let the pod-based status pass overwrite the Failed
+		// phase and Ready=False with the state of the pods still serving the
+		// previous configuration.
+		var specErr *SpecValidationError
+		if stderrors.As(err, &specErr) {
+			return ctrl.Result{}, true, r.handleSpecValidationError(ctx, vmcp, statusManager, err)
+		}
+
 		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 			log.FromContext(ctx).Error(applyErr, "Failed to apply status updates after resource reconciliation error")
 		}
@@ -1345,17 +1354,15 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	}
 
 	// Ensure vmcp Config ConfigMap.
-	// handleSpecValidationError converts SpecValidationError to nil (no requeue)
-	// after applying status conditions, while passing through transient errors.
-	specValidationErr := r.ensureVmcpConfigConfigMap(ctx, vmcp, workloadNames, telemetryCfg, statusManager)
-	if specValidationErr != nil {
-		if err := r.handleSpecValidationError(ctx, vmcp, statusManager, specValidationErr); err != nil {
+	// A SpecValidationError is returned as is: reconcileResources applies the
+	// status it describes and ends the reconcile without requeue. Do not proceed
+	// to ensureDeployment — the ConfigMap was not created/updated.
+	if err := r.ensureVmcpConfigConfigMap(ctx, vmcp, workloadNames, telemetryCfg, statusManager); err != nil {
+		var specErr *SpecValidationError
+		if !stderrors.As(err, &specErr) {
 			ctxLogger.Error(err, "Failed to ensure vmcp Config ConfigMap")
-			return ctrl.Result{}, err
 		}
-		// SpecValidationError: status applied, stop reconciliation without requeue.
-		// Do not proceed to ensureDeployment — the ConfigMap was not created/updated.
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, err
 	}
 
 	// Ensure Deployment

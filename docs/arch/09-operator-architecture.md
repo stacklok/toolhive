@@ -241,7 +241,12 @@ own `externalAuthConfigRef` leaves the remaining valid backends reconciling. A
 failure on an entry declared in `spec.outgoingAuth` (`default` or `backends`)
 is reported the same way and also stops the vMCP configuration from being
 published, so no backend falls back to a different credential or to no
-authentication; the previously published configuration stays in place.
+authentication; the previously published configuration stays in place. When
+every failing declared entry references an unsupported type, the
+VirtualMCPServer is set to phase `Failed` with `Ready=False / Reason=UnsupportedAuthType`
+and is not requeued, because only a change to its spec or to the referenced
+MCPExternalAuthConfig can fix it. Any other declared failure, such as a missing
+MCPExternalAuthConfig, is retried with backoff.
 
 MCPExternalAuthConfig resources can be referenced via two paths:
 - `externalAuthConfigRef` — for outgoing auth, including Entra on-behalf-of (`obo`). The supported type subset depends on whether the consumer is MCPServer, MCPRemoteProxy, VirtualMCPServer, or MCPServerEntry.

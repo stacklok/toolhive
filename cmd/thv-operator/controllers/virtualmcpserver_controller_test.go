@@ -2518,61 +2518,105 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 }
 
 // TestVirtualMCPServerReconcile_UnresolvedDeclaredOutgoingAuthIsReported runs
-// a full reconcile for a VirtualMCPServer whose declared default references an
-// auth type vMCP cannot use. The reconcile must still fail and publish nothing,
-// and the reason has to reach the stored status: a condition that is only set
-// on the in-memory status manager is lost when the reconcile returns an error.
+// a full reconcile for a VirtualMCPServer whose declared default cannot be
+// resolved. The reconcile must publish nothing, and the reason has to reach the
+// stored status: a condition that is only set on the in-memory status manager
+// is lost when the reconcile returns. An unsupported auth type can only heal
+// through a spec or referenced config change, so the resource is reported
+// Failed with Ready=False and the reconcile is not retried. A missing config may
+// still appear, so that failure is returned for a retry.
 func TestVirtualMCPServerReconcile_UnresolvedDeclaredOutgoingAuthIsReported(t *testing.T) {
 	t.Parallel()
 
-	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
-		v1beta1test.WithVMCPGroupRef(testGroupName),
-		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
-			Source: "discovered",
-			Default: &mcpv1beta1.BackendAuthConfig{
-				Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
-				ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "bearer-auth"},
-			},
-		}),
-		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
-			v.Generation = 1
-		}),
-	)
-	mcpGroup := &mcpv1beta1.MCPGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: testGroupName, Namespace: "default"},
-		Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
-	}
-	// bearerToken is valid for MCPRemoteProxy but has no vMCP converter.
-	bearerAuth := &mcpv1beta1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "bearer-auth", Namespace: "default"},
-		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
-			Type: mcpv1beta1.ExternalAuthTypeBearerToken,
-			BearerToken: &mcpv1beta1.BearerTokenConfig{
-				TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: "token-secret", Key: "token"},
-			},
+	tests := []struct {
+		name         string
+		defaultRef   string
+		wantReason   string
+		wantTerminal bool
+	}{
+		{
+			name:         "unsupported auth type is terminal",
+			defaultRef:   "bearer-auth",
+			wantReason:   mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			wantTerminal: true,
+		},
+		{
+			name:       "missing auth config is retried",
+			defaultRef: "does-not-exist",
+			wantReason: "ConversionFailed",
 		},
 	}
 
-	reconciler, k8sClient := newTestVirtualMCPServerReconciler(t, vmcp, mcpGroup, bearerAuth)
-	key := types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
-	require.Error(t, err, "an unresolved declared default must fail the reconcile")
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+				v1beta1test.WithVMCPGroupRef(testGroupName),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "inline",
+					Default: &mcpv1beta1.BackendAuthConfig{
+						Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: tt.defaultRef},
+					},
+				}),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Generation = 1
+				}),
+			)
+			mcpGroup := &mcpv1beta1.MCPGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: testGroupName, Namespace: "default"},
+				Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
+			}
+			// bearerToken is valid for MCPRemoteProxy but has no vMCP converter.
+			bearerAuth := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "bearer-auth", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1beta1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: "token-secret", Key: "token"},
+					},
+				},
+			}
 
-	configMap := &corev1.ConfigMap{}
-	err = k8sClient.Get(context.Background(), types.NamespacedName{
-		Name:      vmcpConfigMapName(vmcp.Name),
-		Namespace: vmcp.Namespace,
-	}, configMap)
-	require.True(t, apierrors.IsNotFound(err), "no config may be published, got: %v", err)
+			reconciler, k8sClient := newTestVirtualMCPServerReconciler(t, vmcp, mcpGroup, bearerAuth)
+			key := types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}
 
-	updated := &mcpv1beta1.VirtualMCPServer{}
-	require.NoError(t, k8sClient.Get(context.Background(), key, updated))
-	condition := meta.FindStatusCondition(updated.Status.Conditions, "DefaultAuthConfig")
-	require.NotNil(t, condition, "the unresolved default must be reported in the stored status")
-	assert.Equal(t, metav1.ConditionFalse, condition.Status)
-	assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, condition.Reason)
-	assert.Contains(t, condition.Message, "bearerToken")
+			result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+			if tt.wantTerminal {
+				require.NoError(t, err, "a terminal failure must not be retried")
+			} else {
+				require.Error(t, err, "a failure that may heal on its own must be retried")
+			}
+			assert.Equal(t, ctrl.Result{}, result)
+
+			configMap := &corev1.ConfigMap{}
+			err = k8sClient.Get(context.Background(), types.NamespacedName{
+				Name:      vmcpConfigMapName(vmcp.Name),
+				Namespace: vmcp.Namespace,
+			}, configMap)
+			require.True(t, apierrors.IsNotFound(err), "no config may be published, got: %v", err)
+
+			updated := &mcpv1beta1.VirtualMCPServer{}
+			require.NoError(t, k8sClient.Get(context.Background(), key, updated))
+			condition := meta.FindStatusCondition(updated.Status.Conditions, "DefaultAuthConfig")
+			require.NotNil(t, condition, "the unresolved default must be reported in the stored status")
+			assert.Equal(t, metav1.ConditionFalse, condition.Status)
+			assert.Equal(t, tt.wantReason, condition.Reason)
+			if !tt.wantTerminal {
+				return
+			}
+
+			assert.Contains(t, condition.Message, "bearerToken")
+			assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, updated.Status.Phase)
+			assert.Contains(t, updated.Status.Message, "default (bearerToken)")
+			assert.Equal(t, vmcp.Generation, updated.Status.ObservedGeneration)
+			ready := meta.FindStatusCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeVirtualMCPServerReady)
+			require.NotNil(t, ready, "a terminal failure must be reflected in Ready")
+			assert.Equal(t, metav1.ConditionFalse, ready.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, ready.Reason)
+		})
+	}
 }
 
 func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {

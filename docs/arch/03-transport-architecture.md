@@ -195,7 +195,9 @@ backend's answer before forwarding it. A `200` response labeled
 must hold a single structurally valid JSON-RPC response, as checked by
 `mcp.ValidateResponse` with the envelope rules used for client messages: a
 leading UTF-8 BOM, string or integer ids, and an error response without an `id`
-are accepted, while invalid JSON, an empty body, batches, requests,
+are accepted, as is an explicit `null` for the member a response does not use
+(`"error":null` beside a result, or `"result":null` beside an error), which
+serializers that do not omit nulls emit. Invalid JSON, an empty body, batches, requests,
 notifications, `null` or fractional ids, and an envelope that repeats a member
 or aliases a reserved one by case are rejected. Only the envelope is checked:
 member names inside `result` and `error.data` may differ only by case, as JSON
@@ -214,7 +216,10 @@ error that echoes the client's request `id`:
 The replacement carries none of the backend's headers (no `Mcp-Session-Id` or
 `Set-Cookie`), and the proxy logs one warning naming the cause, the method and
 the target. A rejected `initialize` response registers no proxy session and does
-not mark the server initialized.
+not mark the server initialized. The proxy does not send the backend a `DELETE`
+for a session id that rejected response carried, so that backend session stays
+open until the backend's own idle timeout; clients never receive its id and
+cannot reuse it.
 
 So that the body can be read, the proxy forwards id-bearing requests without the
 client's `Accept-Encoding`. Go's transport then asks for gzip itself and decodes

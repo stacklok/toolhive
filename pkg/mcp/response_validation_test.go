@@ -29,6 +29,9 @@ func TestValidateResponse(t *testing.T) {
 		{name: "case-distinct names inside result", body: `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"t","inputSchema":{"type":"object","properties":{"ID":{},"id":{}}}}]}}`},
 		{name: "repeated name inside result", body: `{"jsonrpc":"2.0","id":1,"result":{"a":1,"a":2}}`},
 		{name: "case-distinct names inside error data", body: `{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"x","data":{"Path":1,"path":2}}}`},
+		{name: "result with null error", body: `{"jsonrpc":"2.0","id":1,"result":{},"error":null}`},
+		{name: "error with null result", body: `{"jsonrpc":"2.0","id":1,"result":null,"error":{"code":-32603,"message":"boom"}}`},
+		{name: "null result with null error", body: `{"jsonrpc":"2.0","id":1,"result":null,"error":null}`},
 		{name: "surrounding whitespace", body: " \r\n\t" + `{"jsonrpc":"2.0","id":1,"result":{}}` + "\n"},
 
 		// Rejected with a fixed reason.
@@ -44,6 +47,9 @@ func TestValidateResponse(t *testing.T) {
 		{name: "fractional id", body: `{"jsonrpc":"2.0","id":1.5,"result":{}}`, reason: "invalid_response"},
 		{name: "missing jsonrpc version", body: `{"id":1,"result":{}}`, reason: "invalid_response"},
 		{name: "both result and error", body: `{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":1,"message":"x"}}`, reason: "invalid_response"},
+		{name: "null error without result", body: `{"jsonrpc":"2.0","id":1,"error":null}`, reason: "invalid_response"},
+		{name: "result with null error and no id", body: `{"jsonrpc":"2.0","result":{},"error":null}`, reason: "invalid_response"},
+		{name: "null result beside malformed error", body: `{"jsonrpc":"2.0","id":1,"result":null,"error":{"code":-32603}}`, reason: "invalid_response"},
 		{name: "neither result nor error", body: `{"jsonrpc":"2.0","id":1}`, reason: "invalid_response"},
 		{name: "error without message", body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32603}}`, reason: "invalid_response"},
 		{name: "duplicate key", body: `{"jsonrpc":"2.0","id":1,"id":2,"result":{}}`, reason: "invalid_response"},

@@ -2210,6 +2210,23 @@ type Config struct {
 	// 1 registration per second with a burst of 5. See the identically named
 	// field on RunConfig.
 	RegistrationRateLimit *RegistrationRateLimitRunConfig
+
+	// UserKeyedUpstreamStorage stores upstream tokens keyed by the canonical
+	// user ID instead of per login session, so a user's second client reuses
+	// their connections. The zero value keeps the session-keyed layout. It is
+	// an embedder-only option and is not part of RunConfig.
+	//
+	// The bearer validator loads upstream tokens for a user only when it is
+	// bound to the embedded issuer (auth.WithEmbeddedAuthServerIssuer equal to
+	// its issuer), verifies tokens with the in-process key provider
+	// (auth.WithKeyProvider), and has an audience configured. Otherwise no
+	// upstream tokens load and the request is served without them.
+	//
+	// Do not enable it over storage that already keys rows by user: rows
+	// would be keyed twice, and deletes would find nothing. Read upstream
+	// tokens through the server's IDPTokenStorage(); a token service built
+	// over the raw storage handle bypasses the user keying.
+	UserKeyedUpstreamStorage bool
 }
 
 // DelegateClient is the resolved form of DelegateClientRunConfig: the secret

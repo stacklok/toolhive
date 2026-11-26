@@ -163,6 +163,8 @@ type testServerOptions struct {
 	sharedStorage bool
 	// authorizationEndpointBaseURL sets the browser-facing authorization origin.
 	authorizationEndpointBaseURL string
+	// userKeyedUpstreamStorage sets Config.UserKeyedUpstreamStorage.
+	userKeyedUpstreamStorage bool
 }
 
 // testServerOption is a functional option for test server setup.
@@ -263,12 +265,12 @@ func withDeviceFlowEnabled() testServerOption {
 	}
 }
 
-// withDeviceCodeInterval sets Config.DeviceCodeInterval, overriding the
-// default minimum poll interval so tests can poll the token endpoint
-// repeatedly without tripping slow_down.
-func withDeviceCodeInterval(d time.Duration) testServerOption {
+// withDeviceCodeInterval sets Config.DeviceCodeInterval to one millisecond,
+// overriding the default minimum poll interval so tests can poll the token
+// endpoint repeatedly without tripping slow_down.
+func withDeviceCodeInterval() testServerOption {
 	return func(opts *testServerOptions) {
-		opts.deviceCodeInterval = d
+		opts.deviceCodeInterval = time.Millisecond
 	}
 }
 
@@ -276,6 +278,14 @@ func withDeviceCodeInterval(d time.Duration) testServerOption {
 func withRefreshGrantHandlers(hs ...fosite.TokenEndpointHandler) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.refreshGrantHandlers = hs
+	}
+}
+
+// withUserKeyedUpstreamStorage sets Config.UserKeyedUpstreamStorage, so the
+// server's storage is the user-keyed wrapper over the (decorated) test backend.
+func withUserKeyedUpstreamStorage() testServerOption {
+	return func(opts *testServerOptions) {
+		opts.userKeyedUpstreamStorage = true
 	}
 }
 
@@ -490,6 +500,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		RefreshGrantHandlers:                options.refreshGrantHandlers,
 		DisableUpstreamRefreshGuard:         options.disableUpstreamRefreshGuard,
 		AuthorizationEndpointBaseURL:        options.authorizationEndpointBaseURL,
+		UserKeyedUpstreamStorage:            options.userKeyedUpstreamStorage,
 		// The test server's issuer is a plain-HTTP loopback URL (genuinely
 		// local: an in-process httptest server), so opt in to the same
 		// combination withAllowConfidentialClientRegistration would otherwise
@@ -2758,12 +2769,25 @@ func exchangeCodeForTokens(
 	resource string,
 ) map[string]interface{} {
 	t.Helper()
+	return exchangeCodeForTokensAs(t, serverURL, testClientID, code, verifier, resource)
+}
+
+// exchangeCodeForTokensAs is exchangeCodeForTokens for the given registered client.
+func exchangeCodeForTokensAs(
+	t *testing.T,
+	serverURL string,
+	clientID string,
+	code string,
+	verifier string,
+	resource string,
+) map[string]interface{} {
+	t.Helper()
 
 	params := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"redirect_uri":  {testRedirectURI},
-		"client_id":     {testClientID},
+		"client_id":     {clientID},
 		"code_verifier": {verifier},
 	}
 	if resource != "" {
@@ -3187,6 +3211,7 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ..
 		UpstreamFilter:             options.upstreamFilter,
 		DeviceFlowEnabled:          options.deviceFlowEnabled,
 		DeviceCodeInterval:         options.deviceCodeInterval,
+		UserKeyedUpstreamStorage:   options.userKeyedUpstreamStorage,
 	}
 
 	// 6. Create server using newServer WITHOUT overriding the upstream factory.
@@ -3370,7 +3395,7 @@ func TestIntegration_DeviceFlow_SubjectIdentifier(t *testing.T) {
 	deviceClient.Scopes = []string{"openid", "offline_access"}
 	ts := setupTestServerWithOIDCProvider(t, m,
 		withExtraClient(deviceClient), withDeviceFlowEnabled(),
-		withDeviceCodeInterval(time.Millisecond), withSubjectIdentifierAudiences(testAudience))
+		withDeviceCodeInterval(), withSubjectIdentifierAudiences(testAudience))
 
 	resp, body := postDeviceAuthorization(t, ts.Server.URL, url.Values{
 		"client_id": {testDeviceFlowClientID}, "scope": {"openid offline_access"},
@@ -3610,8 +3635,19 @@ func setupTestServerWithUpstreamChain(t *testing.T, upstreams []UpstreamConfig, 
 	_, err = rand.Read(secret)
 	require.NoError(t, err)
 
-	stor := storage.NewMemoryStorage()
+	var (
+		stor storage.Storage
+		mr   *miniredis.Miniredis
+	)
+	if options.storageFactory != nil {
+		stor, mr = options.storageFactory(t)
+	} else {
+		stor = storage.NewMemoryStorage()
+	}
 	t.Cleanup(func() { require.NoError(t, stor.Close()) })
+	if options.storageDecorator != nil {
+		stor = options.storageDecorator(stor)
+	}
 	require.NoError(t, stor.RegisterClient(ctx, &fosite.DefaultClient{
 		ID:            testClientID,
 		RedirectURIs:  []string{testRedirectURI},
@@ -3633,6 +3669,7 @@ func setupTestServerWithUpstreamChain(t *testing.T, upstreams []UpstreamConfig, 
 		AllowedAudiences:           []string{testAudience},
 		SubjectIdentifierAudiences: options.subjectIdentifierAudiences,
 		AccessTokenType:            options.accessTokenType,
+		UserKeyedUpstreamStorage:   options.userKeyedUpstreamStorage,
 	}, stor)
 	require.NoError(t, err)
 
@@ -3642,7 +3679,7 @@ func setupTestServerWithUpstreamChain(t *testing.T, upstreams []UpstreamConfig, 
 		require.NoError(t, srv.Close())
 	})
 	return &testServer{
-		Server: httpServer, PrivateKey: privateKey, authServer: srv, storage: srv.IDPTokenStorage(),
+		Server: httpServer, PrivateKey: privateKey, authServer: srv, storage: srv.IDPTokenStorage(), mr: mr,
 	}
 }
 
@@ -3708,7 +3745,7 @@ func TestIntegration_DeviceFlow_SubjectIdentifierOmittedForSyntheticIdentity(t *
 	deviceClient.Scopes = []string{"openid", "offline_access"}
 	ts := setupTestServer(t, withUpstream(newSyntheticOAuth2Provider(t, m)),
 		withExtraClient(deviceClient), withDeviceFlowEnabled(),
-		withDeviceCodeInterval(time.Millisecond), withSubjectIdentifierAudiences(testAudience))
+		withDeviceCodeInterval(), withSubjectIdentifierAudiences(testAudience))
 
 	resp, body := postDeviceAuthorization(t, ts.Server.URL, url.Values{
 		"client_id": {testDeviceFlowClientID}, "scope": {"openid offline_access"},
@@ -4545,9 +4582,12 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC, op
 		stor = storage.NewMemoryStorage()
 	}
 	t.Cleanup(func() { require.NoError(t, stor.Close()) })
+	if options.storageDecorator != nil {
+		stor = options.storageDecorator(stor)
+	}
 
-	// 4. Register test client (public client for PKCE)
-	err = stor.RegisterClient(ctx, &fosite.DefaultClient{
+	// 4. Register test clients (public clients for PKCE)
+	for _, client := range append([]fosite.Client{&fosite.DefaultClient{
 		ID:            testClientID,
 		Secret:        nil, // public client
 		RedirectURIs:  []string{testRedirectURI},
@@ -4556,8 +4596,9 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC, op
 		Scopes:        registration.DefaultScopes,
 		Audience:      []string{testAudience},
 		Public:        true,
-	})
-	require.NoError(t, err)
+	}}, options.extraClients...) {
+		require.NoError(t, stor.RegisterClient(ctx, client))
+	}
 
 	// 5. Build upstream configs from the two mockoidc instances.
 	// Both point their RedirectURI at our auth server's /oauth/callback.
@@ -4624,6 +4665,8 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC, op
 		AllowedAudiences: []string{testAudience},
 		AccessTokenType:  options.accessTokenType,
 		UpstreamFilter:   options.upstreamFilter,
+
+		UserKeyedUpstreamStorage: options.userKeyedUpstreamStorage,
 	}
 
 	// 8. Create server using newServer with a factory that returns the correct provider per name
@@ -5032,13 +5075,19 @@ func TestIntegration_FullFlow_NonExpiringUpstreamToken(t *testing.T) {
 // continue. Callers are responsible for closing the returned response's body.
 func runFirstLeg(t *testing.T, serverURL, challenge, clientState string) *http.Response {
 	t.Helper()
+	return runFirstLegAs(t, serverURL, testClientID, challenge, clientState)
+}
+
+// runFirstLegAs is runFirstLeg for the given registered client.
+func runFirstLegAs(t *testing.T, serverURL, clientID, challenge, clientState string) *http.Response {
+	t.Helper()
 	client := noRedirectClient()
 
 	parsedServerURL, err := url.Parse(serverURL)
 	require.NoError(t, err)
 
 	authorizeURL := serverURL + "/oauth/authorize?" + url.Values{
-		"client_id":             {testClientID},
+		"client_id":             {clientID},
 		"redirect_uri":          {testRedirectURI},
 		"state":                 {clientState},
 		"code_challenge":        {challenge},
@@ -5075,12 +5124,24 @@ func runChainFlow(
 	clientState string,
 ) string {
 	t.Helper()
+	return runChainFlowAs(t, serverURL, testClientID, challenge, clientState)
+}
+
+// runChainFlowAs is runChainFlow for the given registered client.
+func runChainFlowAs(
+	t *testing.T,
+	serverURL string,
+	clientID string,
+	challenge string,
+	clientState string,
+) string {
+	t.Helper()
 
 	parsedServerURL, err := url.Parse(serverURL)
 	require.NoError(t, err)
 
 	// Leg 1: client -> /authorize -> first upstream -> callback
-	resp := runFirstLeg(t, serverURL, challenge, clientState)
+	resp := runFirstLegAs(t, serverURL, clientID, challenge, clientState)
 	require.Equal(t, http.StatusFound, resp.StatusCode,
 		"expected redirect to second upstream, not 303 to client")
 	secondUpstreamLocation, err := resp.Location()
@@ -7166,7 +7227,7 @@ func TestIntegration_DeviceFlow_FullHappyPath(t *testing.T) {
 
 	m := startMockOIDC(t)
 	ts := setupTestServerWithMockOIDC(t, m, withExtraClient(deviceFlowClient()), withDeviceFlowEnabled(),
-		withDeviceCodeInterval(time.Millisecond))
+		withDeviceCodeInterval())
 
 	resp, body := postDeviceAuthorization(t, ts.Server.URL, url.Values{
 		"client_id": {testDeviceFlowClientID},

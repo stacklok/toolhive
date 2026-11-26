@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
@@ -427,6 +428,10 @@ func (h *Handler) persistDeviceSessionTokens(
 	if confirmation.UpstreamTokens == nil {
 		return errors.New("pending device confirmation has no upstream tokens")
 	}
+	// Storage that keys rows by user reads the canonical user from the
+	// context, as the browser callback does; no bearer exists yet, so only the
+	// storage key is set, not a ToolHive identity.
+	ctx = serveridentity.WithCanonicalUser(ctx, confirmation.ResolvedUserID)
 	storageTokens := *confirmation.UpstreamTokens
 	storageTokens.UserID = confirmation.ResolvedUserID
 	storageTokens.SessionExpiresAt = time.Now().Add(h.config.RefreshTokenLifespan)

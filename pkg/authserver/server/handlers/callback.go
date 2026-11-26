@@ -272,12 +272,9 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		if result.Synthetic {
 			subject = result.Subject
 		} else {
-			user := rememberedUser
-			if user == nil {
-				var ok bool
-				if user, ok = h.resolveFirstLegUser(ctx, w, ar, providerID, providerSubject); !ok {
-					return
-				}
+			user, ok := h.resolveFirstLegUser(ctx, w, ar, providerID, providerSubject, rememberedUser)
+			if !ok {
+				return
 			}
 			subject = user.ID
 			if pending.RememberConsent {
@@ -683,7 +680,8 @@ func (h *Handler) callbackClient(ctx context.Context, id string) (fosite.Client,
 }
 
 // resolveFirstLegUser resolves the local user for the first-leg login through
-// providerID. On failure it writes the authorize error and returns false.
+// providerID. A non-nil remembered user, already verified by resolveRememberedUser,
+// is returned as is. On failure it writes the authorize error and returns false.
 //
 // Only the first upstream creates users and identity links (see WithCreateOnlyFor).
 // A pending authorization that reaches user resolution through any other upstream,
@@ -695,7 +693,11 @@ func (h *Handler) resolveFirstLegUser(
 	w http.ResponseWriter,
 	ar fosite.AuthorizeRequester,
 	providerID, providerSubject string,
+	remembered *storage.User,
 ) (*storage.User, bool) {
+	if remembered != nil {
+		return remembered, true
+	}
 	user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
 	if err != nil {
 		// A refused later upstream is a deliberate denial, not a server fault.

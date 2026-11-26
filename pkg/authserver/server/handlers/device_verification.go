@@ -274,26 +274,7 @@ func (h *Handler) completeDeviceLogin(
 	if !result.Synthetic {
 		user, resolveErr := h.userResolver.ResolveUser(ctx, pending.UpstreamProviderName, result.Subject)
 		if resolveErr != nil {
-			// A refused later upstream is a deliberate denial, not a server fault.
-			switch {
-			case errors.Is(resolveErr, ErrUpstreamCannotCreateUsers):
-				slog.Warn("device verification: refused user creation through a later upstream", "error", resolveErr)
-			case errors.Is(resolveErr, ErrIdentityBindingMismatch):
-				slog.Warn("device verification: refused sign-in: identity link was created under a different issuer "+
-					"or subject claim", "provider_id", pending.UpstreamProviderName)
-			default:
-				slog.Error("device verification: failed to resolve user", "error", resolveErr)
-			}
-			status, msg := http.StatusInternalServerError, "Something went wrong. Please try again."
-			switch {
-			case errors.Is(resolveErr, storage.ErrUserNotProvisioned):
-				status, msg = http.StatusForbidden, "Your account is not provisioned to use this application."
-			case errors.Is(resolveErr, ErrUpstreamCannotCreateUsers):
-				status, msg = http.StatusForbidden, "This sign-in provider cannot create accounts for this application."
-			case errors.Is(resolveErr, ErrIdentityBindingMismatch):
-				status, msg = http.StatusForbidden,
-					"Your account's identity link was created under a different issuer or subject claim."
-			}
+			status, msg := deviceResolveFailure(resolveErr, pending.UpstreamProviderName)
 			renderError(w, status, msg)
 			return
 		}
@@ -469,4 +450,28 @@ func (h *Handler) rejectUnresolvableDeviceClient(ctx context.Context, w http.Res
 		renderError(w, http.StatusInternalServerError, "Something went wrong. Please try again.")
 	}
 	return true
+}
+
+// deviceResolveFailure logs a failed user resolution on the device flow and maps
+// it to the status and message of the error page. A refused later upstream or a
+// binding mismatch is a deliberate denial, not a server fault.
+func deviceResolveFailure(err error, providerID string) (status int, msg string) {
+	switch {
+	case errors.Is(err, ErrUpstreamCannotCreateUsers):
+		slog.Warn("device verification: refused user creation through a later upstream", "error", err)
+	case errors.Is(err, ErrIdentityBindingMismatch):
+		slog.Warn("device verification: refused sign-in: identity link was created under a different issuer "+
+			"or subject claim", "provider_id", providerID)
+	default:
+		slog.Error("device verification: failed to resolve user", "error", err)
+	}
+	switch {
+	case errors.Is(err, storage.ErrUserNotProvisioned):
+		return http.StatusForbidden, "Your account is not provisioned to use this application."
+	case errors.Is(err, ErrUpstreamCannotCreateUsers):
+		return http.StatusForbidden, "This sign-in provider cannot create accounts for this application."
+	case errors.Is(err, ErrIdentityBindingMismatch):
+		return http.StatusForbidden, "Your account's identity link was created under a different issuer or subject claim."
+	}
+	return http.StatusInternalServerError, "Something went wrong. Please try again."
 }

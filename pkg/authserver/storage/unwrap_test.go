@@ -49,30 +49,43 @@ func TestProviderIdentitySwapperFor_PeelsOnlyKnownDecorators(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		wrap       func(t *testing.T, base *MemoryStorage) Storage
+		name        string
+		wrap        func(t *testing.T, base *MemoryStorage) Storage
 		wantSwapper bool
 	}{
 		{"memory store itself", func(_ *testing.T, base *MemoryStorage) Storage { return base }, true},
 		{"user-keyed upstream storage", func(t *testing.T, base *MemoryStorage) Storage {
+			t.Helper()
 			s, err := NewUserKeyedUpstreamStorage(base)
 			require.NoError(t, err)
 			return s
 		}, true},
-		{"client admission storage", func(t *testing.T, base *MemoryStorage) Storage { return admit(t, base) }, true},
-		{"CIMD storage decorator", func(t *testing.T, base *MemoryStorage) Storage { return cimd(t, base) }, true},
+		{"client admission storage", func(t *testing.T, base *MemoryStorage) Storage {
+			t.Helper()
+			return admit(t, base)
+		}, true},
+		{"CIMD storage decorator", func(t *testing.T, base *MemoryStorage) Storage {
+			t.Helper()
+			return cimd(t, base)
+		}, true},
 		{"CIMD shape guard", func(_ *testing.T, base *MemoryStorage) Storage { return NewCIMDShapeGuardStorage(base) }, true},
-		{"SPIFFE storage decorator", func(t *testing.T, base *MemoryStorage) Storage { return spiffe(t, base) }, true},
+		{"SPIFFE storage decorator", func(t *testing.T, base *MemoryStorage) Storage {
+			t.Helper()
+			return spiffe(t, base)
+		}, true},
 		{"production stack with the shape guard", func(t *testing.T, base *MemoryStorage) Storage {
+			t.Helper()
 			return spiffe(t, NewCIMDShapeGuardStorage(admit(t, base)))
 		}, true},
 		{"production stack with CIMD", func(t *testing.T, base *MemoryStorage) Storage {
+			t.Helper()
 			return spiffe(t, cimd(t, admit(t, base)))
 		}, true},
 		{"unknown wrapper that exposes Unwrap", func(_ *testing.T, base *MemoryStorage) Storage {
 			return unknownWrapper{Storage: base}
 		}, false},
 		{"unknown wrapper beneath a known decorator", func(t *testing.T, base *MemoryStorage) Storage {
+			t.Helper()
 			return admit(t, unknownWrapper{Storage: base})
 		}, false},
 	}

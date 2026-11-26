@@ -93,14 +93,14 @@ func captureWarns(t *testing.T) *warnRecorder {
 // foreignFromReadStorage sits below the wrapper and answers every read from
 // the foreignFrom-th on with a row owned by someone else, as a row replaced
 // between the guard's read and the refresher's re-read would look. With
-// failSaves set, every compare-and-swap fails with a storage error, as when the
+// failStores set, every compare-and-swap fails with a storage error, as when the
 // refresher cannot save a refreshed row.
 type foreignFromReadStorage struct {
 	storage.Storage
 	mu          sync.Mutex
 	reads       int
 	foreignFrom int
-	failSaves   bool
+	failStores  bool
 	// afterRead runs once, right after the next read, and the read still
 	// returns what it read before the hook ran.
 	afterRead func()
@@ -115,7 +115,7 @@ func (s *foreignFromReadStorage) runAfterNextRead(f func()) {
 func (s *foreignFromReadStorage) CompareAndSwapUpstreamTokens(
 	ctx context.Context, sessionID, provider, expectedRefreshToken string, tokens *storage.UpstreamTokens,
 ) error {
-	if s.failSaves {
+	if s.failStores {
 		return errors.New("storage unavailable")
 	}
 	return s.Storage.CompareAndSwapUpstreamTokens(ctx, sessionID, provider, expectedRefreshToken, tokens)
@@ -196,8 +196,8 @@ type userKeyedGuardCase struct {
 	foreignIdP bool
 	// foreignFromRead makes the nth read below the wrapper return a foreign row.
 	foreignFromRead int
-	// failSaves makes every save of a refreshed row fail below the wrapper.
-	failSaves bool
+	// failStores makes every save of a refreshed row fail below the wrapper.
+	failStores bool
 	// idpRefresh, when set, is the one expected refresh of the identity
 	// provider; the connector's provider allows no call at all.
 	idpRefresh func(t *testing.T, env *userKeyedGuardEnv, refreshToken string) (*upstream.Tokens, error)
@@ -287,7 +287,7 @@ func TestUserKeyedUpstreamRefreshGuard(t *testing.T) {
 			idpRefresh: func(*testing.T, *userKeyedGuardEnv, string) (*upstream.Tokens, error) {
 				return &upstream.Tokens{AccessToken: "fresh", RefreshToken: "rotated-rt", ExpiresAt: future}, nil
 			},
-			failSaves:  true,
+			failStores: true,
 			wantRefuse: true, wantRevoke: true, refresherDeletes: true,
 		},
 		{
@@ -378,7 +378,7 @@ func runUserKeyedGuardCase(t *testing.T, warns *warnRecorder, tt userKeyedGuardC
 
 	env.base = storage.NewMemoryStorage()
 	t.Cleanup(func() { _ = env.base.Close() })
-	env.reads = &foreignFromReadStorage{Storage: env.base, foreignFrom: tt.foreignFromRead, failSaves: tt.failSaves}
+	env.reads = &foreignFromReadStorage{Storage: env.base, foreignFrom: tt.foreignFromRead, failStores: tt.failStores}
 	wrapper, err := storage.NewUserKeyedUpstreamStorage(env.reads)
 	require.NoError(t, err)
 	env.wrapper = wrapper

@@ -51,7 +51,7 @@ var _ = Describe("Health Check Zombie Process Prevention", Label("stability", "h
 
 	Describe("Transport detection of health check failure", func() {
 		Context("when a remote server's health checks fail", func() {
-			It("should detect the failure and attempt restart instead of becoming a zombie", func() {
+			It("should mark the remote server unhealthy and return it to running once health checks pass again", func() {
 				By("Starting a controllable mock HTTP server")
 				var err error
 				mockServer, err = newControllableMockServer()
@@ -138,6 +138,8 @@ var _ = Describe("Health Check Zombie Process Prevention", Label("stability", "h
 				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName),
 					"Unhealthy remote server should be listed without --all")
+				Expect(stdout).To(ContainSubstring("Remote server failed health checks"),
+					"thv list should show why the remote server is unhealthy")
 
 				By("Making the mock server healthy again")
 				mockServer.SetHealthy(true)
@@ -147,6 +149,54 @@ var _ = Describe("Health Check Zombie Process Prevention", Label("stability", "h
 					return getServerStatus(config, serverName)
 				}, 30*time.Second, time.Second).Should(Equal("running"),
 					"Remote server should return to 'running' once health checks pass again")
+			})
+
+			It("should mark a remote server that fails from the start unhealthy instead of leaving it starting", func() {
+				By("Starting a controllable mock HTTP server that returns 500 errors")
+				var err error
+				mockServer, err = newControllableMockServer()
+				Expect(err).ToNot(HaveOccurred(), "Should be able to start mock server")
+				mockServer.SetHealthy(false)
+
+				By("Starting thv as a remote server with fast health checks")
+				thvCmd := exec.Command(config.THVBinary, "run",
+					"--name", serverName,
+					mockServer.URL()+"/mcp")
+				thvCmd.Env = append(os.Environ(),
+					"TOOLHIVE_HEALTH_CHECK_INTERVAL=1s",
+					"TOOLHIVE_HEALTH_CHECK_RETRY_DELAY=1s",
+				)
+				thvCmd.Stdout = GinkgoWriter
+				thvCmd.Stderr = GinkgoWriter
+				Expect(thvCmd.Start()).To(Succeed(), "Should be able to start thv")
+
+				thvPID := thvCmd.Process.Pid
+				defer func() {
+					if proc, err := os.FindProcess(thvPID); err == nil {
+						_ = proc.Kill()
+					}
+				}()
+
+				By("Waiting for the workload to be marked unhealthy without ever initializing")
+				Eventually(func() string {
+					return getServerStatus(config, serverName)
+				}, 60*time.Second, time.Second).Should(Equal("unhealthy"),
+					"A remote server failing from the start should be marked unhealthy, not left starting")
+
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				Expect(stdout).To(ContainSubstring(serverName),
+					"Unhealthy remote server should be listed without --all")
+				Expect(stdout).To(ContainSubstring("Remote server failed health checks"),
+					"thv list should show why the remote server is unhealthy")
+
+				By("Making the mock server healthy")
+				mockServer.SetHealthy(true)
+
+				By("Waiting for the status to reach running")
+				Eventually(func() string {
+					return getServerStatus(config, serverName)
+				}, 60*time.Second, time.Second).Should(Equal("running"),
+					"Remote server should reach 'running' once health checks pass")
 			})
 		})
 	})

@@ -458,22 +458,24 @@ func (d *DefaultManager) stopRemoteWorkload(ctx context.Context, name string, ru
 	// A remote workload's proxy can outlive its recorded status (e.g. the status
 	// file went missing), so we always try to free an orphaned proxy below — only
 	// the status transitions and client-config cleanup are gated on the workload
-	// actually running.
+	// being active. An unhealthy remote workload is active: its proxy keeps
+	// running and returns it to running when the server recovers.
 	workload, err := d.statuses.GetWorkload(ctx, name)
 	if err != nil && !errors.Is(err, rt.ErrWorkloadNotFound) {
 		return fmt.Errorf("failed to find workload %s: %w", name, err)
 	}
-	running := err == nil && workload.Status == rt.WorkloadStatusRunning
+	active := err == nil &&
+		(workload.Status == rt.WorkloadStatusRunning || workload.Status == rt.WorkloadStatusUnhealthy)
 	switch {
 	case err != nil:
 		// Status is gone (e.g. a missing status file); don't fail the operation,
 		// but still free an orphaned proxy below.
 		slog.Warn("failed to stop workload", "workload", name, "error", err)
-	case !running:
+	case !active:
 		slog.Warn("Failed to stop workload", "workload", name, "error", ErrWorkloadNotRunning)
 	}
 
-	if running {
+	if active {
 		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
 			slog.Debug("failed to set workload status to stopping", "workload", name, "error", err)
 		}
@@ -485,7 +487,7 @@ func (d *DefaultManager) stopRemoteWorkload(ctx context.Context, name string, ru
 		d.ensureProxyStopped(ctx, name, runConfig.BaseName, runConfig)
 	}
 
-	if running {
+	if active {
 		// For remote workloads we only need to clean up client configurations; the
 		// saved state is preserved for restart capability.
 		if err := removeClientConfigurations(name, false); err != nil {

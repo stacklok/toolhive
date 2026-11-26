@@ -388,7 +388,7 @@ In Kubernetes, the operator projects each selected ConfigMap key as a read-only 
 | **Start/Stop/Restart** | Yes | Yes (proxy only) |
 | **Logs** | Container logs | N/A |
 | **Permission Profile** | Yes | N/A |
-| **Health Checks** | Always enabled | Always enabled |
+| **Health Checks** | Always enabled | Enabled by default (opt out with `TOOLHIVE_REMOTE_HEALTHCHECKS=false`) |
 
 ### Health Checks
 
@@ -401,12 +401,13 @@ ToolHive performs health checks to verify that workloads are running and respond
 - Critical for detecting container failures
 
 **Remote workloads:**
-- Verifies the upstream server is reachable and returning successful responses
-- Failures count from the first check, because a remote server that keeps failing never completes initialization
-- After `TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD` consecutive failures (default: 5), the workload transitions to `unhealthy`, but the proxy keeps running and checking, since ToolHive does not own the remote server's lifecycle
+- Verifies the upstream server is reachable and not answering with a 5xx status. The check goes to the remote URL's path and query, not the host's root, so a failing MCP endpoint on a shared host is detected; any status below 500, including 401, counts as healthy
+- Failures count from the first interval check, without waiting for initialization, because a remote server that keeps failing never completes it
+- After `TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD` consecutive failures (default: 5), the workload transitions to `unhealthy` with the status context "Remote server failed health checks", but the proxy keeps running and checking, since ToolHive does not own the remote server's lifecycle
 - When a later check passes, the workload returns to `running` without a restart (for example, a scale-to-zero backend after a cold start)
-- The status changes only on these transitions, not on every failed check during an outage
-- Unhealthy remote workloads, with the failure reason, are shown by `thv list` without `-a`
+- The status is written only on these transitions. While the server stays unhealthy, each failed check re-reads the status and writes `unhealthy` again only if something else changed it. An `unauthenticated` status is kept, because a health check cannot tell that the credentials work again
+- `thv list` shows unhealthy remote workloads, with that context, without `-a`
+- Setting `TOOLHIVE_REMOTE_HEALTHCHECKS=false` (or `0`) turns the checks off for remote workloads, for a server that answers the health check request badly while serving MCP requests normally
 
 ### Proxy Request Timeout (Stdio Transport)
 
@@ -479,9 +480,9 @@ Duration values use Go's `time.ParseDuration` format (e.g., `10s`, `500ms`, `1m3
 
 **Failure window**: With the defaults, the proxy tolerates roughly `(threshold-1) × (interval + retryDelay)` before marking the workload unhealthy — approximately 60 seconds with default values. This is designed to survive transient network disruptions without prematurely killing healthy backends. If `TOOLHIVE_HEALTH_CHECK_PING_TIMEOUT` exceeds `TOOLHIVE_HEALTH_CHECK_INTERVAL`, each health check cycle takes longer than one interval tick, extending the failure window beyond what the formula predicts.
 
-**Before initialization**: The background monitor checks the backend when the proxy starts and on every interval tick from then on, but for a local workload a failure counts toward the threshold only once the MCP server has been initialized: a successful `initialize` exchange, or, for a server on the stateless 2026-07-28 revision, its first successful request. Before that, the checks only keep the `/health` answer current. A remote workload's failures count from the start.
+**Before initialization**: The background monitor checks the backend when the proxy starts and on every interval tick from then on, but for a local workload a failure counts toward the threshold only once the MCP server has been initialized: a successful `initialize` exchange, or, for a server on the stateless 2026-07-28 revision, its first successful request. Before that, the checks only keep the `/health` answer current. A remote workload's failures count from the first interval check; the check at startup only feeds `/health`.
 
-**What `/health` answers**: With health checks enabled, `/health` answers from the monitor's most recent check instead of pinging the backend for each request, so a backend that is slow to answer cannot hold a Kubernetes probe past its timeout, and the ping timeout no longer has to stay below the probe timeouts. The answer is at most about one interval plus one ping timeout old, or two ping timeouts if the ping timeout exceeds the interval; once the MCP server is initialized, a failed check that is retried can instead leave the answer up to two ping timeouts plus the retry delay old, whichever is longer (15 seconds with the defaults); its `timestamp` and `mcp.last_checked` members say when the check started. Until the first check completes, `/health` reports `healthy` without the `mcp` member. A failed check is reported as `degraded` with HTTP 200, as before. With health checks disabled, `/health` reports the proxy alone. The HTTP-SSE and streamable HTTP proxies, whose `/health` never waits on a backend, still build their answer per request.
+**What `/health` answers**: With health checks enabled, `/health` answers from the monitor's most recent check instead of pinging the backend for each request, so a backend that is slow to answer cannot hold a Kubernetes probe past its timeout, and the ping timeout no longer has to stay below the probe timeouts. The answer is at most about one interval plus one ping timeout old, or two ping timeouts if the ping timeout exceeds the interval; once failures count toward the threshold, a failed check that is retried can instead leave the answer up to two ping timeouts plus the retry delay old, whichever is longer (15 seconds with the defaults); its `timestamp` and `mcp.last_checked` members say when the check started. Until the first check completes, `/health` reports `healthy` without the `mcp` member. A failed check is reported as `degraded` with HTTP 200, as before. With health checks disabled, `/health` reports the proxy alone. The HTTP-SSE and streamable HTTP proxies, whose `/health` never waits on a backend, still build their answer per request.
 
 **Usage example** (increase tolerance for a flaky network):
 ```bash

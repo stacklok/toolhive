@@ -53,7 +53,9 @@ A local workload whose health checks fail has its proxy stopped, so
 `unhealthy` is terminal until it is restarted. A remote workload's proxy keeps
 running and checking, and returns the workload to `running` when the remote
 server passes a health check again, so default `thv list` shows unhealthy
-remote workloads along with the reason.
+remote workloads with the status context "Remote server failed health checks".
+Stopping an unhealthy remote workload stops its proxy and marks it `stopped`,
+as for a running one.
 
 The `auth_retrying` cadence and ceiling can be tuned via environment
 variables on the proxy process:

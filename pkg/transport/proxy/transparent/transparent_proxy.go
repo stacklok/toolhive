@@ -112,10 +112,10 @@ type TransparentProxy struct {
 	// stripConsentCookie prevents remembered-consent cookies (__Host-thv_consent_*) from reaching the backend.
 	stripConsentCookie bool
 
-	// Callback when health check fails (for remote servers)
+	// Callback when the health check failure threshold is reached
 	onHealthCheckFailed types.HealthCheckFailedCallback
 
-	// Callback when health check recovers after a failure (for remote servers)
+	// Callback when a remote server passes a health check after onHealthCheckFailed fired
 	onHealthCheckRecovered types.HealthCheckRecoveredCallback
 
 	// Callback when 401 Unauthorized response is received (for bearer token authentication)
@@ -522,10 +522,11 @@ func NewTransparentProxyWithOptions(
 	var mcpPinger healthcheck.MCPPinger
 	var healthCheckerOpts []healthcheck.Option
 	if enableHealthCheck {
+		healthCheckURL := proxy.healthCheckURL()
 		if proxy.stateless {
-			mcpPinger = NewStatelessMCPPingerWithTimeout(targetURI, proxy.healthCheckPingTimeout)
+			mcpPinger = NewStatelessMCPPingerWithTimeout(healthCheckURL, proxy.healthCheckPingTimeout)
 		} else {
-			mcpPinger = NewMCPPingerWithTimeout(targetURI, proxy.healthCheckPingTimeout)
+			mcpPinger = NewMCPPingerWithTimeout(healthCheckURL, proxy.healthCheckPingTimeout)
 		}
 		// monitorHealth pings the backend on its own schedule, and /health answers
 		// from its last result, so a slow backend cannot hold a probe past its timeout.
@@ -1432,6 +1433,25 @@ func (p *TransparentProxy) performHealthCheckRetry(ctx context.Context) bool {
 	}
 }
 
+// healthCheckURL returns the URL the health checker pings. A remote workload's
+// targetURI holds only the scheme and host, so the remote URL's path and query are
+// added back; otherwise the check would reach the host's root, which on a shared
+// host can answer while the MCP endpoint fails.
+func (p *TransparentProxy) healthCheckURL() string {
+	if p.remoteBasePath == "" && p.remoteRawQuery == "" {
+		return p.targetURI
+	}
+	u, err := url.Parse(p.targetURI)
+	if err != nil {
+		return p.targetURI
+	}
+	if p.remoteBasePath != "" {
+		u.Path = p.remoteBasePath
+	}
+	u.RawQuery = p.remoteRawQuery
+	return u.String()
+}
+
 // handleHealthCheckFailure handles a failed health check, including retry logic.
 // Once failures reach the threshold it fires onHealthCheckFailed. A local proxy
 // then stops, because ToolHive owns the container lifecycle. A remote proxy keeps
@@ -1523,9 +1543,14 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 
 			if alive.Status != healthcheck.StatusHealthy {
 				if degraded {
-					// Already reported unhealthy; notify only on the transition.
+					// Already reported unhealthy. Notify again without logging, so a
+					// status write that failed, or another writer's status, is put right;
+					// the callback writes only when the status is not already unhealthy.
 					//nolint:gosec // G706: logging target URI from config and health status
 					slog.Debug("remote server still unhealthy", "target", p.targetURI, "status", alive.Status)
+					if p.onHealthCheckFailed != nil {
+						p.onHealthCheckFailed()
+					}
 					continue
 				}
 				var shouldContinue bool
@@ -1539,7 +1564,7 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			// Reset failure count on successful health check
 			if degraded {
 				//nolint:gosec // G706: logging target URI from config
-				slog.Debug("remote server passed health check again", "target", p.targetURI)
+				slog.Debug("remote server recovered from unhealthy", "target", p.targetURI)
 				if p.onHealthCheckRecovered != nil {
 					p.onHealthCheckRecovered()
 				}

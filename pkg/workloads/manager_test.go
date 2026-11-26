@@ -2248,7 +2248,7 @@ func TestGetRemoteWorkloadsFromState_SelfRecoveringVisibleWithoutAll(t *testing.
 	mockStatusMgr.EXPECT().GetWorkload(gomock.Any(), "remote-unhealthy").Return(core.Workload{
 		Name:          "remote-unhealthy",
 		Status:        runtime.WorkloadStatusUnhealthy,
-		StatusContext: "Health check failed",
+		StatusContext: "Remote server failed health checks",
 		CreatedAt:     time.Now(),
 	}, nil)
 	mockStatusMgr.EXPECT().GetWorkload(gomock.Any(), "remote-dead").Return(core.Workload{
@@ -2271,7 +2271,7 @@ func TestGetRemoteWorkloadsFromState_SelfRecoveringVisibleWithoutAll(t *testing.
 				"remote-retrying workload should carry AuthRetrying status")
 		case "remote-unhealthy":
 			sawUnhealthy = true
-			assert.Equal(t, "Health check failed", w.StatusContext,
+			assert.Equal(t, "Remote server failed health checks", w.StatusContext,
 				"remote-unhealthy workload should carry its status context")
 		case "remote-dead":
 			sawDead = true
@@ -2616,6 +2616,33 @@ func TestDefaultManager_orphanProxyPortCleanup(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Zero(t, freedCalls, "port-cleanup fallback must not run when the proxy was stopped by PID")
+	})
+
+	t.Run("remote stop of unhealthy workload marks it stopped", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		sm := statusMocks.NewMockStatusManager(ctrl)
+
+		// An unhealthy remote workload still has a running proxy, so stopping it
+		// must go through the same transitions as a running one.
+		sm.EXPECT().GetWorkload(gomock.Any(), workloadName).Return(core.Workload{
+			Name:   workloadName,
+			Status: runtime.WorkloadStatusUnhealthy,
+		}, nil)
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), workloadName, runtime.WorkloadStatusStopping, "").Return(nil)
+		pid := startKillableProcess(t)
+		sm.EXPECT().GetWorkloadPID(gomock.Any(), workloadName).Return(pid, nil)
+		sm.EXPECT().ResetWorkloadPID(gomock.Any(), workloadName).Return(nil)
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), workloadName, runtime.WorkloadStatusStopped, "").Return(nil)
+
+		manager := &DefaultManager{statuses: sm}
+		err := manager.stopRemoteWorkload(
+			context.Background(), workloadName, &runner.RunConfig{BaseName: workloadName, Port: 54321},
+		)
+		require.NoError(t, err)
 	})
 
 	t.Run("remote delete does not free port on normal shutdown", func(t *testing.T) {

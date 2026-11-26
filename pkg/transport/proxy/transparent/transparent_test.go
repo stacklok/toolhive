@@ -1279,6 +1279,18 @@ func waitForCallback(t *testing.T, tracker *callbackTracker) bool {
 	}
 }
 
+// assertStaysRunning asserts that the proxy does not shut down within the next
+// 300ms. A shutdown after the failure threshold follows the failure callback at
+// once, so checking IsRunning right after the callback could not detect it.
+func assertStaysRunning(t *testing.T, proxy *TransparentProxy) {
+	t.Helper()
+	select {
+	case <-proxy.shutdownCh:
+		t.Error("remote proxy must keep running after reaching the failure threshold")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 // waitForShutdown waits for both the callback to be invoked and the proxy to stop,
 // or returns false if the timeout expires.
 func waitForShutdown(t *testing.T, tracker *callbackTracker, proxy *TransparentProxy, timeout time.Duration) (callbackInvoked, proxyStopped bool) {
@@ -1306,7 +1318,8 @@ func waitForShutdown(t *testing.T, tracker *callbackTracker, proxy *TransparentP
 
 // setupRemoteProxyTest creates a proxy with health check enabled for remote servers
 // Uses a 100ms health check interval, 50ms retry delay, and 100ms ping timeout for faster test execution
-// With retry mechanism (3 consecutive ticker failures), shutdown occurs after ~200ms for instant failures (connection refused, 5xx) or ~700ms for timeouts
+// With retry mechanism (3 consecutive ticker failures), the failure callback fires after ~200ms for instant failures
+// (connection refused, 5xx) or ~700ms for timeouts, and the proxy keeps running
 func setupRemoteProxyTest(t *testing.T, serverURL string, callback types.HealthCheckFailedCallback) (*TransparentProxy, context.Context, context.CancelFunc) {
 	t.Helper()
 	return setupRemoteProxyTestWithTimeout(t, serverURL, callback, 1*time.Second)
@@ -1373,16 +1386,12 @@ func TestTransparentProxy_RemoteServerFailure_ConnectionRefused(t *testing.T) {
 	// - Retry: T=50ms → fails instantly → continue (consecutiveFailures stays 1)
 	// - Second ticker: T=100ms (next interval) → fails instantly → consecutiveFailures=2 → retry timer (50ms)
 	// - Retry: T=150ms → fails instantly → continue (consecutiveFailures stays 2)
-	// - Third ticker: T=200ms (next interval) → fails instantly → consecutiveFailures=3 → shutdown
+	// - Third ticker: T=200ms (next interval) → fails instantly → consecutiveFailures=3 → failure callback fires (proxy keeps running)
 	// Total time: ~200ms for 3 consecutive ticker failures with instant failures
 	callbackInvoked := waitForCallback(t, tracker)
 
-	assert.True(t, callbackInvoked, "Callback should be invoked when connection is refused after 3 consecutive failures")
-
-	// Remote proxies stay alive for auto-recovery
-	running, err := proxy.IsRunning()
-	assert.NoError(t, err)
-	assert.True(t, running, "Proxy should stay running for remote workloads (auto-recovery)")
+	require.True(t, callbackInvoked, "Callback should be invoked when connection is refused after 3 consecutive failures")
+	assertStaysRunning(t, proxy)
 }
 
 // TestTransparentProxy_RemoteServerFailure_HTTP500 tests that remote servers returning HTTP 500
@@ -1403,22 +1412,77 @@ func TestTransparentProxy_RemoteServerFailure_HTTP500(t *testing.T) {
 	defer func() { _ = proxy.Stop(ctx) }()
 
 	// Do not call proxy.setServerInitialized(). Health checks must fire before initialization.
+	require.True(t, waitForCallback(t, tracker),
+		"onHealthCheckFailed callback should be invoked when remote server returns HTTP 500")
+	assertStaysRunning(t, proxy)
+}
 
-	// Wait for the callback to be invoked (unhealthy threshold reached).
-	timer := time.NewTimer(2 * time.Second)
-	defer timer.Stop()
-	select {
-	case <-tracker.done:
-	case <-timer.C:
-		t.Fatal("timed out waiting for health check failure callback")
+// TestTransparentProxy_RemoteHealthCheckUsesRemotePath tests that a remote proxy's
+// health check reaches the remote URL's path and query rather than the host root,
+// so an MCP endpoint that fails on a host whose root answers is marked unhealthy.
+func TestTransparentProxy_RemoteHealthCheckUsesRemotePath(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/google-drive/mcp" && r.URL.Query().Get("toolsets") == "core" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	tracker, callback := newCallbackTracker()
+	proxy := NewTransparentProxyWithOptions(
+		"127.0.0.1", 0, server.URL,
+		nil, nil, nil,
+		true, // enableHealthCheck
+		true, // isRemote
+		"streamable-http",
+		callback,
+		nil, // onHealthCheckRecovered
+		nil, "", false, nil,
+		WithRemoteBasePath("/google-drive/mcp"),
+		WithRemoteRawQuery("toolsets=core"),
+		withHealthCheckInterval(100*time.Millisecond),
+		withHealthCheckRetryDelay(50*time.Millisecond),
+		withHealthCheckPingTimeout(100*time.Millisecond),
+		withHealthCheckFailureThreshold(3),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() { _ = proxy.Stop(context.Background()) })
+
+	assert.True(t, waitForCallback(t, tracker), "a failing MCP endpoint must be detected even when the host root answers")
+}
+
+func TestTransparentProxy_HealthCheckURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		targetURI string
+		basePath  string
+		rawQuery  string
+		want      string
+	}{
+		{name: "local target", targetURI: "http://127.0.0.1:8080", want: "http://127.0.0.1:8080"},
+		{name: "remote path", targetURI: "https://mcp.example.com", basePath: "/v2/mcp", want: "https://mcp.example.com/v2/mcp"},
+		{
+			name: "remote path and query", targetURI: "https://mcp.example.com", basePath: "/mcp", rawQuery: "toolsets=core,alerting",
+			want: "https://mcp.example.com/mcp?toolsets=core,alerting",
+		},
+		{name: "remote query only", targetURI: "https://mcp.example.com", rawQuery: "a=1", want: "https://mcp.example.com?a=1"},
 	}
 
-	assert.True(t, tracker.isInvoked(), "onHealthCheckFailed callback should be invoked when remote server returns HTTP 500")
-
-	// Remote proxies must NOT stop — they stay alive for auto-recovery.
-	running, err := proxy.IsRunning()
-	assert.NoError(t, err)
-	assert.True(t, running, "Proxy should remain running for remote workloads to allow auto-recovery")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			p := &TransparentProxy{targetURI: tt.targetURI, remoteBasePath: tt.basePath, remoteRawQuery: tt.rawQuery}
+			assert.Equal(t, tt.want, p.healthCheckURL())
+		})
+	}
 }
 
 // TestTransparentProxy_RemoteServerFailure_Timeout tests that timeouts
@@ -1455,10 +1519,10 @@ func TestTransparentProxy_RemoteServerFailure_Timeout(t *testing.T) {
 	// - Retry: T=150ms → timeout at T=250ms → fail → continue (consecutiveFailures stays 1)
 	// - Second ticker: T=300ms (next interval after retry) → timeout at T=400ms → fail → consecutiveFailures=2 → retry timer (50ms)
 	// - Retry: T=450ms → timeout at T=550ms → fail → continue (consecutiveFailures stays 2)
-	// - Third ticker: T=600ms (next interval after retry) → timeout at T=700ms → fail → consecutiveFailures=3 → shutdown
+	// - Third ticker: T=600ms (next interval after retry) → timeout at T=700ms → fail → consecutiveFailures=3 → failure callback fires (proxy keeps running)
 	// Total time: ~700ms for 3 consecutive ticker failures with timeouts
-	// Use 1 second timeout to allow for retry mechanism to complete with buffer (~700ms + margin)
-	proxy, ctx, cancel := setupRemoteProxyTestWithTimeout(t, hangingServer.URL, callback, 1*time.Second)
+	// Use a 2 second timeout so the proxy outlives the retries (~700ms) and the stay-running check after them
+	proxy, ctx, cancel := setupRemoteProxyTestWithTimeout(t, hangingServer.URL, callback, 2*time.Second)
 	defer cancel()
 	defer func() { _ = proxy.Stop(ctx) }()
 
@@ -1466,12 +1530,8 @@ func TestTransparentProxy_RemoteServerFailure_Timeout(t *testing.T) {
 
 	callbackInvoked := waitForCallback(t, tracker)
 
-	assert.True(t, callbackInvoked, "Callback should be invoked on timeout after 3 consecutive failures")
-
-	// Remote proxies stay alive for auto-recovery
-	running, err := proxy.IsRunning()
-	assert.NoError(t, err)
-	assert.True(t, running, "Proxy should stay running for remote workloads (auto-recovery)")
+	require.True(t, callbackInvoked, "Callback should be invoked on timeout after 3 consecutive failures")
+	assertStaysRunning(t, proxy)
 }
 
 // TestTransparentProxy_RemoteServerFailure_BecomesUnavailable tests that a server
@@ -1611,8 +1671,8 @@ func TestTransparentProxy_RemoteServerStatusCodes(t *testing.T) {
 	}
 }
 
-// TestTransparentProxy_HealthCheckFailureWithNilCallback tests that proxy stops
-// gracefully even when callback is nil
+// TestTransparentProxy_HealthCheckFailureWithNilCallback tests that a remote proxy
+// keeps running after reaching the failure threshold even when the failure callback is nil
 func TestTransparentProxy_HealthCheckFailureWithNilCallback(t *testing.T) {
 	t.Parallel()
 
@@ -1638,9 +1698,9 @@ func TestTransparentProxy_HealthCheckFailureWithNilCallback(t *testing.T) {
 }
 
 // TestTransparentProxy_RemoteServerAutoRecovery verifies the full down→unhealthy→up→running
-// cycle for a remote workload: the proxy stays alive after health check failures, fires
-// onHealthCheckFailed once per outage rather than on every failed check, and fires
-// onHealthCheckRecovered when the upstream comes back.
+// cycle for a remote workload: the proxy stays alive after health check failures, keeps
+// calling onHealthCheckFailed while the server stays unhealthy (so the runner can put a
+// lost status right), and calls onHealthCheckRecovered once when the upstream comes back.
 func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
 	t.Parallel()
 
@@ -1660,11 +1720,15 @@ func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	failTracker, trackFailure := newCallbackTracker()
-	recoveryTracker, recoveryCallback := newCallbackTracker()
-	var failures atomic.Int32
+	recoveryTracker, trackRecovery := newCallbackTracker()
+	var failures, recoveries atomic.Int32
 	failCallback := func() {
 		failures.Add(1)
 		trackFailure()
+	}
+	recoveryCallback := func() {
+		recoveries.Add(1)
+		trackRecovery()
 	}
 
 	proxy := NewTransparentProxyWithOptions(
@@ -1692,9 +1756,9 @@ func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
 	failInvoked := waitForCallback(t, failTracker)
 	require.True(t, failInvoked, "failure callback should fire after consecutive 500s")
 
-	// Several more failed checks while degraded must not notify again.
-	time.Sleep(500 * time.Millisecond)
-	assert.Equal(t, int32(1), failures.Load(), "failure callback should fire only on the transition into unhealthy")
+	// Failed checks while unhealthy notify again, bypassing the retry path.
+	require.Eventually(t, func() bool { return failures.Load() >= 3 }, 2*time.Second, 10*time.Millisecond,
+		"failure callback should be called on each failed check while unhealthy")
 
 	running, err := proxy.IsRunning()
 	require.NoError(t, err)
@@ -1712,12 +1776,18 @@ func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, running, "proxy must still be running after recovery")
 
+	// Healthy checks after recovery notify neither callback.
+	failuresAtRecovery := failures.Load()
+	time.Sleep(300 * time.Millisecond)
+	assert.Equal(t, int32(1), recoveries.Load(), "recovery callback should be called once per recovery")
+	assert.Equal(t, failuresAtRecovery, failures.Load(), "failure callback should not be called while healthy")
+
 	// Phase 3: a second outage notifies again.
 	mu.Lock()
 	serverHealthy = false
 	mu.Unlock()
 
-	require.Eventually(t, func() bool { return failures.Load() == 2 }, 2*time.Second, 10*time.Millisecond,
+	require.Eventually(t, func() bool { return failures.Load() > failuresAtRecovery }, 2*time.Second, 10*time.Millisecond,
 		"failure callback should fire again on a new outage after recovery")
 }
 

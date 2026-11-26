@@ -53,7 +53,8 @@ var (
 )
 
 func init() {
-	AddAllFlag(listCmd, &listAll, true, "Show all workloads (default shows running and auth_retrying)")
+	AddAllFlag(listCmd, &listAll, true,
+		"Show all workloads (default shows running and auth_retrying, plus unhealthy remote workloads)")
 	AddFormatFlag(listCmd, &listFormat, FormatJSON, FormatText, "mcpservers")
 	listCmd.Flags().StringArrayVarP(&listLabelFilter, "label", "l", []string{}, "Filter workloads by labels (format: key=value)")
 	AddGroupFlag(listCmd, &listGroupFilter, false)
@@ -250,8 +251,9 @@ func printTextOutput(workloadList []core.Workload, upgrades map[string]*upgrade.
 	// Print workload information
 	for _, c := range workloadList {
 		status := workloadStatusIndicator(c.Status)
-		// For unhealthy workloads, include the status context if available
-		if c.Status == rt.WorkloadStatusUnhealthy && c.StatusContext != "" {
+		// Show why a remote workload is unhealthy. Local workloads are left out:
+		// their contexts are long internal diagnostics that would widen the column.
+		if c.Remote && c.Status == rt.WorkloadStatusUnhealthy && c.StatusContext != "" {
 			status = status + " (" + c.StatusContext + ")"
 		}
 

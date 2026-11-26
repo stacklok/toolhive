@@ -607,35 +607,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Set the token source on the transport
 		transportHandler.SetTokenSource(tokenSource)
 
-		// Set the health check failure callback for remote servers
-		transportHandler.SetOnHealthCheckFailed(func() {
-			slog.Warn("health check failed for remote server, marking as unhealthy", "server", r.Config.BaseName)
-			// Use Background context for status update callback - this is triggered by health check
-			// failure and is independent of any request context. The callback is fired asynchronously
-			// and needs its own lifecycle separate from the transport's parent context.
-			if err := r.transitionWorkloadStatus(
-				context.Background(),
-				nil,
-				rt.WorkloadStatusUnhealthy,
-				"Health check failed",
-			); err != nil {
-				slog.Error("failed to update workload status", "error", err)
-			}
-		})
-
-		// Set the health check recovery callback for remote servers. It moves the
-		// workload back to running only from unhealthy, so it never overrides a
-		// status another callback set in the meantime.
-		transportHandler.SetOnHealthCheckRecovered(func() {
-			if err := r.transitionWorkloadStatus(
-				context.Background(),
-				func(current rt.WorkloadStatus) bool { return current != rt.WorkloadStatusUnhealthy },
-				rt.WorkloadStatusRunning,
-				"",
-			); err != nil {
-				slog.Error("failed to update workload status on recovery", "error", err)
-			}
-		})
+		// Set the health check callbacks for remote servers
+		transportHandler.SetOnHealthCheckFailed(r.markRemoteUnhealthy)
+		transportHandler.SetOnHealthCheckRecovered(r.markRemoteRecovered)
 
 		// Set the unauthorized response callback for bearer token authentication
 		errorMsg := "Bearer token authentication failed. Please restart the server with a new token"
@@ -644,7 +618,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Use Background context for status update callback - this is triggered by 401 response
 			// and is independent of any request context. The callback is fired asynchronously
 			// and needs its own lifecycle separate from the transport's parent context.
-			if err := r.transitionWorkloadStatus(
+			if _, err := r.transitionWorkloadStatus(
 				context.Background(),
 				nil,
 				rt.WorkloadStatusUnauthenticated,
@@ -799,14 +773,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// - unauthenticated: bearer token authentication failed during initialization
 	// - unhealthy: health checks failed before waitForInitializeSuccess returned;
 	//   the health check loop owns the move back to running
-	if err := r.transitionWorkloadStatus(
-		ctx,
-		func(current rt.WorkloadStatus) bool {
-			return current == rt.WorkloadStatusUnauthenticated || current == rt.WorkloadStatusUnhealthy
-		},
-		rt.WorkloadStatusRunning,
-		"",
-	); err != nil {
+	if _, err := r.transitionWorkloadStatus(ctx, keepStatusOnStartup, rt.WorkloadStatusRunning, ""); err != nil {
 		// If we can't set the status to `running` - treat it as a fatal error.
 		return fmt.Errorf("failed to set workload status: %w", err)
 	}
@@ -1375,30 +1342,89 @@ func (r *Runner) startEmbeddedAuthServerListener() error {
 	return nil
 }
 
+// keepStatusOnStartup reports whether the startup write of running must keep the
+// current status, because a transport callback set it while the workload started.
+func keepStatusOnStartup(current rt.WorkloadStatus) bool {
+	return current == rt.WorkloadStatusUnauthenticated || current == rt.WorkloadStatusUnhealthy
+}
+
+// remoteUnhealthyStatusContext is the status context of a remote workload that
+// failed its health checks.
+const remoteUnhealthyStatusContext = "Remote server failed health checks"
+
+// markRemoteUnhealthy is the health check failure callback for remote servers. The
+// proxy calls it on every failed check while the server stays unhealthy, so it
+// writes only when the status is not already unhealthy, and it keeps an
+// unauthenticated status: the proxy's health check cannot clear that, so letting
+// it through would let a later recovery report a server that rejects every
+// request as running.
+func (r *Runner) markRemoteUnhealthy() {
+	// Use Background context for status update callback - this is triggered by health check
+	// failure and is independent of any request context. The callback is fired asynchronously
+	// and needs its own lifecycle separate from the transport's parent context.
+	changed, err := r.transitionWorkloadStatus(
+		context.Background(),
+		func(current rt.WorkloadStatus) bool {
+			return current == rt.WorkloadStatusUnhealthy || current == rt.WorkloadStatusUnauthenticated
+		},
+		rt.WorkloadStatusUnhealthy,
+		remoteUnhealthyStatusContext,
+	)
+	if err != nil {
+		slog.Error("failed to update workload status", "error", err)
+		return
+	}
+	if changed {
+		slog.Warn("health check failed for remote server, marking as unhealthy", "server", r.Config.BaseName)
+	}
+}
+
+// markRemoteRecovered is the health check recovery callback for remote servers. It
+// moves the workload back to running only from unhealthy, so it never overrides a
+// status another writer set in the meantime, nor one it cannot read.
+func (r *Runner) markRemoteRecovered() {
+	if _, err := r.transitionWorkloadStatus(
+		context.Background(),
+		func(current rt.WorkloadStatus) bool { return current != rt.WorkloadStatusUnhealthy },
+		rt.WorkloadStatusRunning,
+		"",
+	); err != nil {
+		slog.Error("failed to update workload status on recovery", "error", err)
+	}
+}
+
 // transitionWorkloadStatus sets the workload status, unless preserve is non-nil
-// and reports that the current status must be kept. It holds statusMu so the
-// read and the write are atomic with respect to the other callers. A failure to
-// read the current status is logged and the status is set anyway.
+// and reports that the current status must be kept, and reports whether it wrote.
+// It holds statusMu so the read and the write are atomic with respect to the
+// other callers. A status that cannot be read, because the workload is not found
+// or the read fails, is passed to preserve as unknown.
 func (r *Runner) transitionWorkloadStatus(
 	ctx context.Context,
 	preserve func(current rt.WorkloadStatus) bool,
 	status rt.WorkloadStatus,
 	statusContext string,
-) error {
+) (bool, error) {
 	r.statusMu.Lock()
 	defer r.statusMu.Unlock()
 
 	if preserve != nil {
-		current, err := r.statusManager.GetWorkload(ctx, r.Config.BaseName)
+		current := rt.WorkloadStatusUnknown
+		workload, err := r.statusManager.GetWorkload(ctx, r.Config.BaseName)
 		switch {
-		case err != nil && !errors.Is(err, rt.ErrWorkloadNotFound):
+		case err == nil:
+			current = workload.Status
+		case !errors.Is(err, rt.ErrWorkloadNotFound):
 			slog.Warn("failed to get current workload status", "error", err)
-		case err == nil && preserve(current.Status):
+		}
+		if preserve(current) {
 			slog.Debug("preserving workload status",
-				"workload", r.Config.BaseName, "status", current.Status, "skipped_status", status)
-			return nil
+				"workload", r.Config.BaseName, "status", current, "skipped_status", status)
+			return false, nil
 		}
 	}
 
-	return r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, status, statusContext)
+	if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, status, statusContext); err != nil {
+		return false, err
+	}
+	return true, nil
 }

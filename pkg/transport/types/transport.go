@@ -205,13 +205,15 @@ type Proxy interface {
 	ForwardResponseToClients(ctx context.Context, msg jsonrpc2.Message) error
 }
 
-// HealthCheckFailedCallback is a function that is called when a health check fails.
-// This allows the transport to notify the runner/status manager when remote servers become unhealthy.
+// HealthCheckFailedCallback is called when a server reaches the health check failure
+// threshold, so the runner/status manager can mark the workload unhealthy. For a remote
+// server it is called again on every failed check while the server stays unhealthy, so
+// implementations must be idempotent and should write only when the status differs.
 type HealthCheckFailedCallback func()
 
-// HealthCheckRecoveredCallback is a function that is called when a health check recovers
-// after previously failing. This allows the transport to notify the runner/status manager
-// when a remote server becomes healthy again.
+// HealthCheckRecoveredCallback is called once when a remote server passes a health check
+// after HealthCheckFailedCallback was called, so the runner/status manager can mark the
+// workload running again. A recovery before the failure threshold does not call it.
 type HealthCheckRecoveredCallback func()
 
 // UnauthorizedResponseCallback is a function that is called when a 401 Unauthorized response is received.

@@ -360,3 +360,29 @@ func TestHTTPTransport_IsRunning(t *testing.T) {
 		assert.Contains(t, err.Error(), "proxy error")
 	})
 }
+
+//nolint:paralleltest // t.Setenv is incompatible with t.Parallel
+func TestShouldEnableHealthCheck(t *testing.T) {
+	tests := []struct {
+		name     string
+		isRemote bool
+		envValue string
+		want     bool
+	}{
+		{name: "local workload, env unset", isRemote: false, want: true},
+		{name: "local workload ignores opt-out", isRemote: false, envValue: "false", want: true},
+		{name: "remote workload, env unset", isRemote: true, want: true},
+		{name: "remote workload, env true", isRemote: true, envValue: "true", want: true},
+		{name: "remote workload, unrecognized value", isRemote: true, envValue: "yes", want: true},
+		{name: "remote workload, opted out with false", isRemote: true, envValue: "false", want: false},
+		{name: "remote workload, opted out with FALSE", isRemote: true, envValue: "FALSE", want: false},
+		{name: "remote workload, opted out with 0", isRemote: true, envValue: "0", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(remoteHealthChecksEnvVar, tt.envValue)
+			assert.Equal(t, tt.want, shouldEnableHealthCheck(tt.isRemote))
+		})
+	}
+}

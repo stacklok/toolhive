@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -226,6 +228,22 @@ func hasTokenInjectingMiddleware(middlewares []types.NamedMiddleware) bool {
 	return false
 }
 
+// remoteHealthChecksEnvVar turns off health checks for remote workloads when set
+// to "false" or "0".
+const remoteHealthChecksEnvVar = "TOOLHIVE_REMOTE_HEALTHCHECKS"
+
+// shouldEnableHealthCheck reports whether health checks run for a workload. They
+// always run for local workloads. They run for remote workloads too, unless
+// TOOLHIVE_REMOTE_HEALTHCHECKS is "false" or "0", for remote servers that answer
+// the health check badly while serving MCP requests normally.
+func shouldEnableHealthCheck(isRemote bool) bool {
+	if !isRemote {
+		return true
+	}
+	envVal := strings.ToLower(os.Getenv(remoteHealthChecksEnvVar))
+	return envVal != "false" && envVal != "0"
+}
+
 // Mode returns the transport mode.
 func (t *HTTPTransport) Mode() types.TransportType {
 	return t.transportType
@@ -330,6 +348,8 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		})
 	}
 
+	enableHealthCheck := shouldEnableHealthCheck(isRemote)
+
 	// Build proxy options
 	proxyOptions := t.buildProxyOptions(remoteBasePath, remoteRawQuery)
 
@@ -341,7 +361,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		t.prometheusHandler,
 		t.authInfoHandler,
 		t.prefixHandlers,
-		true,
+		enableHealthCheck,
 		isRemote,
 		string(t.transportType),
 		t.onHealthCheckFailed,

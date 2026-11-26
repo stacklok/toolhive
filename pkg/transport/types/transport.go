@@ -211,10 +211,12 @@ type Proxy interface {
 // implementations must be idempotent and should write only when the status differs.
 type HealthCheckFailedCallback func()
 
-// HealthCheckRecoveredCallback is called once when a remote server passes a health check
+// HealthCheckRecoveredCallback is called when a remote server passes a health check
 // after HealthCheckFailedCallback was called, so the runner/status manager can mark the
-// workload running again. A recovery before the failure threshold does not call it.
-type HealthCheckRecoveredCallback func()
+// workload running again. A nil error means the recovery is handled (the status was
+// written, or deliberately left alone); a non-nil error means the proxy calls it again
+// on the next passing check. A recovery before the failure threshold does not call it.
+type HealthCheckRecoveredCallback func() error
 
 // UnauthorizedResponseCallback is a function that is called when a 401 Unauthorized response is received.
 // This allows the transport to notify the runner/status manager when bearer tokens become invalid.

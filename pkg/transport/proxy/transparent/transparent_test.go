@@ -1679,35 +1679,36 @@ func TestTransparentProxy_RemoteServerStatusCodes(t *testing.T) {
 }
 
 // TestTransparentProxy_HealthCheckFailureWithNilCallback tests that a remote proxy
-// keeps running after reaching the failure threshold even when the failure callback is nil
+// crosses the failure threshold and keeps checking and running while degraded when
+// both health check callbacks are nil.
 func TestTransparentProxy_HealthCheckFailureWithNilCallback(t *testing.T) {
 	t.Parallel()
 
-	// Create a failing server
+	var hits atomic.Int32
 	failingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	defer failingServer.Close()
+	t.Cleanup(failingServer.Close)
 
-	proxy, ctx, cancel := setupRemoteProxyTest(t, failingServer.URL, nil) // nil callback
-	defer cancel()
-	defer func() { _ = proxy.Stop(ctx) }()
+	proxy, _ := startRemoteMonitoredProxy(t, failingServer.URL, nil, nil)
 
-	proxy.setServerInitialized()
+	// With fastHealthCheckOptions (threshold 3) and one request per check: the check
+	// before the first tick, two failed ticks each followed by a failed retry, the tick
+	// that reaches the threshold, then two degraded ticks that run with nil callbacks.
+	const hitsPastThreshold = 1 + 2*2 + 1 + 2
+	require.Eventually(t, func() bool { return hits.Load() >= hitsPastThreshold }, 3*time.Second, 10*time.Millisecond,
+		"the monitor must keep checking past the failure threshold")
 
-	// With retry mechanism (100ms ticker, 50ms retry delay) and instant failures (5xx status):
-	// Total time: ~200ms for 3 consecutive ticker failures with instant failures
-	time.Sleep(400 * time.Millisecond)
-
-	// Remote proxies stay alive for auto-recovery even without a callback
-	running, _ := proxy.IsRunning()
-	assert.True(t, running, "Proxy should stay running for remote workloads even with nil callback")
+	// Remote proxies stay alive for auto-recovery even without callbacks
+	assertStaysRunning(t, proxy)
 }
 
 // TestTransparentProxy_RemoteServerAutoRecovery verifies the full down→unhealthy→up→running
 // cycle for a remote workload: the proxy stays alive after health check failures, keeps
 // calling onHealthCheckFailed while the server stays unhealthy (so the runner can put a
-// lost status right), and calls onHealthCheckRecovered once when the upstream comes back.
+// lost status right), and calls onHealthCheckRecovered once when the upstream comes back
+// and the callback reports the recovery handled.
 func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
 	t.Parallel()
 
@@ -1733,9 +1734,10 @@ func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
 		failures.Add(1)
 		trackFailure()
 	}
-	recoveryCallback := func() {
+	recoveryCallback := func() error {
 		recoveries.Add(1)
 		trackRecovery()
+		return nil
 	}
 
 	proxy := NewTransparentProxyWithOptions(

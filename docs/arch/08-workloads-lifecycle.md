@@ -58,7 +58,10 @@ server passes a health check again, so default `thv list` shows unhealthy
 remote workloads with the status context "Remote server failed health checks".
 Stopping a remote workload whose proxy is still running, whether it is
 `starting`, `running`, `unhealthy`, `auth_retrying` or `unauthenticated`, stops
-the proxy, removes its client configuration and marks it `stopped`.
+the proxy, removes its client configuration and marks it `stopped`. A health
+check failing during shutdown or after removal leaves `stopping`, `stopped`,
+and `removing` in place (best-effort; see
+[Transport Architecture](03-transport-architecture.md#health-checks)).
 
 The `auth_retrying` cadence and ceiling can be tuned via environment
 variables on the proxy process:

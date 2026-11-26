@@ -1344,34 +1344,59 @@ func (r *Runner) startEmbeddedAuthServerListener() error {
 
 // keepStatusOnStartup reports whether the startup write of running must keep the
 // current status, because a transport callback set it while the workload started.
-func keepStatusOnStartup(current rt.WorkloadStatus) bool {
+// A status that cannot be read, because the workload is not found or the read
+// fails, is not kept: startup writes running regardless.
+func keepStatusOnStartup(current rt.WorkloadStatus, _ error) bool {
 	return current == rt.WorkloadStatusUnauthenticated || current == rt.WorkloadStatusUnhealthy
+}
+
+// keepStatusOnRemoteUnhealthy reports whether a failed health check must keep the
+// current status rather than write unhealthy. It keeps:
+//   - unhealthy, so the repeated callback does not rewrite it;
+//   - unauthenticated, which the health check cannot clear, so letting it through
+//     would let a later recovery report a server that rejects every request as running;
+//   - stopping, stopped and removing, which the workload manager writes while it
+//     shuts the proxy down, during which a health check can still fail;
+//   - a status that cannot be read: a workload that is not found has been deleted,
+//     and writing would recreate its status, and a failed read is retried on the
+//     next failed check.
+func keepStatusOnRemoteUnhealthy(current rt.WorkloadStatus, readErr error) bool {
+	return readErr != nil ||
+		current == rt.WorkloadStatusUnhealthy ||
+		current == rt.WorkloadStatusUnauthenticated ||
+		current == rt.WorkloadStatusStopping ||
+		current == rt.WorkloadStatusStopped ||
+		current == rt.WorkloadStatusRemoving
+}
+
+// keepStatusOnRemoteRecovered reports whether a passing health check must keep the
+// current status rather than write running. It writes only over unhealthy, so it
+// never overrides a status another writer set in the meantime, nor one it cannot read.
+func keepStatusOnRemoteRecovered(current rt.WorkloadStatus, readErr error) bool {
+	return readErr != nil || current != rt.WorkloadStatusUnhealthy
 }
 
 // remoteUnhealthyStatusContext is the status context of a remote workload that
 // failed its health checks.
 const remoteUnhealthyStatusContext = "Remote server failed health checks"
 
-// markRemoteUnhealthy is the health check failure callback for remote servers. The
-// proxy calls it on every failed check while the server stays unhealthy, so it
-// writes only when the status is not already unhealthy, and it keeps an
-// unauthenticated status: the proxy's health check cannot clear that, so letting
-// it through would let a later recovery report a server that rejects every
-// request as running.
+// markRemoteUnhealthy is the health check failure callback for remote servers. It
+// writes unhealthy unless keepStatusOnRemoteUnhealthy keeps the current status. It
+// does not report failures to the proxy: the proxy calls it again on every failed
+// check while the server stays unhealthy, so a failed read or write is retried.
 func (r *Runner) markRemoteUnhealthy() {
 	// Use Background context for status update callback - this is triggered by health check
 	// failure and is independent of any request context. The callback is fired asynchronously
 	// and needs its own lifecycle separate from the transport's parent context.
 	changed, err := r.transitionWorkloadStatus(
 		context.Background(),
-		func(current rt.WorkloadStatus) bool {
-			return current == rt.WorkloadStatusUnhealthy || current == rt.WorkloadStatusUnauthenticated
-		},
+		keepStatusOnRemoteUnhealthy,
 		rt.WorkloadStatusUnhealthy,
 		remoteUnhealthyStatusContext,
 	)
 	if err != nil {
-		slog.Error("failed to update workload status", "error", err)
+		slog.Warn("failed to mark remote server unhealthy, retrying on the next failed health check",
+			"server", r.Config.BaseName, "error", err)
 		return
 	}
 	if changed {
@@ -1380,27 +1405,35 @@ func (r *Runner) markRemoteUnhealthy() {
 }
 
 // markRemoteRecovered is the health check recovery callback for remote servers. It
-// moves the workload back to running only from unhealthy, so it never overrides a
-// status another writer set in the meantime, nor one it cannot read.
-func (r *Runner) markRemoteRecovered() {
-	if _, err := r.transitionWorkloadStatus(
+// moves the workload back to running only from unhealthy. It returns nil when the
+// recovery is handled: the status was written, or was deliberately left alone
+// because it is not unhealthy or the workload is not found. It returns an error
+// when the status cannot be read or written, so the proxy calls it again on the
+// next passing check rather than losing the recovery.
+func (r *Runner) markRemoteRecovered() error {
+	_, err := r.transitionWorkloadStatus(
 		context.Background(),
-		func(current rt.WorkloadStatus) bool { return current != rt.WorkloadStatusUnhealthy },
+		keepStatusOnRemoteRecovered,
 		rt.WorkloadStatusRunning,
 		"",
-	); err != nil {
-		slog.Error("failed to update workload status on recovery", "error", err)
-	}
+	)
+	return err
 }
 
 // transitionWorkloadStatus sets the workload status, unless preserve is non-nil
 // and reports that the current status must be kept, and reports whether it wrote.
 // It holds statusMu so the read and the write are atomic with respect to the
-// other callers. A status that cannot be read, because the workload is not found
-// or the read fails, is passed to preserve as unknown.
+// other callers.
+//
+// preserve receives the current status and the error from reading it. When the
+// read fails, current is unknown and readErr is non-nil; rt.ErrWorkloadNotFound
+// means the workload has no status. If preserve keeps a status whose read failed
+// with any other error, transitionWorkloadStatus returns that error, so the caller
+// can retry; a workload that is not found is not an error. If preserve lets the
+// write through despite a failed read, the write proceeds.
 func (r *Runner) transitionWorkloadStatus(
 	ctx context.Context,
-	preserve func(current rt.WorkloadStatus) bool,
+	preserve func(current rt.WorkloadStatus, readErr error) bool,
 	status rt.WorkloadStatus,
 	statusContext string,
 ) (bool, error) {
@@ -1408,18 +1441,23 @@ func (r *Runner) transitionWorkloadStatus(
 	defer r.statusMu.Unlock()
 
 	if preserve != nil {
+		workload, readErr := r.statusManager.GetWorkload(ctx, r.Config.BaseName)
 		current := rt.WorkloadStatusUnknown
-		workload, err := r.statusManager.GetWorkload(ctx, r.Config.BaseName)
-		switch {
-		case err == nil:
+		if readErr == nil {
 			current = workload.Status
-		case !errors.Is(err, rt.ErrWorkloadNotFound):
-			slog.Warn("failed to get current workload status", "error", err)
 		}
-		if preserve(current) {
+		readFailed := readErr != nil && !errors.Is(readErr, rt.ErrWorkloadNotFound)
+		if preserve(current, readErr) {
+			if readFailed {
+				return false, fmt.Errorf("failed to get current workload status: %w", readErr)
+			}
 			slog.Debug("preserving workload status",
 				"workload", r.Config.BaseName, "status", current, "skipped_status", status)
 			return false, nil
+		}
+		if readFailed {
+			slog.Warn("failed to get current workload status, setting it anyway",
+				"workload", r.Config.BaseName, "status", status, "error", readErr)
 		}
 	}
 

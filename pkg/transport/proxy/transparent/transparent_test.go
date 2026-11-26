@@ -1325,6 +1325,18 @@ func setupRemoteProxyTest(t *testing.T, serverURL string, callback types.HealthC
 	return setupRemoteProxyTestWithTimeout(t, serverURL, callback, 1*time.Second)
 }
 
+// fastHealthCheckOptions returns health check options for faster tests: a 100ms
+// interval and ping timeout, a 50ms retry delay, and a threshold of 3 (production
+// defaults are 10s, 5s, 5s and 5).
+func fastHealthCheckOptions() []Option {
+	return []Option{
+		withHealthCheckInterval(100 * time.Millisecond),
+		withHealthCheckRetryDelay(50 * time.Millisecond),
+		withHealthCheckPingTimeout(100 * time.Millisecond),
+		withHealthCheckFailureThreshold(3),
+	}
+}
+
 // setupRemoteProxyTestWithTimeout creates a proxy with a custom context timeout
 func setupRemoteProxyTestWithTimeout(t *testing.T, serverURL string, callback types.HealthCheckFailedCallback, timeout time.Duration) (*TransparentProxy, context.Context, context.CancelFunc) {
 	t.Helper()
@@ -1345,10 +1357,7 @@ func setupRemoteProxyTestWithTimeout(t *testing.T, serverURL string, callback ty
 		"",
 		false,
 		nil, // middlewares
-		withHealthCheckInterval(100*time.Millisecond),    // Use 100ms for faster tests
-		withHealthCheckRetryDelay(50*time.Millisecond),   // Use 50ms retry delay for faster tests
-		withHealthCheckPingTimeout(100*time.Millisecond), // Use 100ms ping timeout for faster tests
-		withHealthCheckFailureThreshold(3),               // Use 3 for faster tests (production default is 5)
+		fastHealthCheckOptions()...,
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -1442,12 +1451,10 @@ func TestTransparentProxy_RemoteHealthCheckUsesRemotePath(t *testing.T) {
 		callback,
 		nil, // onHealthCheckRecovered
 		nil, "", false, nil,
-		WithRemoteBasePath("/google-drive/mcp"),
-		WithRemoteRawQuery("toolsets=core"),
-		withHealthCheckInterval(100*time.Millisecond),
-		withHealthCheckRetryDelay(50*time.Millisecond),
-		withHealthCheckPingTimeout(100*time.Millisecond),
-		withHealthCheckFailureThreshold(3),
+		append(fastHealthCheckOptions(),
+			WithRemoteBasePath("/google-drive/mcp"),
+			WithRemoteRawQuery("toolsets=core"),
+		)...,
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -1740,10 +1747,7 @@ func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
 		failCallback,
 		recoveryCallback,
 		nil, "", false, nil,
-		withHealthCheckInterval(100*time.Millisecond),
-		withHealthCheckRetryDelay(50*time.Millisecond),
-		withHealthCheckPingTimeout(100*time.Millisecond),
-		withHealthCheckFailureThreshold(3),
+		fastHealthCheckOptions()...,
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

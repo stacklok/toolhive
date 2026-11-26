@@ -371,6 +371,11 @@ func (cb *callBinding) serveListCall(
 	next.ServeHTTP(buffered, r)
 
 	body := buffered.body.Bytes()
+	if len(body) == 0 && r.Context().Err() != nil {
+		// The client went away before the handler answered: nothing to send.
+		slog.DebugContext(r.Context(), "call binding: a list call ended before it was answered", "jti", token.JTI)
+		return
+	}
 	if buffered.status == http.StatusOK {
 		filtered, err := callbinding.FilterListResult(parsed.Method, body, keep)
 		if err != nil {

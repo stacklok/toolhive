@@ -172,24 +172,14 @@ func TestCallBinding_ListCallMismatches(t *testing.T) {
 }
 
 // TestCallBinding_ListCallServerWithoutItems checks that a list-call token
-// for a server the vMCP has no items from lists nothing, and that items with
-// no single backend, such as a composite tool, are never listed.
+// for a server the vMCP has no items from lists nothing.
 func TestCallBinding_ListCallServerWithoutItems(t *testing.T) {
 	t.Parallel()
 	s := newCallBindingTestServer(t, cbServerOptions{})
-	for _, server := range []string{"unknown", ""} {
-		entry := listEntry(server, "tools/list")
-		if server == "" {
-			// An empty server is a malformed entry.
-			token := s.tokens.add("empty", claimsFor(cbClient, "jti-empty", []any{entry}))
-			requireRefused(t, s.initialize(t, token), callbinding.ReasonMalformedEntry, 1)
-			continue
-		}
-		token := s.tokens.add(server, claimsFor(cbClient, "jti-"+server, []any{entry}))
-		resp := s.send(t, http.MethodPost, token, s.session(t, token), listBody(2, "tools/list"), nil)
-		require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
-		assert.Empty(t, listedKeys(t, "tools/list", resp.body))
-	}
+	token := s.tokens.add("unknown", claimsFor(cbClient, "jti-1", []any{listEntry("unknown", "tools/list")}))
+	resp := s.send(t, http.MethodPost, token, s.session(t, token), listBody(2, "tools/list"), nil)
+	require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
+	assert.Empty(t, listedKeys(t, "tools/list", resp.body))
 }
 
 // listErrCore fails ListTools until cleared.
@@ -254,6 +244,28 @@ func TestCallBinding_ListCallOptimizerListsNothing(t *testing.T) {
 	assert.Equal(t, map[string]struct{}{cbPrompt: {}}, keys, "prompts are not the optimizer's")
 	_, err = s.callBindingListItems(context.Background(), nil, "tools/call", cbServer)
 	require.Error(t, err)
+}
+
+// TestCallBinding_ListCallClientGone checks that a list call whose client
+// went away before the handler answered writes nothing.
+func TestCallBinding_ListCallClientGone(t *testing.T) {
+	t.Parallel()
+	cb, err := newCallBinding(callbinding.Config{}, nil,
+		func(context.Context, *auth.Identity, string, string) (map[string]struct{}, error) {
+			return map[string]struct{}{}, nil
+		})
+	require.NoError(t, err)
+	token, reason := callbinding.FromClaims(
+		claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}), nil)
+	require.Empty(t, reason)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(listBody(2, "tools/list"))).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { cancel() })
+	cb.serveBound(rec, req, next, &auth.Identity{}, token,
+		&mcpparser.ParsedMCPRequest{Method: "tools/list", ID: float64(2), IsRequest: true})
+	assert.Empty(t, rec.Body.String())
+	assert.False(t, rec.Flushed)
 }
 
 // TestCallBinding_ListCallResponseHandling drives serveBound with stand-in

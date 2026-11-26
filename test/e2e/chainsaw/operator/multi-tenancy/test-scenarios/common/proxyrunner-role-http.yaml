@@ -22,12 +22,6 @@ rules:
   - patch
   - delete
 - apiGroups:
-  - apps
-  resources:
-  - statefulsets/finalizers
-  verbs:
-  - update
-- apiGroups:
   - ""
   resources:
   - services

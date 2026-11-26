@@ -56,6 +56,13 @@ type SuiteOptions struct {
 	// list by GroupRef (anything that wires up the MCPGroup or VirtualMCPServer
 	// controllers) need these; the rest leave it false.
 	RegisterGroupRefIndexers bool
+
+	// EnableAdmissionPlugins lists kube-apiserver admission plugins to enable
+	// on top of the defaults envtest already runs (--enable-admission-plugins
+	// only adds plugins; the default-on set stays enabled). Suites that need an
+	// API server closer to a hardened distribution such as OpenShift use this;
+	// the rest leave it empty so their API server is unchanged.
+	EnableAdmissionPlugins []string
 }
 
 // SuiteEnv holds the shared envtest infrastructure for an operator integration
@@ -101,6 +108,11 @@ func StartSuite(opts SuiteOptions) *SuiteEnv {
 	testEnv := &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "..", "deploy", "charts", "operator-crds", "files", "crds")},
 		ErrorIfCRDPathMissing: true,
+	}
+
+	if len(opts.EnableAdmissionPlugins) > 0 {
+		testEnv.ControlPlane.GetAPIServer().Configure().
+			Append("enable-admission-plugins", opts.EnableAdmissionPlugins...)
 	}
 
 	cfg, err := testEnv.Start()

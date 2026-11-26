@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
+	metav1apply "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
@@ -788,16 +789,25 @@ func TestCreateContainerWithMCP(t *testing.T) {
 
 // TestDeployWorkloadCreatesBackendServices verifies that deploying with HTTP-based
 // transports (SSE and streamable-http) creates both a headless service and a ClusterIP
-// service with session affinity, and that both services have the StatefulSet as owner.
+// service with session affinity, and that both services have the StatefulSet as owner
+// without blockOwnerDeletion (#6836).
 func TestDeployWorkloadCreatesBackendServices(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
 		name          string
 		transportType string
+		// legacyBlockOwnerDeletion pre-applies both services under the same field
+		// manager with blockOwnerDeletion set, as older runner versions did.
+		legacyBlockOwnerDeletion bool
 	}{
 		{name: "sse transport", transportType: "sse"},
 		{name: "streamable-http transport", transportType: "streamable-http"},
+		{
+			name:                     "re-apply drops legacy blockOwnerDeletion",
+			transportType:            "streamable-http",
+			legacyBlockOwnerDeletion: true,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -836,6 +846,24 @@ func TestDeployWorkloadCreatesBackendServices(t *testing.T) {
 				"8080/tcp": {{HostPort: "8080"}},
 			}
 
+			if tc.legacyBlockOwnerDeletion {
+				for _, svcName := range []string{"mcp-" + containerName, "mcp-" + containerName + "-headless"} {
+					svc, err := clientset.CoreV1().Services("default").Apply(t.Context(),
+						corev1apply.Service(svcName, "default").
+							WithOwnerReferences(metav1apply.OwnerReference().
+								WithAPIVersion("apps/v1").
+								WithKind("StatefulSet").
+								WithName(containerName).
+								WithUID("test-uid-123").
+								WithBlockOwnerDeletion(true).
+								WithController(true)),
+						metav1.ApplyOptions{FieldManager: serviceFieldManager, Force: true})
+					require.NoError(t, err)
+					require.Len(t, svc.OwnerReferences, 1)
+					require.True(t, ptr.Deref(svc.OwnerReferences[0].BlockOwnerDeletion, false))
+				}
+			}
+
 			_, err := client.DeployWorkload(
 				t.Context(),
 				"test-image",
@@ -865,8 +893,7 @@ func TestDeployWorkloadCreatesBackendServices(t *testing.T) {
 			assert.Equal(t, k8stypes.UID("test-uid-123"), headlessSvc.OwnerReferences[0].UID)
 			require.NotNil(t, headlessSvc.OwnerReferences[0].Controller)
 			assert.True(t, *headlessSvc.OwnerReferences[0].Controller)
-			require.NotNil(t, headlessSvc.OwnerReferences[0].BlockOwnerDeletion)
-			assert.True(t, *headlessSvc.OwnerReferences[0].BlockOwnerDeletion)
+			assert.Nil(t, headlessSvc.OwnerReferences[0].BlockOwnerDeletion)
 
 			// Verify the MCP ClusterIP service was created
 			mcpSvc, err := clientset.CoreV1().Services("default").Get(
@@ -885,8 +912,7 @@ func TestDeployWorkloadCreatesBackendServices(t *testing.T) {
 			assert.Equal(t, k8stypes.UID("test-uid-123"), mcpSvc.OwnerReferences[0].UID)
 			require.NotNil(t, mcpSvc.OwnerReferences[0].Controller)
 			assert.True(t, *mcpSvc.OwnerReferences[0].Controller)
-			require.NotNil(t, mcpSvc.OwnerReferences[0].BlockOwnerDeletion)
-			assert.True(t, *mcpSvc.OwnerReferences[0].BlockOwnerDeletion)
+			assert.Nil(t, mcpSvc.OwnerReferences[0].BlockOwnerDeletion)
 
 			// Verify MCPServiceName was set on options
 			assert.Equal(t, "mcp-"+containerName, options.MCPServiceName)

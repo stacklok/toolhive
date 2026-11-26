@@ -423,9 +423,10 @@ func (r *upstreamTokenRefresher) cleanupAfterRotatedPersistFailure(
 
 // clearDeadRefreshToken is the user-keyed form of the cleanup. The row is
 // shared by all of the user's clients, so it is never deleted: the dead
-// refresh token is cleared by compare-and-swap against the value this call
-// redeemed. If a sign-in or another refresh stored a different token in the
-// meantime the swap fails and that row is kept.
+// refresh token is cleared, and the access token expired, by compare-and-swap
+// against the value this call redeemed. If a sign-in or another refresh
+// stored a different token in the meantime the swap fails and that row is
+// kept.
 //
 // Accepted race: a sign-in that carried the same dead refresh token forward
 // between the redemption and this swap loses that token (it is dead anyway),
@@ -436,6 +437,11 @@ func (r *upstreamTokenRefresher) clearDeadRefreshToken(
 ) error {
 	cleared := *expired
 	cleared.RefreshToken = ""
+	// Expire the access token as well, so the connection needs authorization
+	// at once, as it does when the row is deleted. A row whose upstream gave no
+	// expires_in has a zero ExpiresAt and no storage lifetime, and would
+	// otherwise be served without ever being refreshed.
+	cleared.ExpiresAt = time.Now()
 	casErr := r.storage.CompareAndSwapUpstreamTokens(
 		ctx, sessionID, expired.ProviderID, expired.RefreshToken, &cleared)
 	switch {
@@ -443,10 +449,9 @@ func (r *upstreamTokenRefresher) clearDeadRefreshToken(
 		// The row still exists but no longer holds a usable refresh token. The
 		// error still matches storage.ErrNotFound so the per-user reader and
 		// the refresh guard classify it as "authorize again", as they do for a
-		// deleted row. That holds when the access token is expired. When only
-		// the ID token is expired, the caller re-reads the kept row and serves
-		// its stored credential until the access token expires; the empty
-		// refresh token then leads to authorize-again.
+		// deleted row. The row's access token is expired too, so this holds
+		// whether the caller was refreshing an expired access token or only an
+		// expired ID token.
 		return fmt.Errorf(
 			"failed to persist rotated upstream refresh token for provider %q; refresh token cleared: %w: %w",
 			expired.ProviderID, storage.ErrNotFound, err,

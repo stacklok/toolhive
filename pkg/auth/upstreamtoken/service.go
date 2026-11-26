@@ -186,7 +186,9 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 // live, a failed refresh, including invalid_grant, is not an error: the stored
 // credential is returned and the failure is logged at WARN, because the
 // caller never sees it. Needs-authorization follows once the access token
-// expires. The refresher still logs on its own paths, so a rare refresher
+// expires. The exception is a refresh after which the refresher removed the
+// row, or cleared its refresh token, because it could not save a rotated
+// refresh token: that needs authorization at once. The refresher still logs on its own paths, so a rare refresher
 // failure (a lost refresh race, or a row it could not delete or clear) shows up both
 // in its own line and in this WARN.
 //
@@ -247,7 +249,9 @@ func (s *InProcessService) GetValidTokensForUser(
 // independently validated for freshness and may be empty if the upstream login
 // never yielded one. An expired ID token also triggers a refresh (see
 // InProcessService); a failed ID-token-triggered refresh does not put the
-// provider in the failed map, since its access token is still valid. Callers
+// provider in the failed map, since its access token is still valid, unless the
+// refresher removed the row or cleared its refresh token because it could not
+// save a rotated refresh token. Callers
 // that PRESENT it as a credential must expect expiry to be rejected; callers
 // that only READ ITS CLAIMS are unaffected by expiry. See
 // Identity.UpstreamIDTokens for both consumers.
@@ -313,7 +317,7 @@ func (s *InProcessService) credentialFor(
 		if s.shouldRefreshForIDToken(ctx, sessionID, providerName, tokens) {
 			cred, idErr := s.refreshForIDToken(ctx, sessionID, providerName, tokens, true, "")
 			if idErr != nil {
-				slog.WarnContext(ctx, "upstream token row removed by failed refresh; provider will require re-authentication",
+				slog.WarnContext(ctx, "upstream credential unusable after a failed refresh; provider will require re-authentication",
 					"session_id", sessionID,
 					"provider", providerName,
 					"error", idErr,
@@ -443,10 +447,10 @@ func (s *InProcessService) shouldRefreshForIDToken(
 // persisted, leaving the old one dead. Serving the stored copy would then hand
 // out a credential that no longer exists, so the row is re-read and, if it is
 // gone, the refresh error is returned wrapped together with the read's
-// storage.ErrNotFound. With user-keyed storage the refresher clears the dead
-// refresh token and keeps the row, so the re-read finds it and the stored
-// credential is served until its access token expires; the empty refresh token
-// then leads to authorize-again.
+// storage.ErrNotFound. With user-keyed storage the refresher keeps the row,
+// clears its refresh token and expires its access token instead; that error
+// wraps storage.ErrNotFound as well and is returned before the re-read, so the
+// stored credential is not served.
 //
 // A non-empty expectedUserID is the per-user path. The owner check inside
 // refreshOrFail returns ErrInvalidBinding, and a binding error from the
@@ -462,6 +466,9 @@ func (s *InProcessService) refreshForIDToken(
 		return refreshed, nil
 	}
 	if expectedUserID != "" && (errors.Is(err, ErrInvalidBinding) || errors.Is(err, storage.ErrInvalidBinding)) {
+		return nil, err
+	}
+	if s.userKeyed && errors.Is(err, storage.ErrNotFound) {
 		return nil, err
 	}
 	// With warnOnFailure, refreshOrFail has already logged the failure at WARN.

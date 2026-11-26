@@ -137,7 +137,9 @@ type UserCredentialReader interface {
 	// When only the ID token needed refreshing and the access token is still
 	// live, a failed refresh, including invalid_grant, returns the stored
 	// credential and is logged at WARN; needs-authorization follows once the
-	// access token expires. See InProcessService.GetValidTokensForUser for the
+	// access token expires. A refresh after which the refresher removed or
+	// cleared the row, because it could not save a rotated refresh token, needs
+	// authorization at once. See InProcessService.GetValidTokensForUser for the
 	// full contract.
 	GetValidTokensForUser(ctx context.Context, userID, providerName string) (*UpstreamCredential, error)
 }

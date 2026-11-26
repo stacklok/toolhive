@@ -1775,7 +1775,7 @@ func TestUpstreamIdentityBinding_OAuth2HostOnly(t *testing.T) {
 		})
 	}
 
-	t.Run("unparseable endpoint", func(t *testing.T) {
+	t.Run("unparsable endpoint", func(t *testing.T) {
 		t.Parallel()
 		issuer, claim := upstreamIdentityBinding(ptr(userinfo("https://idp.example.com/token", "://bad")))
 		assert.Empty(t, issuer)

@@ -131,6 +131,10 @@ type Transport interface {
 	// For transports that don't support health checks (e.g., stdio), this is a no-op.
 	SetOnHealthCheckFailed(callback HealthCheckFailedCallback)
 
+	// SetOnHealthCheckRecovered sets the callback for health check recovery after failures.
+	// For transports that don't support health checks (e.g., stdio), this is a no-op.
+	SetOnHealthCheckRecovered(callback HealthCheckRecoveredCallback)
+
 	// SetOnUnauthorizedResponse sets the callback for 401 Unauthorized responses.
 	// For transports that don't support this (e.g., stdio), this is a no-op.
 	SetOnUnauthorizedResponse(callback UnauthorizedResponseCallback)
@@ -201,9 +205,16 @@ type Proxy interface {
 	ForwardResponseToClients(ctx context.Context, msg jsonrpc2.Message) error
 }
 
-// HealthCheckFailedCallback is a function that is called when a health check fails.
-// This allows the transport to notify the runner/status manager when remote servers become unhealthy.
+// HealthCheckFailedCallback is called when a server reaches the health check failure
+// threshold, so the runner/status manager can mark the workload unhealthy. For a remote
+// server it is called again on every failed check while the server stays unhealthy, so
+// implementations must be idempotent and should write only when the status differs.
 type HealthCheckFailedCallback func()
+
+// HealthCheckRecoveredCallback is called once when a remote server passes a health check
+// after HealthCheckFailedCallback was called, so the runner/status manager can mark the
+// workload running again. A recovery before the failure threshold does not call it.
+type HealthCheckRecoveredCallback func()
 
 // UnauthorizedResponseCallback is a function that is called when a 401 Unauthorized response is received.
 // This allows the transport to notify the runner/status manager when bearer tokens become invalid.

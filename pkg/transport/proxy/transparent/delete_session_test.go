@@ -107,7 +107,7 @@ func TestDeleteRoutesValidatedSnapshotAndRejectsRacedCleanup(t *testing.T) {
 	}
 	p := NewTransparentProxyWithOptions(
 		"127.0.0.1", 0, "", nil, nil, nil, false, false, "streamable-http",
-		nil, nil, "", false, nil, WithSessionStorage(storage),
+		nil, nil, nil, "", false, nil, WithSessionStorage(storage),
 	)
 	t.Cleanup(func() { require.NoError(t, p.sessionManager.Stop()) })
 	originalTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -148,7 +148,7 @@ func TestDeleteStorageFailureReplacesUpstreamSuccess(t *testing.T) {
 	}
 	p := NewTransparentProxyWithOptions(
 		"127.0.0.1", 0, "", nil, nil, nil, false, false, "streamable-http",
-		nil, nil, "", false, nil, WithSessionStorage(storage),
+		nil, nil, nil, "", false, nil, WithSessionStorage(storage),
 	)
 	t.Cleanup(func() { require.NoError(t, p.sessionManager.Stop()) })
 	seeded := session.NewProxySession(id)

@@ -24,6 +24,7 @@ import (
 func startHealthTestProxy(
 	t *testing.T,
 	serverURL string,
+	isRemote bool,
 	interval time.Duration,
 	pingTimeout time.Duration,
 	callback types.HealthCheckFailedCallback,
@@ -38,9 +39,10 @@ func startHealthTestProxy(
 		nil,
 		nil,  // prefixHandlers
 		true, // enableHealthCheck
-		true, // isRemote
+		isRemote,
 		"sse",
 		callback,
+		nil, // onHealthCheckRecovered
 		nil,
 		"",
 		false,
@@ -92,7 +94,7 @@ func TestTransparentProxy_HealthAnswersWhileBackendIsSlow(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	proxy := startHealthTestProxy(t, backend.URL, 100*time.Millisecond, 5*time.Second, nil)
+	proxy := startHealthTestProxy(t, backend.URL, true, 100*time.Millisecond, 5*time.Second, nil)
 	proxy.setServerInitialized()
 
 	// The monitor's first check waits on the backend for up to the 5s ping
@@ -117,7 +119,7 @@ func TestTransparentProxy_HealthReportsFirstCheckBeforeFirstTick(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	proxy := startHealthTestProxy(t, backend.URL, time.Hour, time.Second, nil)
+	proxy := startHealthTestProxy(t, backend.URL, true, time.Hour, time.Second, nil)
 
 	deadline := time.Now().Add(2 * time.Second)
 	health, _ := fetchHealth(t, proxy)
@@ -131,8 +133,10 @@ func TestTransparentProxy_HealthReportsFirstCheckBeforeFirstTick(t *testing.T) {
 }
 
 // TestTransparentProxy_HealthCheckFailuresNotCountedBeforeInitialization tests
-// that checks before the MCP server is initialized feed /health but do not count
-// toward shutdown, and that counting starts from zero once it is initialized.
+// that, for a local workload, checks before the MCP server is initialized feed
+// /health but do not count toward shutdown, and that counting starts from zero
+// once it is initialized. Remote workloads count failures from the start; see
+// TestTransparentProxy_RemoteServerFailure_HTTP500.
 func TestTransparentProxy_HealthCheckFailuresNotCountedBeforeInitialization(t *testing.T) {
 	t.Parallel()
 
@@ -144,7 +148,7 @@ func TestTransparentProxy_HealthCheckFailuresNotCountedBeforeInitialization(t *t
 	t.Cleanup(backend.Close)
 
 	tracker, callback := newCallbackTracker()
-	proxy := startHealthTestProxy(t, backend.URL, 100*time.Millisecond, 100*time.Millisecond, callback)
+	proxy := startHealthTestProxy(t, backend.URL, false, 100*time.Millisecond, 100*time.Millisecond, callback)
 
 	// More failed checks than the threshold of 3, all before initialization.
 	require.Eventually(t, func() bool { return backendHits.Load() >= 4 },

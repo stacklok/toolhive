@@ -44,7 +44,7 @@ func TestTransparentProxyRejectsAmbiguousJSONAndPreservesValidRequests(t *testin
 				"127.0.0.1", 0, backend.URL,
 				nil, nil, nil,
 				false, false, transportType,
-				nil, nil, "", false,
+				nil, nil, nil, "", false,
 				nil, // Admission must hold without the shared parser middleware.
 			)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

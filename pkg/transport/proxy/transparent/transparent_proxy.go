@@ -112,8 +112,11 @@ type TransparentProxy struct {
 	// stripConsentCookie prevents remembered-consent cookies (__Host-thv_consent_*) from reaching the backend.
 	stripConsentCookie bool
 
-	// Callback when health check fails (for remote servers)
+	// Callback when the health check failure threshold is reached
 	onHealthCheckFailed types.HealthCheckFailedCallback
+
+	// Callback when a remote server passes a health check after onHealthCheckFailed fired
+	onHealthCheckRecovered types.HealthCheckRecoveredCallback
 
 	// Callback when 401 Unauthorized response is received (for bearer token authentication)
 	onUnauthorizedResponse types.UnauthorizedResponseCallback
@@ -382,6 +385,7 @@ func NewTransparentProxy(
 		isRemote,
 		transportType,
 		onHealthCheckFailed,
+		nil, // onHealthCheckRecovered
 		onUnauthorizedResponse,
 		endpointPrefix,
 		trustProxyHeaders,
@@ -461,6 +465,7 @@ func NewTransparentProxyWithOptions(
 	isRemote bool,
 	transportType string,
 	onHealthCheckFailed types.HealthCheckFailedCallback,
+	onHealthCheckRecovered types.HealthCheckRecoveredCallback,
 	onUnauthorizedResponse types.UnauthorizedResponseCallback,
 	endpointPrefix string,
 	trustProxyHeaders bool,
@@ -481,6 +486,7 @@ func NewTransparentProxyWithOptions(
 		isRemote:                    isRemote,
 		transportType:               transportType,
 		onHealthCheckFailed:         onHealthCheckFailed,
+		onHealthCheckRecovered:      onHealthCheckRecovered,
 		onUnauthorizedResponse:      onUnauthorizedResponse,
 		endpointPrefix:              endpointPrefix,
 		trustProxyHeaders:           trustProxyHeaders,
@@ -516,10 +522,11 @@ func NewTransparentProxyWithOptions(
 	var mcpPinger healthcheck.MCPPinger
 	var healthCheckerOpts []healthcheck.Option
 	if enableHealthCheck {
+		healthCheckURL := proxy.healthCheckURL()
 		if proxy.stateless {
-			mcpPinger = NewStatelessMCPPingerWithTimeout(targetURI, proxy.healthCheckPingTimeout)
+			mcpPinger = NewStatelessMCPPingerWithTimeout(healthCheckURL, proxy.healthCheckPingTimeout)
 		} else {
-			mcpPinger = NewMCPPingerWithTimeout(targetURI, proxy.healthCheckPingTimeout)
+			mcpPinger = NewMCPPingerWithTimeout(healthCheckURL, proxy.healthCheckPingTimeout)
 		}
 		// monitorHealth pings the backend on its own schedule, and /health answers
 		// from its last result, so a slow backend cannot hold a probe past its timeout.
@@ -1450,7 +1457,29 @@ func (p *TransparentProxy) performHealthCheckRetry(ctx context.Context) bool {
 	}
 }
 
-// handleHealthCheckFailure handles a failed health check, including retry logic and shutdown.
+// healthCheckURL returns the URL the health checker pings. A remote workload's
+// targetURI holds only the scheme and host, so the remote URL's path and query are
+// added back; otherwise the check would reach the host's root, which on a shared
+// host can answer while the MCP endpoint fails.
+func (p *TransparentProxy) healthCheckURL() string {
+	if p.remoteBasePath == "" && p.remoteRawQuery == "" {
+		return p.targetURI
+	}
+	u, err := url.Parse(p.targetURI)
+	if err != nil {
+		return p.targetURI
+	}
+	if p.remoteBasePath != "" {
+		u.Path = p.remoteBasePath
+	}
+	u.RawQuery = p.remoteRawQuery
+	return u.String()
+}
+
+// handleHealthCheckFailure handles a failed health check, including retry logic.
+// Once failures reach the threshold it fires onHealthCheckFailed. A local proxy
+// then stops, because ToolHive owns the container lifecycle. A remote proxy keeps
+// running so monitorHealth can see the server come back.
 // Returns (updatedFailureCount, shouldContinue) - true if monitoring should continue, false if it should stop.
 func (p *TransparentProxy) handleHealthCheckFailure(
 	ctx context.Context,
@@ -1468,6 +1497,19 @@ func (p *TransparentProxy) handleHealthCheckFailure(
 	if consecutiveFailures < p.healthCheckFailureThreshold {
 		if p.performHealthCheckRetry(ctx) {
 			consecutiveFailures = 0
+		}
+		return consecutiveFailures, true
+	}
+
+	if p.isRemote {
+		// ToolHive does not own a remote server's lifecycle, and it may come back
+		// (for example a scale-to-zero backend after a cold start), so keep
+		// monitoring instead of stopping.
+		//nolint:gosec // G706: logging target URI from config
+		slog.Warn("remote server failed consecutive health checks; marking unhealthy and monitoring for recovery",
+			"target", p.targetURI, "attempts", p.healthCheckFailureThreshold)
+		if p.onHealthCheckFailed != nil {
+			p.onHealthCheckFailed()
 		}
 		return consecutiveFailures, true
 	}
@@ -1509,15 +1551,32 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 		case <-ticker.C:
 			alive := p.healthChecker.CheckHealth(parentCtx)
 
-			// Failures count toward shutdown only once the MCP server is initialized.
-			if !p.serverInitialized() {
+			// A local server's failures count toward shutdown only once it is
+			// initialized, so a slow container start is not mistaken for a failure.
+			// A remote server that keeps failing never initializes, so its failures
+			// always count.
+			if !p.isRemote && !p.serverInitialized() {
 				//nolint:gosec // G706: logging target URI from config
 				slog.Debug("mcp server not initialized yet, not counting health check",
 					"target", p.targetURI, "status", alive.Status)
 				continue
 			}
 
+			// Only a remote proxy keeps monitoring once the threshold is reached.
+			degraded := consecutiveFailures >= p.healthCheckFailureThreshold
+
 			if alive.Status != healthcheck.StatusHealthy {
+				if degraded {
+					// Already reported unhealthy. Notify again without logging, so a
+					// status write that failed, or another writer's status, is put right;
+					// the callback writes only when the status is not already unhealthy.
+					//nolint:gosec // G706: logging target URI from config and health status
+					slog.Debug("remote server still unhealthy", "target", p.targetURI, "status", alive.Status)
+					if p.onHealthCheckFailed != nil {
+						p.onHealthCheckFailed()
+					}
+					continue
+				}
 				var shouldContinue bool
 				consecutiveFailures, shouldContinue = p.handleHealthCheckFailure(parentCtx, consecutiveFailures, alive.Status)
 				if !shouldContinue {
@@ -1527,7 +1586,13 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			}
 
 			// Reset failure count on successful health check
-			if consecutiveFailures > 0 {
+			if degraded {
+				//nolint:gosec // G706: logging target URI from config
+				slog.Debug("remote server recovered from unhealthy", "target", p.targetURI)
+				if p.onHealthCheckRecovered != nil {
+					p.onHealthCheckRecovered()
+				}
+			} else if consecutiveFailures > 0 {
 				//nolint:gosec // G706: logging target URI from config
 				slog.Debug("health check recovered",
 					"target", p.targetURI, "previous_failures", consecutiveFailures)

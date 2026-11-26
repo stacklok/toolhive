@@ -157,7 +157,7 @@ func TestDelegatedSessionOwnershipThroughLoadIfOwner(t *testing.T) {
 	const sid = "delegated-backend-session"
 	const backend = "http://backend.example.com"
 	proxy := NewTransparentProxyWithOptions(
-		"127.0.0.1", 0, backend, nil, nil, nil, false, false, "streamable-http", nil, nil, "", false, nil,
+		"127.0.0.1", 0, backend, nil, nil, nil, false, false, "streamable-http", nil, nil, nil, "", false, nil,
 	)
 	t.Cleanup(func() { require.NoError(t, proxy.Stop(context.Background())) })
 	var forwarded []string

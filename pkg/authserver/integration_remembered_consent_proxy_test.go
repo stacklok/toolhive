@@ -59,7 +59,7 @@ func TestRememberedConsentCookieIssuedByAuthServerIsStrippedByProxy(t *testing.T
 	t.Cleanup(backend.Close)
 	proxy := transparent.NewTransparentProxyWithOptions(
 		"127.0.0.1", 0, backend.URL, nil, nil, nil, false, false, "streamable-http",
-		nil, nil, "", false, nil, transparent.WithStripConsentCookie(),
+		nil, nil, nil, "", false, nil, transparent.WithStripConsentCookie(),
 	)
 	startContext, startCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(startCancel)

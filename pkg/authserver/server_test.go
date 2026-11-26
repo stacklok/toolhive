@@ -1782,5 +1782,3 @@ func TestUpstreamIdentityBinding_OAuth2HostOnly(t *testing.T) {
 		assert.Empty(t, claim)
 	})
 }
-
-func ptr[T any](v T) *T { return &v }

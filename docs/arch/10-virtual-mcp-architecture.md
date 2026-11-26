@@ -1514,21 +1514,22 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   usual, and it does not use up the token. MCP clients list tools around a call, for
   example to read a tool's output schema.
 - For a list-call entry, instead of any `tools/call` or `tools/list` above: the list
-  method the entry names, answered with only the items whose backend is the entry's
-  `server` (a list request names no server, so the binding narrows the answer). The
-  middleware filters the response, after every later check: Legacy lists are served
-  from the SDK's per-session store, which offers no filter hook, so this covers both
-  revisions. An item is kept when its name (tools, prompts), URI (resources) or URI
-  template is one the vMCP's current admission-filtered view attributes to that
-  backend; one without a single backend, such as a composite tool, or any tool on an
-  optimizer-enabled instance, is never listed. Pages are cut before this filter, and
-  a cursor carries the last key of the unfiltered page, so the vMCP follows the pages
-  itself and answers with all of the backend's items in one response, without
-  `nextCursor`. The list call is the token's one call, as a `tools/call` is for a
-  tool-call entry: it uses up the token (the pages the vMCP follows belong to it).
-  A `tools/call` or another list method is refused with `method_mismatch`. Known
-  limit: a Legacy session lists what it registered, so a name that moved to the
-  entry's backend since then shows its earlier metadata.
+  method the entry names, answered with all of the items whose backend is the entry's
+  `server`, in one response without `nextCursor` (a list request names no server, so
+  the binding narrows the answer). The items come from one admission-filtered core
+  list, each attributed by its own backend, so another backend's item with the same
+  name or URI is never answered; they are rendered as a Modern list renders them and
+  replace the items of the response the usual handler gives, after every later
+  check. Legacy lists are served from the SDK's per-session store, which offers no
+  filter hook, and both revisions cut pages whose cursor names the last unfiltered
+  item, so neither the handler's items nor its cursor reach the client. An item
+  without a single backend, such as a composite tool, or any tool on an
+  optimizer-enabled instance, is never listed. The `server` must be a backend
+  (`server_not_found` otherwise) in the identity's current view (503 otherwise, for
+  example while it is unreachable). A list call that carries a cursor is refused with
+  `invalid_params`. A `tools/call` or another list method is refused with
+  `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
+  a tool-call entry: it uses up the token.
 - GET and DELETE. The session-ownership check then limits them to sessions the
   token's principal owns. Once the token has started its call, they are limited to
   that call's session (`session_mismatch`); a Modern call has none. Neither uses up
@@ -1536,7 +1537,8 @@ another path that goes through the authenticated MCP chain is refused; `/health`
 - On the Legacy session of its call (a tool call or a list call), while the call's
   request is open and younger
   than the maximum call duration: a `notifications/cancelled` for the call's JSON-RPC
-  ID, and any JSON-RPC response (for example an in-band elicitation reply). The vMCP
+  ID, and, for a tool call, any JSON-RPC response (for example an in-band elicitation
+  reply); a list call asks the client nothing, so no response is admitted for it. The vMCP
   does not see which server-to-client requests the SDK is waiting on, so any response
   on that session is accepted. A Modern call has no session, whatever
   `Mcp-Session-Id` it sends, so it admits neither: a Modern client cancels by closing
@@ -1561,10 +1563,13 @@ when the embedder's validator allows more. A stream opened before `exp` keeps ru
 a `callbinding.Record`, and stays recorded until `exp` or until the call has run for
 the maximum call duration (`CallBinding.MaxCallDuration`, 30 minutes by default),
 whichever is later, plus a one-minute margin for a record whose clock runs ahead of
-the replica's. A second call with the same token, a `tools/call` or a list call, is
-refused (`token_reused`).
-A refusal by this middleware does not use up the token; a later refusal, such as the
-session-ownership 404 or a Cedar 403, does. The default record is in memory, so it
+the replica's. Once the token has started its call, a `tools/call` or a list
+method it could otherwise send is refused with `token_reused`, whatever it names,
+so the client learns it needs a new token. A refusal by this middleware does not use
+up the token; a later refusal of a `tools/call`, such as the session-ownership 404 or
+a Cedar 403, does. A list call answered without a list (a JSON-RPC error, a later
+refusal, or a response that cannot be read) releases the token, since nothing of the
+call reached the client. The default record is in memory, so it
 covers one replica: a replay to another replica is accepted, and the vMCP warns at
 startup when sessions are stored in Redis without a shared `Record`. An embedder may
 supply another `Record`. When the call returns, the record marks it ended, with a
@@ -1591,8 +1596,8 @@ reason. The refusal is audited like a Cedar denial (outcome `denied`), with the 
 in `metadata.extra.denial_reason`, for a stream-opening GET too. Logs carry the `jti`,
 the client, the entry's server, tool, method and operation ID, and the reason; never
 the token or the arguments. When the record, the route lookup or a list-call token's
-list lookup fails for a reason other than authorization, the vMCP answers 503 and the
-token stays unused.
+list lookup fails for a reason other than authorization, or the list call's server is
+not in the current view, the vMCP answers 503 and the token stays unused.
 
 **Implementation**: `pkg/vmcp/server/call_binding.go`,
 `pkg/vmcp/server/call_binding_params.go`, `pkg/vmcp/callbinding` (list results:

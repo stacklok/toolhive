@@ -13,293 +13,140 @@ import (
 	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
 )
 
-// TestListResultMembersCoverListMethods pins the result members to the list
+// TestListItemsMembersCoverListMethods pins the items members to the list
 // methods a list-call entry may name, so a method added there cannot reach
-// the filter without its members.
-func TestListResultMembersCoverListMethods(t *testing.T) {
+// ReadListResponse without its member.
+func TestListItemsMembersCoverListMethods(t *testing.T) {
 	t.Parallel()
 	for _, method := range []string{
 		"tools/list", "prompts/list", "resources/list", "resources/templates/list",
 		"tools/call", "Tools/list", "completion/complete", "",
 	} {
-		_, filtered := listResultMembers[method]
-		assert.Equal(t, toolcalldetails.IsListMethod(method), filtered, "%q", method)
+		_, known := listItemsMembers[method]
+		assert.Equal(t, toolcalldetails.IsListMethod(method), known, "%q", method)
 	}
 }
 
-// filterListResult reads one page and encodes it alone: the response a list
-// with that one page gets.
-func filterListResult(method string, response []byte, keep map[string]struct{}) ([]byte, error) {
-	page, isError, err := ReadListPage(method, response, keep)
-	if err != nil || isError {
-		if isError {
-			return response, nil
-		}
-		return nil, err
-	}
-	return page.Encode(page.Items)
-}
-
-func TestReadListPage(t *testing.T) {
+// TestListResponseEncode checks that a list response is answered with the
+// given items, every other member kept as written and in order, nextCursor
+// dropped and the cache hints made private and stale.
+func TestListResponseEncode(t *testing.T) {
 	t.Parallel()
-	keep := map[string]struct{}{"github_read": {}, "file:///github/readme": {}, "file:///github/{path}": {}}
-
+	answer := []json.RawMessage{json.RawMessage(`{"name":"github_read","description":"a <b> & c"}`)}
 	tests := []struct {
 		name     string
 		method   string
 		response string
 		want     string
-		refused  bool
 	}{
 		{
-			name:   "tools keep only kept names and every member but nextCursor",
+			name:   "tools",
 			method: "tools/list",
-			response: `{"jsonrpc":"2.0","id":7,"result":{"tools":[` +
-				`{"name":"github_read","description":"a <b> & c","inputSchema":{"type":"object"}},` +
-				`{"name":"other_read","description":"other"}],` +
-				`"nextCursor":"abc","_meta":{"k":"v"},"resultType":"complete"}}`,
-			want: `{"jsonrpc":"2.0","id":7,"result":{"tools":[` +
-				`{"name":"github_read","description":"a <b> & c","inputSchema":{"type":"object"}}],` +
-				`"_meta":{"k":"v"},"resultType":"complete"}}`,
+			response: `{"jsonrpc":"2.0","id":12345678901234567890,"result":{"tools":[{"name":"other_read"}],` +
+				`"nextCursor":"other_read","_meta":{"n":1.50},"resultType":"complete"}}`,
+			want: `{"jsonrpc":"2.0","id":12345678901234567890,"result":{"tools":[{"name":"github_read",` +
+				`"description":"a <b> & c"}],"_meta":{"n":1.50},"resultType":"complete"}}`,
 		},
 		{
-			name:     "prompts by name",
+			name:     "prompts with null items",
 			method:   "prompts/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"prompts":[{"name":"github_read"},{"name":"x"}]}}`,
-			want:     `{"jsonrpc":"2.0","id":1,"result":{"prompts":[{"name":"github_read"}]}}`,
+			response: `{"jsonrpc":"2.0","id":1,"result":{"prompts":null}}`,
+			want:     `{"jsonrpc":"2.0","id":1,"result":{"prompts":[{"name":"github_read","description":"a <b> & c"}]}}`,
 		},
 		{
-			name:   "resources by URI, not by name",
-			method: "resources/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"resources":[` +
-				`{"uri":"file:///github/readme","name":"x"},{"uri":"file:///other","name":"github_read"}]}}`,
-			want: `{"jsonrpc":"2.0","id":1,"result":{"resources":[{"uri":"file:///github/readme","name":"x"}]}}`,
+			name:     "resources",
+			method:   "resources/list",
+			response: `{"jsonrpc":"2.0","id":1,"result":{"resources":[]}}`,
+			want:     `{"jsonrpc":"2.0","id":1,"result":{"resources":[{"name":"github_read","description":"a <b> & c"}]}}`,
 		},
 		{
-			name:   "resource templates by URI template",
-			method: "resources/templates/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"resourceTemplates":[` +
-				`{"uriTemplate":"file:///github/{path}"},{"uriTemplate":"file:///other/{path}"}]}}`,
-			want: `{"jsonrpc":"2.0","id":1,"result":{"resourceTemplates":[{"uriTemplate":"file:///github/{path}"}]}}`,
-		},
-		{
-			name:     "nothing kept",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"other_read"}],"nextCursor":"other_read"}}`,
-			want:     `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`,
-		},
-		{
-			// encoding/json would match "NAME" to a name field, so an item
-			// whose key could be read two ways is refused.
-			name:     "key in other letter case is refused",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"NAME":"github_read"}]}}`,
-			refused:  true,
-		},
-		{
-			name:     "item without a string key is dropped",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":1},{"description":"github_read"},{"name":null}]}}`,
-			want:     `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`,
-		},
-		{
-			name:     "result without the method's items member",
-			method:   "prompts/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"other_read"}]}}`,
-			refused:  true,
-		},
-		{
-			name:     "items member in other letter case",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[],"Tools":[{"name":"other_read"}]}}`,
-			refused:  true,
-		},
-		{
-			name:     "items member twice",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[],"tools":[{"name":"other_read"}]}}`,
-			refused:  true,
-		},
-		{
-			name:     "result member twice",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[]},"result":{"tools":[{"name":"other_read"}]}}`,
-			refused:  true,
-		},
-		{
-			name:     "item key twice",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"github_read","name":"other_read"}]}}`,
-			refused:  true,
-		},
-		{
-			name:     "cache hints marked private and stale",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"ttlMs":60000,"cacheScope":"public","tools":[]}}`,
-			want:     `{"jsonrpc":"2.0","id":1,"result":{"ttlMs":0,"cacheScope":"private","tools":[]}}`,
-		},
-		{
-			name:     "JSON-RPC error passes unchanged",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"x"}}`,
-			want:     `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"x"}}`,
-		},
-		{
-			name:     "null items hold none",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":null}}`,
-			want:     `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`,
-		},
-		{
-			name:     "nextCursor not a string",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[],"nextCursor":1}}`,
-			refused:  true,
-		},
-		{
-			name:     "nextCursor twice",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[],"nextCursor":"a","nextCursor":"b"}}`,
-			refused:  true,
-		},
-		{name: "not a list method", method: "tools/call", response: `{"jsonrpc":"2.0","id":1,"result":{}}`, refused: true},
-		{name: "not JSON", method: "tools/list", response: `data: {"result":{}}`, refused: true},
-		{name: "null", method: "tools/list", response: `null`, refused: true},
-		{name: "neither result nor error", method: "tools/list", response: `{"jsonrpc":"2.0","id":1}`, refused: true},
-		{name: "result not an object", method: "tools/list", response: `{"jsonrpc":"2.0","id":1,"result":[]}`, refused: true},
-		{name: "null result", method: "tools/list", response: `{"jsonrpc":"2.0","id":1,"result":null}`, refused: true},
-		{
-			name:     "items not an array",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":{"name":"github_read"}}}`,
-			refused:  true,
-		},
-		{
-			name:     "item not an object",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":["github_read"]}}`,
-			refused:  true,
-		},
-		{
-			name:     "trailing data",
-			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}{}`,
-			refused:  true,
+			name:     "templates, cache hints private and stale",
+			method:   "resources/templates/list",
+			response: `{"jsonrpc":"2.0","id":1,"result":{"ttlMs":60000,"cacheScope":"public","resourceTemplates":[]}}`,
+			want: `{"jsonrpc":"2.0","id":1,"result":{"ttlMs":0,"cacheScope":"private",` +
+				`"resourceTemplates":[{"name":"github_read","description":"a <b> & c"}]}}`,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := filterListResult(tc.method, []byte(tc.response), keep)
-			if tc.refused {
-				require.ErrorIs(t, err, ErrListResult)
-				assert.Nil(t, got)
-				return
-			}
-			require.NoError(t, err)
-			assert.JSONEq(t, tc.want, string(got))
-		})
-	}
-}
-
-// TestReadListPageKeepsBytes checks that the response keeps the bytes and
-// member order the handler wrote, apart from the filtered items: <, > and &
-// stay unescaped and numbers keep their spelling.
-func TestReadListPageKeepsBytes(t *testing.T) {
-	t.Parallel()
-	got, err := filterListResult("tools/list", []byte(`{"jsonrpc":"2.0","id":12345678901234567890,`+
-		`"result":{"nextCursor":"c","tools":[{"name":"a","description":"<b> & c"},{"name":"b"}],"_meta":{"n":1.50}}}`),
-		map[string]struct{}{"a": {}})
-	require.NoError(t, err)
-	assert.Equal(t, `{"jsonrpc":"2.0","id":12345678901234567890,`+
-		`"result":{"tools":[{"name":"a","description":"<b> & c"}],"_meta":{"n":1.50}}}`, string(got))
-}
-
-func TestReadListPageNamesTheCause(t *testing.T) {
-	t.Parallel()
-	_, _, err := ReadListPage("tools/list", []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`), nil)
-	require.ErrorIs(t, err, ErrListResult)
-	assert.Contains(t, err.Error(), "no items member")
-}
-
-func TestReadListPageCursor(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name     string
-		result   string
-		wantNext bool
-		cursor   string
-	}{
-		{name: "no cursor", result: `{"tools":[]}`},
-		{name: "null cursor", result: `{"tools":[],"nextCursor":null}`},
-		{name: "cursor", result: `{"tools":[],"nextCursor":"abc"}`, wantNext: true, cursor: "abc"},
-		// An empty string is a cursor, not the end of the list.
-		{name: "empty cursor", result: `{"tools":[],"nextCursor":""}`, wantNext: true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			page, isError, err := ReadListPage("tools/list", []byte(`{"jsonrpc":"2.0","id":1,"result":`+tc.result+`}`), nil)
+			resp, isError, err := ReadListResponse(tc.method, []byte(tc.response))
 			require.NoError(t, err)
 			require.False(t, isError)
-			assert.Equal(t, tc.wantNext, page.HasNext)
-			assert.Equal(t, tc.cursor, page.NextCursor)
+			got, err := resp.Encode(answer)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(got))
+		})
+	}
+
+	resp, _, err := ReadListResponse("tools/list", []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
+	require.NoError(t, err)
+	got, err := resp.Encode(nil)
+	require.NoError(t, err)
+	assert.Equal(t, `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`, string(got), "no items is an empty array")
+}
+
+func TestReadListResponseRefusals(t *testing.T) {
+	t.Parallel()
+	_, isError, err := ReadListResponse("tools/list",
+		[]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"x"}}`))
+	require.NoError(t, err)
+	assert.True(t, isError, "a JSON-RPC error")
+
+	for name, tc := range map[string]struct{ method, response, cause string }{
+		"not a list method": {"tools/call", `{"jsonrpc":"2.0","id":1,"result":{}}`, "not a list method"},
+		"not JSON":          {"tools/list", `data: {"result":{}}`, "not a JSON object"},
+		"null":              {"tools/list", `null`, "not a JSON object"},
+		"trailing data": {"tools/list", `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}{}`,
+			"not a JSON object"},
+		"neither result nor error": {"tools/list", `{"jsonrpc":"2.0","id":1}`, "neither a result nor an error"},
+		"result twice": {"tools/list", `{"jsonrpc":"2.0","id":1,"result":{"tools":[]},"result":{"tools":[]}}`,
+			"ambiguous result"},
+		"result not an object": {"tools/list", `{"jsonrpc":"2.0","id":1,"result":[]}`, "result is not an object"},
+		"null result":          {"tools/list", `{"jsonrpc":"2.0","id":1,"result":null}`, "result is not an object"},
+		"no items member":      {"prompts/list", `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`, "no items member"},
+		"items in other case": {"tools/list", `{"jsonrpc":"2.0","id":1,"result":{"tools":[],"Tools":[]}}`,
+			"ambiguous items"},
+		"items not an array": {"tools/list", `{"jsonrpc":"2.0","id":1,"result":{"tools":{"name":"a"}}}`,
+			"items member is not an array"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			resp, isError, err := ReadListResponse(tc.method, []byte(tc.response))
+			require.ErrorIs(t, err, ErrListResult)
+			assert.Contains(t, err.Error(), tc.cause)
+			assert.Nil(t, resp)
+			assert.False(t, isError)
 		})
 	}
 }
 
-// TestListPageEncodeMergesPages checks that Encode writes the first page's
-// response with the given items and no nextCursor.
-func TestListPageEncodeMergesPages(t *testing.T) {
+func TestListParamsCarryCursor(t *testing.T) {
 	t.Parallel()
-	keep := map[string]struct{}{"a": {}, "b": {}}
-	first, _, err := ReadListPage("tools/list",
-		[]byte(`{"jsonrpc":"2.0","id":3,"result":{"tools":[{"name":"a"},{"name":"x"}],"nextCursor":"x"}}`), keep)
-	require.NoError(t, err)
-	second, _, err := ReadListPage("tools/list",
-		[]byte(`{"jsonrpc":"2.0","id":3,"result":{"tools":[{"name":"y"},{"name":"b"}]}}`), keep)
-	require.NoError(t, err)
-	got, err := first.Encode(append(first.Items, second.Items...))
-	require.NoError(t, err)
-	assert.Equal(t, `{"jsonrpc":"2.0","id":3,"result":{"tools":[{"name":"a"},{"name":"b"}]}}`, string(got))
-}
-
-func TestWithCursor(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		id      any
+	for name, tc := range map[string]struct {
 		params  string
-		want    string
+		want    bool
 		refused bool
 	}{
-		{
-			name: "no params", id: float64(2),
-			want: `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"cursor":"c<1>"}}`,
-		},
-		{
-			name: "null params", id: "s", params: `null`,
-			want: `{"jsonrpc":"2.0","id":"s","method":"tools/list","params":{"cursor":"c<1>"}}`,
-		},
-		{
-			name: "cursor replaced, other members kept", id: float64(2),
-			params: `{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"},"cursor":"old"}`,
-			want: `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":` +
-				`{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"},"cursor":"c<1>"}}`,
-		},
-		{name: "cursor in other letter case", id: float64(2), params: `{"Cursor":"old"}`, refused: true},
-		{name: "params not an object", id: float64(2), params: `[]`, refused: true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+		"absent params":        {params: ``},
+		"null params":          {params: `null`},
+		"no cursor":            {params: `{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}`},
+		"null cursor":          {params: `{"cursor":null}`},
+		"cursor":               {params: `{"cursor":"abc"}`, want: true},
+		"empty cursor":         {params: `{"cursor":""}`, want: true},
+		"cursor in other case": {params: `{"Cursor":"abc"}`, refused: true},
+		"cursor twice":         {params: `{"cursor":null,"cursor":"abc"}`, refused: true},
+		"params not an object": {params: `["cursor"]`, refused: true},
+	} {
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			got, err := WithCursor(tc.id, "tools/list", json.RawMessage(tc.params), "c<1>")
+			got, err := ListParamsCarryCursor(json.RawMessage(tc.params))
 			if tc.refused {
 				require.ErrorIs(t, err, ErrListResult)
 				return
 			}
 			require.NoError(t, err)
-			assert.JSONEq(t, tc.want, string(got))
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }

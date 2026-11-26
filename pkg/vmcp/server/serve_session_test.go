@@ -140,6 +140,13 @@ type fakeCore struct {
 	resourceTemplates []vmcp.ResourceTemplate
 	prompts           []vmcp.Prompt
 
+	// emptyBackends are configured backends that list nothing; every
+	// BackendID of the items above is a configured backend too.
+	emptyBackends []string
+	// unavailableBackends are configured backends missing from the current
+	// view, as an unreachable backend is.
+	unavailableBackends []string
+
 	listToolsCalls             atomic.Int32
 	listResourcesCalls         atomic.Int32
 	listResourceTemplatesCalls atomic.Int32
@@ -417,11 +424,41 @@ func (f *fakeCore) CheckResourceRead(context.Context, *auth.Identity, string) er
 
 func (*fakeCore) CheckPromptGet(context.Context, *auth.Identity, string) error { return nil }
 
-func (*fakeCore) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Backend, error) {
-	return nil, nil
+// ListBackends returns the configured backends: every backend an item names,
+// emptyBackends and unavailableBackends.
+func (f *fakeCore) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Backend, error) {
+	ids := slices.Clone(f.emptyBackends)
+	ids = append(ids, f.unavailableBackends...)
+	for _, t := range f.tools {
+		ids = append(ids, t.BackendID)
+	}
+	for _, p := range f.prompts {
+		ids = append(ids, p.BackendID)
+	}
+	for _, r := range f.resources {
+		ids = append(ids, r.BackendID)
+	}
+	for _, t := range f.resourceTemplates {
+		ids = append(ids, t.BackendID)
+	}
+	slices.Sort(ids)
+	backends := []vmcp.Backend{}
+	for _, id := range slices.Compact(ids) {
+		if id != "" {
+			backends = append(backends, vmcp.Backend{ID: id, Name: id})
+		}
+	}
+	return backends, nil
 }
 
-func (*fakeCore) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.Backend, error) {
+// LookupBackend finds a configured backend that is not unavailable.
+func (f *fakeCore) LookupBackend(ctx context.Context, identity *auth.Identity, id string) (*vmcp.Backend, error) {
+	backends, _ := f.ListBackends(ctx, identity, false)
+	for i := range backends {
+		if backends[i].ID == id && !slices.Contains(f.unavailableBackends, id) {
+			return &backends[i], nil
+		}
+	}
 	return nil, vmcp.ErrNotFound
 }
 

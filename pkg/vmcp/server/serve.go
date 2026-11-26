@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -248,7 +249,7 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		return srv.callBindingRoute(ctx, identity, name)
 	}, func(
 		ctx context.Context, identity *auth.Identity, method, server string,
-	) (map[string]struct{}, error) {
+	) ([]json.RawMessage, error) {
 		return srv.callBindingListItems(ctx, identity, method, server)
 	})
 	if err != nil {

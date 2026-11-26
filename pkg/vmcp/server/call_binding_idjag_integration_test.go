@@ -545,13 +545,25 @@ func TestCallBindingIDJAG_ListCall(t *testing.T) {
 			if method == other {
 				other = "tools/list"
 			}
-			status, body, _ = c.post(t, token, session, `{"jsonrpc":"2.0","id":4,"method":"`+other+`"}`, nil)
-			assert.Equal(t, http.StatusForbidden, status, "body: %s", body)
-			assert.Contains(t, body, "(method_mismatch)")
-
-			status, body, _ = c.post(t, token, session, cbToolCall(5, "alpha_echo", `{"input":"x"}`), nil)
-			assert.Equal(t, http.StatusForbidden, status, "body: %s", body)
-			assert.Contains(t, body, "(method_mismatch)")
+			// Before its list call, a token's other requests are refused as
+			// mismatches; after it, as reuse, so the client knows to get a
+			// new token.
+			fresh := c.accessToken(t, chainListEntry("alpha", method))
+			freshSession := c.session(t, fresh)
+			for _, tc := range []struct {
+				token, session, reason string
+				status                 int
+			}{
+				{fresh, freshSession, "(method_mismatch)", http.StatusForbidden},
+				{token, session, "(token_reused)", http.StatusUnauthorized},
+			} {
+				status, body, _ = c.post(t, tc.token, tc.session, `{"jsonrpc":"2.0","id":4,"method":"`+other+`"}`, nil)
+				assert.Equal(t, tc.status, status, "body: %s", body)
+				assert.Contains(t, body, tc.reason)
+				status, body, _ = c.post(t, tc.token, tc.session, cbToolCall(5, "alpha_echo", `{"input":"x"}`), nil)
+				assert.Equal(t, tc.status, status, "body: %s", body)
+				assert.Contains(t, body, tc.reason)
+			}
 			assert.Zero(t, c.toolCalls.Load(), "no list-call token runs a tool")
 		})
 	}

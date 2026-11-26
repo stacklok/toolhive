@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -75,12 +74,17 @@ var callBindingTokenReasons = []string{
 // for identity, or to "" when the tool has no single backend.
 type callBindingRoute func(ctx context.Context, identity *auth.Identity, name string) (string, error)
 
-// callBindingListItems returns the keys (see callbinding.ReadListPage) of
-// the items that the list method lists for identity from the backend named
-// server.
+// callBindingListItems returns, rendered as list result items, the items the
+// list method lists for identity from the backend named server. It returns
+// an error wrapping errListServerNotConfigured when server is not one of the
+// vMCP's backends, and any other error when the items cannot be listed now.
 type callBindingListItems func(
 	ctx context.Context, identity *auth.Identity, method, server string,
-) (map[string]struct{}, error)
+) ([]json.RawMessage, error)
+
+// errListServerNotConfigured reports a list call on a server that is not one
+// of the vMCP's backends.
+var errListServerNotConfigured = errors.New("call binding: the list call's server is not a backend")
 
 // callBinding enforces access tokens that carry an RFC 9396
 // authorization_details entry of type https://toolhive.dev/mcp_tool_call (see
@@ -156,53 +160,97 @@ func (s *Server) callBindingRoute(ctx context.Context, identity *auth.Identity, 
 	return tool.BackendID, nil
 }
 
-// callBindingListItems lists, for a list-call token, the keys of the items
-// method lists from server for identity, from the same admission-filtered core
-// lists that dispatch serves. Only items whose BackendID is server count, so
-// a composite tool, code mode's execute_tool_script and, with the optimizer
-// enabled, the find_tool and call_tool meta-tools are never listed: with the
-// optimizer, no tool counts at all.
+// callBindingListItems answers a list-call token from one admission-filtered
+// core list: the items whose BackendID is server, rendered as a Modern list
+// renders them, which is how Legacy sessions advertise them too. Attributing
+// each item by its own BackendID, from the one view, means another backend's
+// item that shares a name or URI is never answered. A composite tool, code
+// mode's execute_tool_script and, with the optimizer enabled, the find_tool
+// and call_tool meta-tools have no BackendID, so they are never listed: with
+// the optimizer, no tool is.
+//
+// The server must be one of the vMCP's backends (errListServerNotConfigured
+// otherwise) and must be in identity's current view: a backend that is
+// unreachable, degraded or failing discovery contributes nothing to it, and
+// listing it then would answer an empty list for a server that has items, so
+// its absence is an error, which the caller answers with 503.
 func (s *Server) callBindingListItems(
 	ctx context.Context, identity *auth.Identity, method, server string,
-) (map[string]struct{}, error) {
+) ([]json.RawMessage, error) {
+	if err := s.callBindingListServer(ctx, identity, server); err != nil {
+		return nil, err
+	}
 	switch method {
 	case "tools/list":
 		if s.optimizerFactory != nil {
-			return map[string]struct{}{}, nil
+			return []json.RawMessage{}, nil
 		}
 		tools, err := s.core.ListTools(ctx, identity)
-		return serverKeys(tools, err, server, func(t vmcp.Tool) (string, string) { return t.BackendID, t.Name })
+		return renderServerItems(tools, err, server, func(t vmcp.Tool) (string, any, error) {
+			wire, err := modernToolFromDomain(t)
+			return t.BackendID, wire, err
+		})
 	case "prompts/list":
 		prompts, err := s.core.ListPrompts(ctx, identity)
-		return serverKeys(prompts, err, server, func(p vmcp.Prompt) (string, string) { return p.BackendID, p.Name })
+		return renderServerItems(prompts, err, server, func(p vmcp.Prompt) (string, any, error) {
+			return p.BackendID, modernPromptFromDomain(p), nil
+		})
 	case "resources/list":
 		resources, err := s.core.ListResources(ctx, identity)
-		return serverKeys(resources, err, server, func(r vmcp.Resource) (string, string) { return r.BackendID, r.URI })
+		return renderServerItems(resources, err, server, func(r vmcp.Resource) (string, any, error) {
+			return r.BackendID, modernResourceFromDomain(r), nil
+		})
 	case "resources/templates/list":
 		templates, err := s.core.ListResourceTemplates(ctx, identity)
-		return serverKeys(templates, err, server, func(t vmcp.ResourceTemplate) (string, string) {
-			return t.BackendID, t.URITemplate
+		return renderServerItems(templates, err, server, func(t vmcp.ResourceTemplate) (string, any, error) {
+			return t.BackendID, modernResourceTemplateFromDomain(t), nil
 		})
 	default:
 		return nil, fmt.Errorf("call binding: %q is not a list method", method)
 	}
 }
 
-// serverKeys returns the keys of the items whose backend is server, or err
-// when listing them failed. keyOf returns an item's backend and key.
-func serverKeys[T any](
-	items []T, err error, server string, keyOf func(T) (backend, key string),
-) (map[string]struct{}, error) {
+// callBindingListServer checks that server is a configured backend in
+// identity's current view.
+func (s *Server) callBindingListServer(ctx context.Context, identity *auth.Identity, server string) error {
+	configured, err := s.core.ListBackends(ctx, identity, false)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(configured, func(b vmcp.Backend) bool { return b.ID == server }) {
+		return errListServerNotConfigured
+	}
+	if _, err := s.core.LookupBackend(ctx, identity, server); err != nil {
+		return fmt.Errorf("call binding: the list call's server is not in the current view: %w", err)
+	}
+	return nil
+}
+
+// renderServerItems renders the items whose backend is server, or returns err
+// when listing them failed. render returns an item's backend and its wire
+// form.
+func renderServerItems[T any](
+	items []T, err error, server string, render func(T) (backend string, wire any, err error),
+) ([]json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	keys := map[string]struct{}{}
+	rendered := []json.RawMessage{}
 	for _, item := range items {
-		if backend, key := keyOf(item); backend == server {
-			keys[key] = struct{}{}
+		backend, wire, err := render(item)
+		if backend != server {
+			continue
 		}
+		if err != nil {
+			return nil, err
+		}
+		raw, err := json.Marshal(wire)
+		if err != nil {
+			return nil, err
+		}
+		rendered = append(rendered, raw)
 	}
-	return keys, nil
+	return rendered, nil
 }
 
 // callBindingMiddleware enforces call-bound access tokens. It runs after
@@ -339,64 +387,127 @@ func (cb *callBinding) servePost(
 		next.ServeHTTP(w, r)
 	case parsed.Method == "tools/call":
 		cb.serveToolCall(w, r, next, identity, token, parsed)
+	case toolcalldetails.IsListMethod(parsed.Method):
+		// A tool-call token never sends another list method; once it has
+		// started its call, the client needs a new token above all.
+		if !cb.refusedAsReused(w, r, token, parsed) {
+			cb.refuse(w, r, parsed, token, callbinding.ReasonMethodNotAllowed)
+		}
 	default:
 		cb.refuse(w, r, parsed, token, callbinding.ReasonMethodNotAllowed)
 	}
 }
 
+// refusedAsReused answers a request that the token can no longer send
+// because it has started its call: 401 token_reused, which tells the client
+// it needs a new token, rather than a refusal about the request. It reports
+// whether it answered (503 when the record fails).
+func (cb *callBinding) refusedAsReused(
+	w http.ResponseWriter, r *http.Request, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
+) bool {
+	_, started, err := cb.record.Lookup(r.Context(), token.Key)
+	switch {
+	case err != nil:
+		cb.unavailable(w, r, parsed, token, "record", err)
+		return true
+	case started:
+		cb.refuse(w, r, parsed, token, callbinding.ReasonTokenReused)
+		return true
+	}
+	return false
+}
+
 // serveListCall handles a request, other than the handshake, server/discover
-// and ping, sent with a list-call token. It admits only the entry's list
-// method and answers it with only the items of the entry's server: a list
-// request names no server, so the server binding is applied to the answer.
-// A tools/call or another list method is refused with method_mismatch, and
-// any other request with method_not_allowed.
+// and ping, sent with a list-call token. Once the token has started its call,
+// any list method or tools/call is refused with token_reused. Before that, it
+// admits only the entry's list method: a tools/call or another list method is
+// refused with method_mismatch, and any other request with method_not_allowed.
 //
-// The list is served by the usual handler, after every later check, and then
-// filtered here, on the response: a Legacy list is answered by the SDK from
-// the session's own tool store, which toolhive-core's mcpcompat offers no hook
-// to filter, so this is the one place that covers Legacy and Modern alike.
+// The answer holds all of the entry's server's items, in one response without
+// nextCursor. A list request names no server, so the binding is applied to the
+// answer: its items come from callBindingListItems, attributed by their own
+// backend in one core view, and replace the items of the response the usual
+// handler gives. That handler still runs, after every later check, so a list
+// call answers only on a session the caller owns, with the revision's own
+// envelope. Its own items, which a Legacy session takes from its store and
+// either revision cuts into pages whose cursor names the last unfiltered
+// item, never reach the client, and neither does a cursor. A request that
+// carries its own cursor is refused with invalid_params.
 //
-// Both revisions cut pages before this filter runs, and their cursors carry
-// the last key of the unfiltered page, which may name another server's item.
-// So the vMCP follows the pages itself (see listPages) and answers with every
-// one of the server's items in one response, without nextCursor: the client
-// never sees a cursor, so no cursor can name an item it may not list.
-//
-// A list call is the token's one call, as a tools/call is for a tool-call
-// token: it is recorded before the list is served and uses the token up, so a
-// second request with it is refused with token_reused. The pages the vMCP
-// follows belong to that one call. A refusal before the call is recorded, or
-// a 503 from the list lookup, leaves the token unused.
-//
-// Only an empty body (such as the 202 for a notification), a JSON-RPC error,
-// and a body that is not JSON on a status other than 2xx (such as the
-// session-ownership 404) pass unchanged. Any other response the filter cannot
-// read gets a 500.
+// The list call is the token's one call, as a tools/call is for a tool-call
+// token: it is recorded before the handler runs, so a duplicate sent while it
+// runs is refused. A refusal before it is recorded, a list call on a server
+// that is not a backend (server_not_found) or is not in the current view
+// (503) leaves the token unused. So does an answer without a list: a JSON-RPC
+// error, a refusal by a later check, or a response that cannot be read, since
+// nothing of the call reached the client, the record releases the token and
+// the client may retry with it.
 func (cb *callBinding) serveListCall(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
 	identity *auth.Identity, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
 ) {
-	if reason := listCallRefusal(token, parsed); reason != "" {
-		cb.refuse(w, r, parsed, token, reason)
-		return
-	}
-	requestID, ok := requestIDKey(parsed.ID)
+	requestID, items, ok := cb.admitListCall(w, r, identity, token, parsed)
 	if !ok {
-		// A list notification has no ID and gets no answer; nothing
-		// legitimate sends one.
-		cb.refuse(w, r, parsed, token, callbinding.ReasonMethodNotAllowed)
-		return
-	}
-	keep, err := cb.listItems(r.Context(), identity, parsed.Method, token.Entry.Server)
-	if err != nil {
-		cb.unavailable(w, r, parsed, token, "list", err)
 		return
 	}
 	expiry, ok := cb.startCall(w, r, token, parsed, requestID)
 	if !ok {
 		return
 	}
-	defer cb.endCall(r.Context(), token, expiry)
+	if cb.answerListCall(w, r, next, token, parsed, items) {
+		cb.endCall(r.Context(), token, expiry)
+	} else {
+		cb.releaseCall(r.Context(), token, expiry)
+	}
+}
+
+// admitListCall runs the checks of a list call that come before it is
+// recorded, and returns its request ID and its answer's items. When a check
+// refuses the request, or the items cannot be listed, it answers the request
+// and returns false.
+func (cb *callBinding) admitListCall(
+	w http.ResponseWriter, r *http.Request,
+	identity *auth.Identity, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
+) (string, []json.RawMessage, bool) {
+	if cb.refusedAsReused(w, r, token, parsed) {
+		return "", nil, false
+	}
+	if reason := listCallRefusal(token, parsed); reason != "" {
+		cb.refuse(w, r, parsed, token, reason)
+		return "", nil, false
+	}
+	requestID, ok := requestIDKey(parsed.ID)
+	if !ok {
+		// A list notification has no ID and gets no answer; nothing
+		// legitimate sends one.
+		cb.refuse(w, r, parsed, token, callbinding.ReasonMethodNotAllowed)
+		return "", nil, false
+	}
+	if hasCursor, err := callbinding.ListParamsCarryCursor(parsed.Params); err != nil || hasCursor {
+		cb.refuse(w, r, parsed, token, callbinding.ReasonInvalidParams)
+		return "", nil, false
+	}
+	items, err := cb.listItems(r.Context(), identity, parsed.Method, token.Entry.Server)
+	switch {
+	case errors.Is(err, errListServerNotConfigured):
+		cb.refuse(w, r, parsed, token, callbinding.ReasonServerNotFound)
+		return "", nil, false
+	case err != nil:
+		cb.unavailable(w, r, parsed, token, "list", err)
+		return "", nil, false
+	}
+	return requestID, items, true
+}
+
+// answerListCall runs the usual handler for a recorded list call and answers
+// with items in place of the items of its response. It reports whether the
+// client got a list; when it did not, it has answered with the handler's
+// response as it is (an empty body, a JSON-RPC error or a plain error body),
+// with a 500 for anything else, or with nothing when the client went away.
+func (cb *callBinding) answerListCall(
+	w http.ResponseWriter, r *http.Request, next http.Handler,
+	token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest, items []json.RawMessage,
+) bool {
 	first := &listResponseBuffer{header: w.Header(), status: http.StatusOK}
 	next.ServeHTTP(first, r)
 	body := first.body.Bytes()
@@ -404,37 +515,33 @@ func (cb *callBinding) serveListCall(
 		if r.Context().Err() != nil {
 			// The client went away before the handler answered: nothing to send.
 			slog.DebugContext(r.Context(), "call binding: a list call ended before it was answered", "jti", token.JTI)
-			return
+			return false
 		}
 		writeListResponse(w, first.status, body)
-		return
+		return false
 	}
-	page, isError, err := callbinding.ReadListPage(parsed.Method, body, keep)
+	resp, isError, err := callbinding.ReadListResponse(parsed.Method, body)
 	switch {
 	case isError:
 		writeListResponse(w, first.status, body)
-		return
+		return false
 	case err != nil && first.status >= http.StatusMultipleChoices && !json.Valid(body):
 		// A plain error body, such as the session-ownership 404.
 		writeListResponse(w, first.status, body)
-		return
+		return false
 	case err != nil:
 		cb.listFailed(w, r, parsed, token, first.status, err)
-		return
+		return false
 	}
-	items, err := cb.listPages(r, next, parsed, keep, page)
+	out, err := resp.Encode(items)
 	if err != nil {
 		cb.listFailed(w, r, parsed, token, first.status, err)
-		return
-	}
-	out, err := page.Encode(items)
-	if err != nil {
-		cb.listFailed(w, r, parsed, token, first.status, err)
-		return
+		return false
 	}
 	slog.DebugContext(r.Context(), "call binding: answered a call-bound list call",
 		"jti", token.JTI, "client_id", token.ClientID, "server", token.Entry.Server, "method", token.Entry.Method)
 	writeListResponse(w, first.status, out)
+	return true
 }
 
 // listCallRefusal returns the reason to refuse a request sent with a
@@ -451,62 +558,23 @@ func listCallRefusal(token *callbinding.Token, parsed *mcpparser.ParsedMCPReques
 	}
 }
 
-// maxListPages bounds the pages one list call follows: at the SDK's page size
-// of 1,000 items, 100,000 items in one list. A longer walk, or a cursor seen
-// twice, fails the list call rather than answering with part of it.
-const maxListPages = 100
-
-// listPages returns the kept items of page and of every page after it,
-// requesting each next page from next as the client would: the same request
-// with params.cursor set to the previous page's nextCursor. Each page runs
-// through every later check again, on the request's session. The page
-// requests are internal: their headers are discarded, and the parsed request
-// the audit middleware reads is put back to the client's request afterwards.
-func (*callBinding) listPages(
-	r *http.Request, next http.Handler, parsed *mcpparser.ParsedMCPRequest,
-	keep map[string]struct{}, page *callbinding.ListPage,
-) ([]json.RawMessage, error) {
-	if holder, ok := mcpparser.ParsedRequestHolderFromContext(r.Context()); ok {
-		defer func() { holder.Parsed = parsed }()
+// releaseCall forgets the call a list-call token started when the call gave
+// the client no list, so the client may retry with the token. Nothing of the
+// call reached the client. The record gets a context of its own, as endCall
+// gives it; when it cannot release the call, the call is ended instead, and
+// the token stays used.
+func (cb *callBinding) releaseCall(ctx context.Context, token *callbinding.Token, expiry time.Time) {
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), callBindingEndTimeout)
+	defer cancel()
+	if err := cb.record.Release(releaseCtx, token.Key); err != nil {
+		slog.WarnContext(ctx, "call binding: could not release a call that gave no answer; the token stays used",
+			"jti", token.JTI, "error", err)
+		cb.endCall(ctx, token, expiry)
 	}
-	items := page.Items
-	seen := map[string]struct{}{}
-	for pages := 1; page.HasNext; pages++ {
-		if _, again := seen[page.NextCursor]; again || pages >= maxListPages {
-			return nil, fmt.Errorf("%w: the pages do not end", callbinding.ErrListResult)
-		}
-		seen[page.NextCursor] = struct{}{}
-		body, err := callbinding.WithCursor(parsed.ID, parsed.Method, parsed.Params, page.NextCursor)
-		if err != nil {
-			return nil, err
-		}
-		req, err := mcpparser.RepublishParsedMCPRequest(r, body)
-		if err != nil {
-			return nil, fmt.Errorf("%w: cannot request the next page", callbinding.ErrListResult)
-		}
-		req.Body = io.NopCloser(bytes.NewReader(body))
-		req.ContentLength = int64(len(body))
-		buffered := &listResponseBuffer{header: http.Header{}, status: http.StatusOK}
-		next.ServeHTTP(buffered, req)
-		if err := r.Context().Err(); err != nil {
-			return nil, err
-		}
-		if buffered.status != http.StatusOK {
-			return nil, fmt.Errorf("%w: a page was answered with status %d", callbinding.ErrListResult, buffered.status)
-		}
-		var isError bool
-		if page, isError, err = callbinding.ReadListPage(parsed.Method, buffered.body.Bytes(), keep); err != nil {
-			return nil, err
-		} else if isError {
-			return nil, fmt.Errorf("%w: a page was answered with an error", callbinding.ErrListResult)
-		}
-		items = append(items, page.Items...)
-	}
-	return items, nil
 }
 
-// listFailed answers a list call whose result cannot be limited to the
-// token's server with a 500, rather than any part of the unfiltered list.
+// listFailed answers a list call whose handler answered with something that
+// is not a list, with a 500 rather than anything of that answer.
 func (*callBinding) listFailed(
 	w http.ResponseWriter, r *http.Request, parsed *mcpparser.ParsedMCPRequest,
 	token *callbinding.Token, status int, err error,
@@ -515,7 +583,7 @@ func (*callBinding) listFailed(
 	if r.Context().Err() != nil {
 		level = slog.LevelDebug
 	}
-	slog.Log(r.Context(), level, "call binding: could not limit a list result to the token's server",
+	slog.Log(r.Context(), level, "call binding: could not answer a list call: the handler gave no list",
 		"jti", token.JTI, "mcp_method", parsed.Method, "status", status, "error", err)
 	w.Header().Del("Content-Length")
 	writeCallBindingError(w, parsed, http.StatusInternalServerError, mcpparser.CodeInternalError,
@@ -531,7 +599,7 @@ func writeListResponse(w http.ResponseWriter, status int, body []byte) {
 }
 
 // listResponseBuffer holds the response to a list call until serveListCall has
-// filtered it. Headers go to the real writer's header map; the status and
+// replaced its items. Headers go to the real writer's header map; the status and
 // body are held. Flush is a no-op, and it has no Unwrap, so nothing reaches the
 // real writer before the filter runs.
 type listResponseBuffer struct {
@@ -604,6 +672,9 @@ func (cb *callBinding) serveToolCall(
 	identity *auth.Identity, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
 ) {
 	ctx := r.Context()
+	if cb.refusedAsReused(w, r, token, parsed) {
+		return
+	}
 	requestID, ok := requestIDKey(parsed.ID)
 	if !ok {
 		// A tools/call notification has no ID and starts no call the client
@@ -765,7 +836,9 @@ func (cb *callBinding) serveCallMessage(
 		cb.unavailable(w, r, parsed, token, "record", err)
 		return
 	}
-	if !found || !cb.callOpen(token.Key, call) || !belongsToCall(r, call, requestID) {
+	// A list call asks the client nothing, so no response belongs to it.
+	listResponse := requestID == "" && token.Entry.IsList()
+	if listResponse || !found || !cb.callOpen(token.Key, call) || !belongsToCall(r, call, requestID) {
 		cb.refuse(w, r, parsed, token, callbinding.ReasonNoOpenCall)
 		return
 	}

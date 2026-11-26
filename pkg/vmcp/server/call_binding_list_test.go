@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -185,29 +184,47 @@ func TestCallBinding_ListCallMismatches(t *testing.T) {
 		callbinding.ReasonMethodNotAllowed, 41)
 }
 
-// TestCallBinding_ListCallServerWithoutItems checks that a list-call token
-// for a server the vMCP has no items from lists nothing.
-func TestCallBinding_ListCallServerWithoutItems(t *testing.T) {
+// TestCallBinding_ListCallServerChecks checks the entry's server before the
+// list call is recorded: a server that is not a backend is refused with
+// server_not_found, and a configured server missing from the current view,
+// as an unreachable one is, gets 503; neither uses the token up. A server in
+// the view that lists nothing is answered with an empty list.
+func TestCallBinding_ListCallServerChecks(t *testing.T) {
 	t.Parallel()
-	s := newCallBindingTestServer(t, cbServerOptions{})
-	token := s.tokens.add("unknown", claimsFor(cbClient, "jti-1", []any{listEntry("unknown", "tools/list")}))
-	resp := s.send(t, http.MethodPost, token, s.session(t, token), listBody(2, "tools/list"), nil)
+	s := newCallBindingTestServer(t, cbServerOptions{wrap: func(fc *fakeCore) core.VMCP {
+		fc.emptyBackends = []string{"empty"}
+		fc.unavailableBackends = []string{"down"}
+		return fc
+	}})
+
+	unknown := s.tokens.add("unknown", claimsFor(cbClient, "jti-unknown", []any{listEntry("unknown", "tools/list")}))
+	requireRefused(t, s.send(t, http.MethodPost, unknown, "", listBody(2, "tools/list"), nil),
+		callbinding.ReasonServerNotFound, 2)
+	requireRefused(t, s.send(t, http.MethodPost, unknown, "", listBody(3, "tools/list"), nil),
+		callbinding.ReasonServerNotFound, 3)
+
+	down := s.tokens.add("down", claimsFor(cbClient, "jti-down", []any{listEntry("down", "tools/list")}))
+	for id := 4; id <= 5; id++ {
+		resp := s.send(t, http.MethodPost, down, "", listBody(id, "tools/list"), nil)
+		require.Equal(t, http.StatusServiceUnavailable, resp.status, "the token stays unused: %s", resp.body)
+		assert.Empty(t, resp.header.Get("WWW-Authenticate"))
+	}
+
+	empty := s.tokens.add("empty", claimsFor(cbClient, "jti-empty", []any{listEntry("empty", "tools/list")}))
+	resp := s.send(t, http.MethodPost, empty, s.session(t, empty), listBody(6, "tools/list"), nil)
 	require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
 	assert.Empty(t, listedKeys(t, "tools/list", resp.body))
 }
 
 // pagedTools is more than one page of tools, all from another server, with
-// the bound server's tools sorted after them, or none when bound is false.
-func pagedTools(bound bool) []vmcp.Tool {
+// the bound server's tools sorted after them.
+func pagedTools() []vmcp.Tool {
 	var tools []vmcp.Tool
 	for i := range modernPageSize + 5 {
 		tools = append(tools, vmcp.Tool{Name: fmt.Sprintf("other_%05d", i), BackendID: "other"})
 	}
-	if bound {
-		tools = append(tools,
-			vmcp.Tool{Name: "zz_" + cbTool, BackendID: cbServer}, vmcp.Tool{Name: "zz_" + cbTool + "_2", BackendID: cbServer})
-	}
-	return tools
+	return append(tools,
+		vmcp.Tool{Name: "zz_" + cbTool, BackendID: cbServer}, vmcp.Tool{Name: "zz_" + cbTool + "_2", BackendID: cbServer})
 }
 
 func modernListParams(cursor string) string {
@@ -221,79 +238,143 @@ func modernListParams(cursor string) string {
 
 var modernListHeaders = http.Header{"Mcp-Protocol-Version": {"2026-07-28"}, "Mcp-Method": {"tools/list"}}
 
-// nextCursorOf returns a list response's nextCursor, "" when it has none.
-func nextCursorOf(t *testing.T, body string) string {
-	t.Helper()
-	var resp struct {
-		Result struct {
-			NextCursor string `json:"nextCursor"`
-		} `json:"result"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(body), &resp), "body: %s", body)
-	return resp.Result.NextCursor
-}
-
-// TestCallBinding_ListCallCollectsEveryPage checks that a list-call token's
-// list longer than one page comes back whole, in one response without
-// nextCursor, on Legacy and Modern: the first page holds only another
-// server's tools, so its cursor would name one of them. No other server's
-// tool appears anywhere in the response, cursor included, also when the
-// bound server lists nothing and when the client sends a cursor of its own.
-func TestCallBinding_ListCallCollectsEveryPage(t *testing.T) {
+// TestCallBinding_ListCallAnswersWhole checks that a list-call token's list
+// longer than one page comes back whole, in one response without
+// nextCursor, on Legacy and Modern: the first page the handler cuts holds
+// only another server's tools, so its cursor would name one of them. No other
+// server's tool appears anywhere in the response. A list call that carries a
+// cursor of its own is refused with invalid_params, without using the token
+// up.
+func TestCallBinding_ListCallAnswersWhole(t *testing.T) {
 	t.Parallel()
-	bothBound := []string{"zz_" + cbTool, "zz_" + cbTool + "_2"}
-	tests := []struct {
-		name   string
-		bound  bool
-		modern bool
-		// forged, when set, sends the cursor an unbound token's first Modern
-		// page carries, which names another server's tool.
-		forged bool
-		want   []string
-	}{
-		{name: "Legacy", bound: true, want: bothBound},
-		{name: "Modern", bound: true, modern: true, want: bothBound},
-		{name: "Legacy, server lists nothing", want: []string{}},
-		{name: "Modern, server lists nothing", modern: true, want: []string{}},
-		{name: "Modern, client's own cursor", bound: true, modern: true, forged: true, want: bothBound},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, modern := range []bool{false, true} {
+		t.Run(map[bool]string{false: "Legacy", true: "Modern"}[modern], func(t *testing.T) {
 			t.Parallel()
 			s := newCallBindingTestServer(t, cbServerOptions{wrap: func(fc *fakeCore) core.VMCP {
-				fc.tools = pagedTools(tc.bound)
+				fc.tools = pagedTools()
 				return fc
 			}})
-			cursor := ""
-			if tc.forged {
-				plain := s.tokens.add("plain", claimsFor("other", "plain", nil))
-				first := s.send(t, http.MethodPost, plain, "",
-					`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":`+modernListParams("")+`}`, modernListHeaders)
-				require.Equal(t, http.StatusOK, first.status, "body: %s", first.body)
-				cursor = nextCursorOf(t, first.body)
-				require.NotEmpty(t, cursor, "an unbound token's long list is paged")
+			token := s.tokens.add("list", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}))
+			session := ""
+			if !modern {
+				session = s.session(t, token)
+			}
+			send := func(id int, cursor string) cbResponse {
+				if modern {
+					return s.send(t, http.MethodPost, token, "", `{"jsonrpc":"2.0","id":`+cbJSON(id)+
+						`,"method":"tools/list","params":`+modernListParams(cursor)+`}`, modernListHeaders)
+				}
+				params := ""
+				if cursor != "" {
+					params = `,"params":{"cursor":` + cbJSON(cursor) + `}`
+				}
+				return s.send(t, http.MethodPost, token, session,
+					`{"jsonrpc":"2.0","id":`+cbJSON(id)+`,"method":"tools/list"`+params+`}`, nil)
 			}
 
-			token := s.tokens.add("list", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}))
-			var resp cbResponse
-			if tc.modern {
-				resp = s.send(t, http.MethodPost, token, "",
-					`{"jsonrpc":"2.0","id":3,"method":"tools/list","params":`+modernListParams(cursor)+`}`, modernListHeaders)
-			} else {
-				resp = s.send(t, http.MethodPost, token, s.session(t, token), listBody(3, "tools/list"), nil)
-			}
+			requireRefused(t, send(2, "other_00999"), callbinding.ReasonInvalidParams, 2)
+
+			resp := send(3, "")
 			require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
-			assert.Equal(t, tc.want, listedKeys(t, "tools/list", resp.body))
+			assert.Equal(t, []string{"zz_" + cbTool, "zz_" + cbTool + "_2"}, listedKeys(t, "tools/list", resp.body))
 			assert.NotContains(t, resp.body, "nextCursor")
 			assert.NotContains(t, resp.body, "other_", "no other server's tool, in an item or a cursor")
 			assert.JSONEq(t, "3", string(rpcID(t, resp.body)))
 
-			// The pages the vMCP followed were one call: the token is now used up.
-			again := s.send(t, http.MethodPost, token, "",
-				`{"jsonrpc":"2.0","id":4,"method":"tools/list","params":`+modernListParams("")+`}`, modernListHeaders)
-			requireRefused(t, again, callbinding.ReasonTokenReused, 4)
+			requireRefused(t, send(4, ""), callbinding.ReasonTokenReused, 4)
 		})
 	}
+}
+
+// TestCallBinding_ListCallSharedKey checks that items are attributed by their
+// own backend, not by their key: another backend's resource with the bound
+// server's resource URI is never answered, on Legacy or Modern.
+func TestCallBinding_ListCallSharedKey(t *testing.T) {
+	t.Parallel()
+	for _, modern := range []bool{false, true} {
+		t.Run(map[bool]string{false: "Legacy", true: "Modern"}[modern], func(t *testing.T) {
+			t.Parallel()
+			s := newCallBindingTestServer(t, cbServerOptions{wrap: func(fc *fakeCore) core.VMCP {
+				fc.resources = []vmcp.Resource{
+					{URI: cbResource, Name: "other's", Description: "from the other backend", BackendID: "other"},
+					{URI: cbResource, Name: "bound", Description: "from the bound backend", BackendID: cbServer},
+				}
+				return fc
+			}})
+			token := s.tokens.add("list", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "resources/list")}))
+			var resp cbResponse
+			if modern {
+				body, headers := cbModernList(2, "resources/list")
+				resp = s.send(t, http.MethodPost, token, "", body, headers)
+			} else {
+				resp = s.send(t, http.MethodPost, token, s.session(t, token), listBody(2, "resources/list"), nil)
+			}
+			require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
+			assert.Equal(t, []string{cbResource}, listedKeys(t, "resources/list", resp.body))
+			assert.Contains(t, resp.body, "from the bound backend")
+			assert.NotContains(t, resp.body, "from the other backend")
+		})
+	}
+}
+
+// TestCallBinding_SpentTokenGetsTokenReused checks that once a token has
+// started its call, a tools/call or a list method it could otherwise send is
+// refused with 401 token_reused, telling the client it needs a new token,
+// rather than with a refusal about the request: for a list-call token and a
+// tool-call token alike. A tool-call token still lists tools, and a method no
+// token may send keeps method_not_allowed.
+func TestCallBinding_SpentTokenGetsTokenReused(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{})
+
+	list := s.tokens.add("list", claimsFor(cbClient, "jti-list", []any{listEntry(cbServer, "tools/list")}))
+	listSession := s.session(t, list)
+	resp := s.send(t, http.MethodPost, list, listSession, listBody(2, "tools/list"), nil)
+	require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
+	requireRefused(t, s.send(t, http.MethodPost, list, listSession, toolCallBody(3, cbTool, "{}"), nil),
+		callbinding.ReasonTokenReused, 3)
+	requireRefused(t, s.send(t, http.MethodPost, list, listSession, listBody(4, "prompts/list"), nil),
+		callbinding.ReasonTokenReused, 4)
+	requireRefused(t, s.send(t, http.MethodPost, list, "", cbModernCall(5, "{}"), cbModernHeaders()),
+		callbinding.ReasonTokenReused, 5)
+
+	call := s.tokens.add("call", claimsFor(cbClient, "jti-call", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	callSession := s.session(t, call)
+	requireCallRan(t, s.send(t, http.MethodPost, call, callSession, toolCallBody(6, cbTool, "{}"), nil))
+	requireRefused(t, s.send(t, http.MethodPost, call, callSession, toolCallBody(7, cbOtherTool, `{"x":1}`), nil),
+		callbinding.ReasonTokenReused, 7)
+	requireRefused(t, s.send(t, http.MethodPost, call, callSession, listBody(8, "prompts/list"), nil),
+		callbinding.ReasonTokenReused, 8)
+	tools := s.send(t, http.MethodPost, call, callSession, listBody(9, "tools/list"), nil)
+	require.Equal(t, http.StatusOK, tools.status, "a tool-call token still lists tools: %s", tools.body)
+	requireRefused(t, s.send(t, http.MethodPost, call, callSession,
+		`{"jsonrpc":"2.0","id":10,"method":"resources/read","params":{"uri":"x"}}`, nil),
+		callbinding.ReasonMethodNotAllowed, 10)
+
+	// Before its call, a tool-call token's mismatch is about the request.
+	fresh := s.tokens.add("fresh", claimsFor(cbClient, "jti-fresh", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	freshSession := s.session(t, fresh)
+	requireRefused(t, s.send(t, http.MethodPost, fresh, freshSession, toolCallBody(11, cbOtherTool, "{}"), nil),
+		callbinding.ReasonToolMismatch, 11)
+	requireRefused(t, s.send(t, http.MethodPost, fresh, freshSession, listBody(12, "prompts/list"), nil),
+		callbinding.ReasonMethodNotAllowed, 12)
+	assert.Equal(t, int32(1), s.fc.callToolCalls.Load())
+}
+
+// TestCallBinding_ListCallReleasedWithoutAnswer checks that a list call
+// answered without a list, here the 404 for a session the server does not
+// know, does not use the token up: nothing of the call reached the client.
+func TestCallBinding_ListCallReleasedWithoutAnswer(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{})
+	token := s.tokens.add("list", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}))
+
+	gone := s.send(t, http.MethodPost, token, "no-such-session", listBody(2, "tools/list"), nil)
+	require.Equal(t, http.StatusNotFound, gone.status, "body: %s", gone.body)
+
+	resp := s.send(t, http.MethodPost, token, s.session(t, token), listBody(3, "tools/list"), nil)
+	require.Equal(t, http.StatusOK, resp.status, "the token was released: %s", resp.body)
+	assert.Equal(t, []string{cbTool}, listedKeys(t, "tools/list", resp.body))
 }
 
 // TestCallBinding_ListAndToolCallShareOneUse checks that the single-use record
@@ -319,131 +400,6 @@ func TestCallBinding_ListAndToolCallShareOneUse(t *testing.T) {
 	requireRefused(t, s.send(t, http.MethodPost, call, listSession, toolCallBody(5, cbTool, "{}"), nil),
 		callbinding.ReasonTokenReused, 5)
 	assert.Equal(t, int32(1), s.fc.callToolCalls.Load())
-}
-
-// TestCallBinding_ListCallPageWalk drives serveBound with a stand-in handler
-// that pages by params.cursor, to check how the pages are followed: each next
-// page is requested with the previous page's cursor and the same request
-// otherwise, and a walk that does not end, repeats a cursor, or meets a
-// failed page is answered with a 500 rather than part of the list.
-func TestCallBinding_ListCallPageWalk(t *testing.T) {
-	t.Parallel()
-	keep := map[string]struct{}{cbTool: {}, cbTool + "_2": {}}
-	cb, err := newCallBinding(callbinding.Config{}, nil,
-		func(context.Context, *auth.Identity, string, string) (map[string]struct{}, error) { return keep, nil })
-	require.NoError(t, err)
-	// page is a page of items with nextCursor cursor, or none when cursor is
-	// nil.
-	page := func(items string, cursor *string) string {
-		result := `{"tools":[` + items + `]`
-		if cursor != nil {
-			result += `,"nextCursor":` + cbJSON(*cursor)
-		}
-		return `{"jsonrpc":"2.0","id":2,"result":` + result + `}}`
-	}
-	cur := func(c string) *string { return &c }
-	tool := func(name string) string { return `{"name":"` + name + `"}` }
-
-	tests := []struct {
-		name string
-		// pages answers the n-th page request (from 1), sent with cursor.
-		pages      func(n int, cursor string) (int, string)
-		wantStatus int
-		wantItems  []string
-	}{
-		{
-			name: "every page followed",
-			pages: func(n int, cursor string) (int, string) {
-				switch {
-				case n == 1:
-					return http.StatusOK, page(tool(cbTool)+","+tool("other_1"), cur("c1"))
-				case cursor == "c1":
-					return http.StatusOK, page(tool("other_2")+","+tool(cbTool+"_2"), nil)
-				default:
-					return http.StatusBadRequest, ""
-				}
-			},
-			wantStatus: http.StatusOK, wantItems: []string{cbTool, cbTool + "_2"},
-		},
-		{
-			name: "an empty cursor is followed too",
-			pages: func(n int, _ string) (int, string) {
-				if n == 1 {
-					return http.StatusOK, page(tool("other_1"), cur(""))
-				}
-				return http.StatusOK, page(tool(cbTool+"_2"), nil)
-			},
-			wantStatus: http.StatusOK, wantItems: []string{cbTool + "_2"},
-		},
-		{
-			name: "pages that never end",
-			pages: func(_ int, cursor string) (int, string) {
-				return http.StatusOK, page(tool("other"), cur(cursor+"x"))
-			},
-			wantStatus: http.StatusInternalServerError,
-		},
-		{
-			name: "a repeated cursor",
-			pages: func(int, string) (int, string) {
-				return http.StatusOK, page(tool("other"), cur("same"))
-			},
-			wantStatus: http.StatusInternalServerError,
-		},
-		{
-			name: "a failed page",
-			pages: func(n int, _ string) (int, string) {
-				if n == 1 {
-					return http.StatusOK, page(tool(cbTool), cur("c1"))
-				}
-				return http.StatusOK, `{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"invalid cursor"}}`
-			},
-			wantStatus: http.StatusInternalServerError,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			var requests int
-			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests++
-				var req struct {
-					ID     json.RawMessage `json:"id"`
-					Method string          `json:"method"`
-					Params struct {
-						Cursor string `json:"cursor"`
-					} `json:"params"`
-				}
-				raw, _ := io.ReadAll(r.Body)
-				if json.Unmarshal(raw, &req) != nil || req.Method != "tools/list" || string(req.ID) != "2" {
-					w.WriteHeader(http.StatusBadRequest)
-					return
-				}
-				if parsed := mcpparser.GetParsedMCPRequest(r.Context()); requests > 1 &&
-					(parsed == nil || !strings.Contains(string(parsed.Params), req.Params.Cursor)) {
-					w.WriteHeader(http.StatusBadRequest)
-					return
-				}
-				status, body := tc.pages(requests, req.Params.Cursor)
-				w.WriteHeader(status)
-				_, _ = w.Write([]byte(body))
-			})
-			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(listBody(2, "tools/list")))
-			rec := httptest.NewRecorder()
-			// Each case is its own token: a list call uses its token up.
-			token, reason := callbinding.FromClaims(
-				claimsFor(cbClient, tc.name, []any{listEntry(cbServer, "tools/list")}), nil)
-			require.Empty(t, reason)
-			cb.serveBound(rec, req, next, &auth.Identity{}, token,
-				&mcpparser.ParsedMCPRequest{Method: "tools/list", ID: int64(2), IsRequest: true})
-
-			require.Equal(t, tc.wantStatus, rec.Code, "body: %s", rec.Body.String())
-			assert.NotContains(t, rec.Body.String(), "other")
-			assert.NotContains(t, rec.Body.String(), "nextCursor")
-			if tc.wantStatus == http.StatusOK {
-				assert.Equal(t, tc.wantItems, listedKeys(t, "tools/list", rec.Body.String()))
-			}
-		})
-	}
 }
 
 // TestCallBinding_ListCallRefusalIsAudited checks that a list-call token's
@@ -527,65 +483,196 @@ func TestCallBinding_ListCallOptimizerListsNothing(t *testing.T) {
 		prompts: []vmcp.Prompt{{Name: cbPrompt, BackendID: cbServer}},
 	}
 	s := &Server{core: fc, optimizerFactory: stubOptimizerFactory}
-	keys, err := s.callBindingListItems(context.Background(), nil, "tools/list", cbServer)
+	items, err := s.callBindingListItems(context.Background(), nil, "tools/list", cbServer)
 	require.NoError(t, err)
-	assert.Empty(t, keys)
-	keys, err = s.callBindingListItems(context.Background(), nil, "prompts/list", cbServer)
+	assert.Empty(t, items)
+	items, err = s.callBindingListItems(context.Background(), nil, "prompts/list", cbServer)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]struct{}{cbPrompt: {}}, keys, "prompts are not the optimizer's")
+	require.Len(t, items, 1, "prompts are not the optimizer's")
+	assert.Contains(t, string(items[0]), cbPrompt)
 	_, err = s.callBindingListItems(context.Background(), nil, "tools/call", cbServer)
 	require.Error(t, err)
 }
 
-// TestCallBinding_ListCallClientGone checks that a list call whose client
-// went away before the handler answered writes nothing.
-func TestCallBinding_ListCallClientGone(t *testing.T) {
-	t.Parallel()
+// standInItems is the answer the stand-in list lookup gives.
+var standInItems = []json.RawMessage{json.RawMessage(`{"name":"` + cbTool + `"}`)}
+
+// standInBinding is a callBinding whose list lookup answers standInItems.
+func standInBinding(t *testing.T) *callBinding {
+	t.Helper()
 	cb, err := newCallBinding(callbinding.Config{}, nil,
-		func(context.Context, *auth.Identity, string, string) (map[string]struct{}, error) {
-			return map[string]struct{}{}, nil
+		func(context.Context, *auth.Identity, string, string) ([]json.RawMessage, error) {
+			return standInItems, nil
 		})
 	require.NoError(t, err)
-	token, reason := callbinding.FromClaims(
-		claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}), nil)
+	return cb
+}
+
+// standInToken is a list-call token for tools/list with its own jti.
+func standInToken(t *testing.T, jti string) *callbinding.Token {
+	t.Helper()
+	token, reason := callbinding.FromClaims(claimsFor(cbClient, jti, []any{listEntry(cbServer, "tools/list")}), nil)
 	require.Empty(t, reason)
-	ctx, cancel := context.WithCancel(context.Background())
+	return token
+}
+
+// standInList is a Legacy tools/list request on session s1 and its parse.
+func standInList(ctx context.Context) (*http.Request, *mcpparser.ParsedMCPRequest) {
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(listBody(2, "tools/list"))).WithContext(ctx)
+	req.Header.Set("Mcp-Session-Id", "s1")
+	return req, &mcpparser.ParsedMCPRequest{Method: "tools/list", ID: int64(2), IsRequest: true}
+}
+
+// recorded reports whether the token's call is in cb's record.
+func recorded(t *testing.T, cb *callBinding, token *callbinding.Token) bool {
+	t.Helper()
+	_, found, err := cb.record.Lookup(context.Background(), token.Key)
+	require.NoError(t, err)
+	return found
+}
+
+// TestCallBinding_ListCallClientGone checks that a list call whose client
+// went away before the handler answered writes nothing and does not use the
+// token up.
+func TestCallBinding_ListCallClientGone(t *testing.T) {
+	t.Parallel()
+	cb := standInBinding(t)
+	token := standInToken(t, "jti-1")
+	ctx, cancel := context.WithCancel(context.Background())
+	req, parsed := standInList(ctx)
 	rec := httptest.NewRecorder()
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { cancel() })
-	cb.serveBound(rec, req, next, &auth.Identity{}, token,
-		&mcpparser.ParsedMCPRequest{Method: "tools/list", ID: int64(2), IsRequest: true})
+	cb.serveBound(rec, req, next, &auth.Identity{}, token, parsed)
 	assert.Empty(t, rec.Body.String())
 	assert.False(t, rec.Flushed)
+	assert.False(t, recorded(t, cb, token), "the token is released")
+}
+
+// TestCallBinding_ListCallOneInFlight checks that a list call holds its token
+// while the handler runs, so a duplicate is refused with token_reused, and
+// that a call answered without a list then releases it for a retry.
+func TestCallBinding_ListCallOneInFlight(t *testing.T) {
+	t.Parallel()
+	cb := standInBinding(t)
+	token := standInToken(t, "jti-1")
+	started, release := make(chan struct{}), make(chan struct{})
+	blocking := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"backend failed"}}`))
+	})
+	done := make(chan *httptest.ResponseRecorder)
+	go func() {
+		req, parsed := standInList(context.Background())
+		rec := httptest.NewRecorder()
+		cb.serveBound(rec, req, blocking, &auth.Identity{}, token, parsed)
+		done <- rec
+	}()
+	<-started
+
+	req, parsed := standInList(context.Background())
+	dup := httptest.NewRecorder()
+	cb.serveBound(dup, req, http.NotFoundHandler(), &auth.Identity{}, token, parsed)
+	assert.Equal(t, http.StatusUnauthorized, dup.Code, "a duplicate in flight: %s", dup.Body.String())
+	assert.Contains(t, dup.Body.String(), "(token_reused)")
+
+	close(release)
+	first := <-done
+	assert.Contains(t, first.Body.String(), "backend failed", "the error passes unchanged")
+	assert.False(t, recorded(t, cb, token), "an answer without a list releases the token")
+
+	req, parsed = standInList(context.Background())
+	retry := httptest.NewRecorder()
+	cb.serveBound(retry, req, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`))
+	}), &auth.Identity{}, token, parsed)
+	require.Equal(t, http.StatusOK, retry.Code, "body: %s", retry.Body.String())
+	assert.Contains(t, retry.Body.String(), cbTool)
+	assert.True(t, recorded(t, cb, token), "a list answered uses the token up")
+}
+
+// TestCallBinding_ListCallMessages checks the messages admitted on the session
+// of an open list call: a notifications/cancelled for the call's ID passes,
+// and the list call it cancels then gives no answer without a 500; a JSON-RPC
+// response is refused with no_open_call, since a list call asks the client
+// nothing.
+func TestCallBinding_ListCallMessages(t *testing.T) {
+	t.Parallel()
+	cb := standInBinding(t)
+	token := standInToken(t, "jti-1")
+	started, cancelled := make(chan struct{}), make(chan struct{})
+	list := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		// Like the SDK, answer nothing for a cancelled request.
+		close(started)
+		<-cancelled
+	})
+	done := make(chan *httptest.ResponseRecorder)
+	go func() {
+		req, parsed := standInList(context.Background())
+		rec := httptest.NewRecorder()
+		cb.serveBound(rec, req, list, &auth.Identity{}, token, parsed)
+		done <- rec
+	}()
+	<-started
+
+	response := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":9,"result":{}}`))
+	response.Header.Set("Mcp-Session-Id", "s1")
+	refused := httptest.NewRecorder()
+	cb.serveBound(refused, response, http.NotFoundHandler(), &auth.Identity{}, token, nil)
+	assert.Equal(t, http.StatusForbidden, refused.Code)
+	assert.Contains(t, refused.Body.String(), "(no_open_call)")
+
+	cancel := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(cancelBody("2")))
+	cancel.Header.Set("Mcp-Session-Id", "s1")
+	admitted := httptest.NewRecorder()
+	cb.serveBound(admitted, cancel, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		close(cancelled)
+	}), &auth.Identity{}, token, &mcpparser.ParsedMCPRequest{
+		Method: "notifications/cancelled", Params: json.RawMessage(`{"requestId":2}`),
+	})
+	assert.Equal(t, http.StatusAccepted, admitted.Code, "the cancellation is admitted: %s", admitted.Body.String())
+
+	first := <-done
+	assert.NotEqual(t, http.StatusInternalServerError, first.Code, "body: %s", first.Body.String())
+	assert.Empty(t, first.Body.String())
+	assert.False(t, recorded(t, cb, token), "a cancelled list call gave no list, so the token is released")
 }
 
 // TestCallBinding_ListCallResponseHandling drives serveBound with stand-in
-// handlers, to check how the answer to a list call is passed on: a response
-// that is not 200 passes unchanged, a JSON-RPC error passes unchanged, and a
-// 200 that cannot be read is replaced by a 500 rather than passed unfiltered.
-// Nothing reaches the client before the filter runs, even when the handler
-// flushes.
+// handlers, to check how the handler's answer becomes the list call's: a
+// result is answered with the list lookup's items in place of the handler's
+// own and without its cursor, whatever its status; a plain error body and a
+// JSON-RPC error pass unchanged and release the token; anything else that is
+// not a list result gets a 500 and releases the token. Nothing reaches the
+// client before the answer is complete, even when the handler flushes.
 func TestCallBinding_ListCallResponseHandling(t *testing.T) {
 	t.Parallel()
-	keep := map[string]struct{}{cbTool: {}}
-	cb, err := newCallBinding(callbinding.Config{}, nil,
-		func(context.Context, *auth.Identity, string, string) (map[string]struct{}, error) { return keep, nil })
-	require.NoError(t, err)
-	parsed := &mcpparser.ParsedMCPRequest{Method: "tools/list", ID: int64(2), IsRequest: true}
-
+	cb := standInBinding(t)
 	tests := []struct {
-		name       string
-		status     int
-		body       string
-		wantStatus int
-		wantBody   string
+		name         string
+		status       int
+		body         string
+		wantStatus   int
+		wantBody     string
+		wantRecorded bool
 	}{
 		{
-			name:       "filtered",
-			status:     http.StatusOK,
-			body:       `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbTool + `"},{"name":"` + cbOtherTool + `"}],"_meta":{}}}`,
-			wantStatus: http.StatusOK,
-			wantBody:   `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbTool + `"}],"_meta":{}}}`,
+			name:   "answered with the lookup's items",
+			status: http.StatusOK,
+			body: `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbOtherTool + `"}],` +
+				`"nextCursor":"` + cbOtherTool + `","_meta":{}}}`,
+			wantStatus:   http.StatusOK,
+			wantBody:     `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbTool + `"}],"_meta":{}}}`,
+			wantRecorded: true,
+		},
+		{
+			name:         "result on another status",
+			status:       http.StatusAccepted,
+			body:         `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbOtherTool + `"}]}}`,
+			wantStatus:   http.StatusAccepted,
+			wantBody:     `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbTool + `"}]}}`,
+			wantRecorded: true,
 		},
 		{
 			name:       "plain error body passes unchanged",
@@ -595,24 +682,17 @@ func TestCallBinding_ListCallResponseHandling(t *testing.T) {
 			wantBody:   "session not found",
 		},
 		{
-			name:       "result on another status is filtered too",
-			status:     http.StatusAccepted,
-			body:       `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbTool + `"},{"name":"` + cbOtherTool + `"}]}}`,
-			wantStatus: http.StatusAccepted,
-			wantBody:   `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbTool + `"}]}}`,
+			name:       "JSON-RPC error passes unchanged",
+			status:     http.StatusOK,
+			body:       `{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"x"}}`,
+			wantStatus: http.StatusOK,
+			wantBody:   `{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"x"}}`,
 		},
 		{
 			name:       "result without its items member fails closed",
 			status:     http.StatusOK,
 			body:       `{"jsonrpc":"2.0","id":2,"result":{"items":[{"name":"` + cbOtherTool + `"}]}}`,
 			wantStatus: http.StatusInternalServerError,
-		},
-		{
-			name:       "JSON-RPC error passes unchanged",
-			status:     http.StatusOK,
-			body:       `{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"x"}}`,
-			wantStatus: http.StatusOK,
-			wantBody:   `{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"x"}}`,
 		},
 		{
 			name:       "unreadable result fails closed",
@@ -635,17 +715,16 @@ func TestCallBinding_ListCallResponseHandling(t *testing.T) {
 				flushedEarly = rec.Body.Len() > 0 || rec.Code != http.StatusOK
 				_, _ = w.Write([]byte(tc.body[len(tc.body)/2:]))
 			})
-			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(listBody(2, "tools/list")))
-			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user-1"}}
 			// Each case is its own token: a list call uses its token up.
-			token, reason := callbinding.FromClaims(
-				claimsFor(cbClient, tc.name, []any{listEntry(cbServer, "tools/list")}), nil)
-			require.Empty(t, reason)
-			cb.serveBound(rec, req, next, identity, token, parsed)
+			token := standInToken(t, tc.name)
+			req, parsed := standInList(context.Background())
+			cb.serveBound(rec, req, next, &auth.Identity{}, token, parsed)
 
-			assert.False(t, flushedEarly, "nothing reaches the client before the filter runs")
+			assert.False(t, flushedEarly, "nothing reaches the client before the answer is complete")
 			assert.Equal(t, tc.wantStatus, rec.Code)
 			assert.Empty(t, rec.Header().Get("Content-Length"))
+			assert.Equal(t, tc.wantRecorded, recorded(t, cb, token))
+			assert.NotContains(t, rec.Body.String(), cbOtherTool)
 			switch {
 			case tc.wantStatus == http.StatusNotFound:
 				assert.Equal(t, tc.wantBody, rec.Body.String())
@@ -654,7 +733,6 @@ func TestCallBinding_ListCallResponseHandling(t *testing.T) {
 				assert.JSONEq(t, tc.wantBody, rec.Body.String())
 				return
 			}
-			assert.NotContains(t, rec.Body.String(), cbOtherTool)
 			var resp struct {
 				ID    json.RawMessage `json:"id"`
 				Error struct {

@@ -101,8 +101,8 @@ a token may also send, to the MCP endpoint:
 - GET and DELETE on sessions its principal owns, and once the token has started its
   call, only on that call's session;
 - on the Legacy session of its call, while the call's request is open: a
-  `notifications/cancelled` for the call and any JSON-RPC response, such as an
-  elicitation answer.
+  `notifications/cancelled` for the call and, for a tool call, any JSON-RPC
+  response, such as an elicitation answer.
 
 Call binding refuses everything else on the MCP endpoint. A refusal that describes the
 token gets **HTTP 401** with `WWW-Authenticate: Bearer error="invalid_token"` (with the

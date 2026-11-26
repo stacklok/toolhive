@@ -95,6 +95,9 @@ const (
 	// ReasonServerMismatch: the vMCP routes the call to a backend other than
 	// the entry's server.
 	ReasonServerMismatch = "server_mismatch"
+	// ReasonServerNotFound: the entry names a list call on a server that is
+	// not one of the vMCP's backends.
+	ReasonServerNotFound = "server_not_found"
 	// ReasonInvalidArguments: params.arguments is not one I-JSON object, so
 	// it has no argument hash.
 	ReasonInvalidArguments = "invalid_arguments"
@@ -104,7 +107,9 @@ const (
 	// ReasonInvalidParams: the tools/call params cannot be read the one way
 	// dispatch reads them: params is not a single JSON object, name is not a
 	// string, or a member's name would match name, arguments or _meta in a
-	// case-insensitive decoder without being spelled exactly so.
+	// case-insensitive decoder without being spelled exactly so. Or a list
+	// call's params are not one JSON object, or carry a cursor: a list call is
+	// answered whole, so it never continues a list.
 	ReasonInvalidParams = "invalid_params"
 	// ReasonTokenReused: the token has already started a call, and the
 	// request would start another one or a new session.

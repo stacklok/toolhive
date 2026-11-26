@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -396,5 +398,46 @@ func TestMirroredMessagePrefix_NotUsedByLocalMessages(t *testing.T) {
 		assert.True(t, isLocalValidationFailure(&metav1.Condition{
 			Status: metav1.ConditionFalse, Reason: c.reason, Message: c.message,
 		}), "%s message must be treated as locally owned", name)
+	}
+}
+
+// TestExternalAuthValidCondition pins what a backend resource reports on a True
+// ExternalAuthConfigValidated condition. A type the backend accepts without
+// applying it carries its own reason and a message that names the type, so a
+// backend used on its own does not read as protected by it. Every other type
+// keeps the consumer's plain "valid" reason and message.
+func TestExternalAuthValidCondition(t *testing.T) {
+	t.Parallel()
+
+	consumers := map[externalauthsupport.Consumer]string{
+		externalauthsupport.ConsumerMCPServer:      mcpv1beta1.ConditionReasonExternalAuthConfigValid,
+		externalauthsupport.ConsumerMCPRemoteProxy: mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
+	}
+	notApplied := []mcpv1beta1.ExternalAuthType{
+		mcpv1beta1.ExternalAuthTypeHeaderInjection,
+		mcpv1beta1.ExternalAuthTypeUpstreamInject,
+		mcpv1beta1.ExternalAuthTypeXAA,
+	}
+	applied := []mcpv1beta1.ExternalAuthType{
+		mcpv1beta1.ExternalAuthTypeTokenExchange,
+		mcpv1beta1.ExternalAuthTypeUnauthenticated,
+		mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+		mcpv1beta1.ExternalAuthTypeOBO,
+	}
+
+	for consumer, validReason := range consumers {
+		for _, authType := range notApplied {
+			reason, message := externalAuthValidCondition(consumer, validReason, "hdr", authType)
+			assert.Equal(t, mcpv1beta1.ConditionReasonAppliedByVirtualMCPServer, reason, "%s/%s", consumer, authType)
+			assert.Equal(t, fmt.Sprintf(
+				"MCPExternalAuthConfig 'hdr' is valid, but %s does not apply type %q itself: "+
+					"it takes effect only when a VirtualMCPServer discovers this backend",
+				consumer, authType), message)
+		}
+		for _, authType := range applied {
+			reason, message := externalAuthValidCondition(consumer, validReason, "hdr", authType)
+			assert.Equal(t, validReason, reason, "%s/%s", consumer, authType)
+			assert.Equal(t, "MCPExternalAuthConfig 'hdr' is valid", message)
+		}
 	}
 }

@@ -7,7 +7,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1666,7 +1668,7 @@ func TestUpstreamIdentityBinding(t *testing.T) {
 					IdentityFromToken: &upstream.IdentityFromTokenConfig{SubjectPath: "username"},
 				},
 			},
-			wantIssuer: "oauth2:token:https://acct.snowflakecomputing.com/oauth/token-request",
+			wantIssuer: oauth2Issuer("token", "acct.snowflakecomputing.com"),
 			wantClaim:  "token:username",
 		},
 		{
@@ -1679,7 +1681,7 @@ func TestUpstreamIdentityBinding(t *testing.T) {
 					UserInfo:      &upstream.UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
 				},
 			},
-			wantIssuer: "oauth2:userinfo:https://oauth.example.com/userinfo",
+			wantIssuer: oauth2Issuer("userinfo", "oauth.example.com"),
 			wantClaim:  `userinfo:["sub"]`,
 		},
 		{
@@ -1695,7 +1697,7 @@ func TestUpstreamIdentityBinding(t *testing.T) {
 					},
 				},
 			},
-			wantIssuer: "oauth2:userinfo:https://api.github.com/user",
+			wantIssuer: oauth2Issuer("userinfo", "api.github.com"),
 			wantClaim:  `userinfo:["id","login"]`,
 		},
 		{
@@ -1707,7 +1709,7 @@ func TestUpstreamIdentityBinding(t *testing.T) {
 					TokenEndpoint: "https://opaque.example.com/token",
 				},
 			},
-			wantIssuer: "oauth2:synthetic:https://opaque.example.com/token",
+			wantIssuer: oauth2Issuer("synthetic", "opaque.example.com"),
 			wantClaim:  "synthetic",
 		},
 		{
@@ -1725,3 +1727,60 @@ func TestUpstreamIdentityBinding(t *testing.T) {
 		})
 	}
 }
+
+func oauth2Issuer(mode, host string) string {
+	sum := sha256.Sum256([]byte(host))
+	return "oauth2:" + mode + ":sha256:" + hex.EncodeToString(sum[:])
+}
+
+func TestUpstreamIdentityBinding_OAuth2HostOnly(t *testing.T) {
+	t.Parallel()
+
+	userinfo := func(token, endpoint string) UpstreamConfig {
+		return UpstreamConfig{
+			Name: "generic",
+			Type: UpstreamProviderTypeOAuth2,
+			OAuth2Config: &upstream.OAuth2Config{
+				TokenEndpoint: token,
+				UserInfo:      &upstream.UserInfoConfig{EndpointURL: endpoint},
+			},
+		}
+	}
+	base, _ := upstreamIdentityBinding(ptr(userinfo("https://idp.example.com/token", "https://api.example.com/userinfo")))
+	require.True(t, strings.HasPrefix(base, "oauth2:userinfo:sha256:"))
+	assert.Len(t, base, len("oauth2:userinfo:sha256:")+64)
+
+	tests := []struct {
+		name     string
+		endpoint string
+		wantSame bool
+	}{
+		{"different path", "https://api.example.com/v2/me", true},
+		{"query and trailing slash", "https://api.example.com/userinfo/?x=1", true},
+		{"host case", "https://API.Example.com/userinfo", true},
+		{"different scheme, same host", "http://api.example.com/userinfo", true},
+		{"different host", "https://api.other.example.com/userinfo", false},
+		{"different port", "https://api.example.com:8443/userinfo", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, _ := upstreamIdentityBinding(ptr(userinfo("https://idp.example.com/token", tt.endpoint)))
+			if tt.wantSame {
+				assert.Equal(t, base, got)
+			} else {
+				assert.NotEqual(t, base, got)
+				assert.True(t, strings.HasPrefix(got, "oauth2:userinfo:sha256:"))
+			}
+		})
+	}
+
+	t.Run("unparseable endpoint", func(t *testing.T) {
+		t.Parallel()
+		issuer, claim := upstreamIdentityBinding(ptr(userinfo("https://idp.example.com/token", "://bad")))
+		assert.Empty(t, issuer)
+		assert.Empty(t, claim)
+	})
+}
+
+func ptr[T any](v T) *T { return &v }

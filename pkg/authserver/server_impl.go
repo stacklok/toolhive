@@ -6,14 +6,18 @@ package authserver
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -134,17 +138,24 @@ func buildUpstreams(ctx context.Context, cfg Config) ([]handlers.NamedUpstream, 
 // so stamped rows are always distinct from legacy unstamped rows:
 //   - OIDC: the exact configured Issuer URL and SubjectClaim (default "sub"),
 //     matching Config.signInUpstream and the validated ID token.
-//   - Plain OAuth 2.0: a mode-prefixed endpoint URL ("oauth2:token:<url>",
-//     "oauth2:userinfo:<url>", or "oauth2:synthetic:<url>") paired with the
-//     subject extraction rule ("token:<path>", "userinfo:<json-fields>", or
-//     "synthetic"). The mode prefix keeps plain OAuth 2.0 rows disjoint from
-//     OIDC issuers (http:// / https://) and detects cross-provider or
-//     mode-change repoints on the same upstream name. Synthesis mode sets
-//     Identity.Synthetic=true and bypasses UserResolver, so it never writes
-//     provider-identity rows; populating a distinct pair keeps the mapping
-//     total across all valid configs.
+//   - Plain OAuth 2.0: "oauth2:<mode>:sha256:<hex>", where mode is token,
+//     userinfo or synthetic and the hash covers the lower-cased host (and port)
+//     of the endpoint that defines the subject (the token endpoint for token
+//     and synthetic, the userinfo endpoint for userinfo). The subject claim is
+//     the extraction rule: "token:<path>", "userinfo:<json-fields>" (field
+//     order matters, the first non-empty field wins) or "synthetic".
 //
-// Returns ("", "") for unpopulated test-stub configs.
+// Only the host is hashed so that a change to the path, query, trailing slash
+// or a same-host endpoint move does not give users new accounts, while moving
+// to another host does. Hashing keeps endpoint addresses out of storage and
+// logs. The mode prefix keeps plain OAuth 2.0 rows disjoint from OIDC issuers
+// and detects mode changes on the same upstream name. Synthesis mode sets
+// Identity.Synthetic=true and bypasses UserResolver, so it never writes
+// provider-identity rows; populating a distinct pair keeps the mapping total
+// across all valid configs.
+//
+// Returns ("", "") for unpopulated test-stub configs, or when the endpoint
+// cannot be parsed or has no host.
 func upstreamIdentityBinding(upCfg *UpstreamConfig) (issuer, subjectClaim string) {
 	if upCfg == nil {
 		return "", ""
@@ -154,21 +165,43 @@ func upstreamIdentityBinding(upCfg *UpstreamConfig) (issuer, subjectClaim string
 		return upCfg.OIDCConfig.Issuer, cmp.Or(upCfg.OIDCConfig.SubjectClaim, upstream.DefaultSubjectClaim)
 	case upCfg.OAuth2Config != nil:
 		oa := upCfg.OAuth2Config
-		switch {
-		case oa.IdentityFromToken != nil && oa.TokenEndpoint != "" && oa.IdentityFromToken.SubjectPath != "":
-			return "oauth2:token:" + oa.TokenEndpoint, "token:" + oa.IdentityFromToken.SubjectPath
-		case oa.UserInfo != nil && oa.UserInfo.EndpointURL != "":
-			fields := oa.UserInfo.FieldMapping.GetSubjectFields()
-			encoded, err := json.Marshal(fields)
-			if err != nil {
-				return "", ""
+		mode, endpoint, claim := func() (string, string, string) {
+			switch {
+			case oa.IdentityFromToken != nil && oa.TokenEndpoint != "" && oa.IdentityFromToken.SubjectPath != "":
+				return "token", oa.TokenEndpoint, "token:" + oa.IdentityFromToken.SubjectPath
+			case oa.UserInfo != nil && oa.UserInfo.EndpointURL != "":
+				encoded, err := json.Marshal(oa.UserInfo.FieldMapping.GetSubjectFields())
+				if err != nil {
+					return "", "", ""
+				}
+				return "userinfo", oa.UserInfo.EndpointURL, "userinfo:" + string(encoded)
+			case oa.TokenEndpoint != "":
+				return "synthetic", oa.TokenEndpoint, "synthetic"
 			}
-			return "oauth2:userinfo:" + oa.UserInfo.EndpointURL, "userinfo:" + string(encoded)
-		case oa.TokenEndpoint != "":
-			return "oauth2:synthetic:" + oa.TokenEndpoint, "synthetic"
+			return "", "", ""
+		}()
+		if mode == "" {
+			return "", ""
 		}
+		issuer = oauth2BindingIssuer(mode, endpoint)
+		if issuer == "" {
+			return "", ""
+		}
+		return issuer, claim
 	}
 	return "", ""
+}
+
+// oauth2BindingIssuer builds the stamped issuer for a plain OAuth 2.0 upstream
+// from the mode and the host of the endpoint that defines the subject. It
+// returns "" when the endpoint has no parseable host.
+func oauth2BindingIssuer(mode, endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.ToLower(u.Host)))
+	return "oauth2:" + mode + ":sha256:" + hex.EncodeToString(sum[:])
 }
 
 // isNilProvider reports whether an OAuth2Provider is unusable — either a nil

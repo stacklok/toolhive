@@ -199,7 +199,10 @@ spec:
 Referenced `MCPExternalAuthConfig` resources support `tokenExchange`,
 `headerInjection`, `unauthenticated`, `awsSts`, `upstreamInject`, `obo`, and
 `xaa`. Unsupported types are reported through an `UnsupportedAuthType`
-condition instead of being silently ignored.
+condition instead of being silently ignored. When the unsupported type is on
+an entry declared here (`default` or `backends`), no new configuration is
+published and the VirtualMCPServer reports `Phase: Failed` until the entry is
+fixed.
 
 ### `.spec.passthroughHeaders` (optional)
 

@@ -948,6 +948,18 @@ If the referenced auth type is not supported by that consumer, its validation
 condition reports `Reason: UnsupportedAuthType`, and the VirtualMCPServer
 reports a condition for the affected backend as well.
 
+An MCPServer or MCPRemoteProxy that references a `headerInjection`,
+`upstreamInject`, or `xaa` config reports `ExternalAuthConfigValidated: True`
+with `Reason: AppliedByVirtualMCPServer`. That is expected for a backend of a
+VirtualMCPServer: the backend's own proxy does not apply these types, the
+VirtualMCPServer does when it calls the backend. Without a VirtualMCPServer
+that discovers the backend, the config has no effect.
+
+If an entry declared in `spec.outgoingAuth` (`default` or `backends`) has an
+unsupported type, the VirtualMCPServer keeps serving the configuration it
+published before and reports `Phase: Failed`, with `Ready` set to `False` and
+`Reason: UnsupportedAuthType`.
+
 **Solution**: Either:
 - Create MCPExternalAuthConfig if backend requires auth
 - Remove `externalAuthConfigRef` from backend if no auth required

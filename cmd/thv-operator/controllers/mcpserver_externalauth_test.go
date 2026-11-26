@@ -341,7 +341,9 @@ func TestMCPServerReconciler_handleExternalAuthConfig_UnsupportedAuthType(t *tes
 // covers an MCPServer that is a VirtualMCPServer backend. Discovered mode reads
 // the auth reference from the backend resource and applies it when calling the
 // backend, so the MCPServer has to accept the type and reconcile normally even
-// though its own proxy runner does nothing with it.
+// though its own proxy runner does nothing with it. The condition stays True
+// but says so: an MCPServer that no VirtualMCPServer discovers must not read as
+// protected by a config its proxy never applies.
 func TestMCPServerReconciler_handleExternalAuthConfig_AcceptsTypesAppliedByVirtualMCPServer(t *testing.T) {
 	t.Parallel()
 
@@ -379,8 +381,23 @@ func TestMCPServerReconciler_handleExternalAuthConfig_AcceptsTypesAppliedByVirtu
 				mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
 			require.NotNil(t, cond)
 			assert.Equal(t, metav1.ConditionTrue, cond.Status)
-			assert.Equal(t, mcpv1beta1.ConditionReasonExternalAuthConfigValid, cond.Reason)
+			assert.Equal(t, mcpv1beta1.ConditionReasonAppliedByVirtualMCPServer, cond.Reason)
+			assert.Contains(t, cond.Message, string(tt.authType))
+			assert.Contains(t, cond.Message, "only when a VirtualMCPServer discovers this backend")
 			assert.Equal(t, "discovered-hash", mcpServer.Status.ExternalAuthConfigHash)
+
+			// Repointing the config to a type the proxy runner applies clears the advisory.
+			var applied mcpv1beta1.MCPExternalAuthConfig
+			require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(authConfig), &applied))
+			applied.Spec = mcpv1beta1.MCPExternalAuthConfigSpec{Type: mcpv1beta1.ExternalAuthTypeUnauthenticated}
+			require.NoError(t, fakeClient.Update(t.Context(), &applied))
+			require.NoError(t, reconciler.handleExternalAuthConfig(t.Context(), mcpServer))
+			cond = meta.FindStatusCondition(
+				mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+			require.NotNil(t, cond)
+			assert.Equal(t, metav1.ConditionTrue, cond.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonExternalAuthConfigValid, cond.Reason)
+			assert.Equal(t, "MCPExternalAuthConfig 'auth-config' is valid", cond.Message)
 		})
 	}
 }

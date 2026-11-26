@@ -112,6 +112,29 @@ func isTerminalExternalAuthError(err error) bool {
 	return stderrors.As(err, &unsupported)
 }
 
+// externalAuthValidCondition returns the reason and message of a True
+// ExternalAuthConfigValidated condition on a backend resource (MCPServer or
+// MCPRemoteProxy). validReason is the consumer's own "valid" reason.
+//
+// A type the backend accepts but does not apply itself gets a distinct reason
+// and a message that says so. The condition stays True, because the reference
+// is correct for a backend of a VirtualMCPServer and failing it would take
+// discovered mode down; but a backend that is used on its own would otherwise
+// read as protected by a config its proxy never applies.
+func externalAuthValidCondition(
+	consumer externalauthsupport.Consumer,
+	validReason, configName string,
+	authType mcpv1beta1.ExternalAuthType,
+) (reason, message string) {
+	if externalauthsupport.AppliedByVirtualMCPServer(consumer, authType) {
+		return mcpv1beta1.ConditionReasonAppliedByVirtualMCPServer, fmt.Sprintf(
+			"MCPExternalAuthConfig '%s' is valid, but %s does not apply type %q itself: "+
+				"it takes effect only when a VirtualMCPServer discovers this backend",
+			configName, consumer, authType)
+	}
+	return validReason, fmt.Sprintf("MCPExternalAuthConfig '%s' is valid", configName)
+}
+
 // ownedByLocalValidation reports whether conditions' entry for conditionType
 // (if any) was set by this operator's own validation rather than mirrored from
 // the referenced MCPExternalAuthConfig. See isLocalValidationFailure.

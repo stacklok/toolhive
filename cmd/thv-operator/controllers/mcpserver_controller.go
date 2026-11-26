@@ -2540,7 +2540,8 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 			m.Namespace, m.Name, len(embeddedCfg.UpstreamProviders))
 	}
 
-	setMCPServerExternalAuthConfigValidCondition(m, externalAuthConfig.Name, externalAuthConfig.Status.ConfigHash)
+	setMCPServerExternalAuthConfigValidCondition(
+		m, externalAuthConfig.Name, externalAuthConfig.Status.ConfigHash, externalAuthConfig.Spec.Type)
 
 	// Check if the MCPExternalAuthConfig hash has changed
 	if m.Status.ExternalAuthConfigHash != externalAuthConfig.Status.ConfigHash {
@@ -2614,9 +2615,14 @@ func validateMCPServerExternalAuthConsumer(
 // held either: it re-runs earlier in handleExternalAuthConfig and returns before the
 // stored hash advances, so a source that reverts from obo to its earlier spec
 // matches the stored hash, and holding it would keep a stale False.
+//
+// The True condition names a type the MCPServer accepts without applying it
+// (see externalAuthValidCondition), so a standalone MCPServer does not read as
+// protected by a config that only a VirtualMCPServer applies.
 func setMCPServerExternalAuthConfigValidCondition(
 	m *mcpv1beta1.MCPServer,
 	configName, configHash string,
+	authType mcpv1beta1.ExternalAuthType,
 ) {
 	previousCondition := meta.FindStatusCondition(
 		m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
@@ -2629,11 +2635,16 @@ func setMCPServerExternalAuthConfigValidCondition(
 		return
 	}
 
+	reason, message := externalAuthValidCondition(
+		externalauthsupport.ConsumerMCPServer,
+		mcpv1beta1.ConditionReasonExternalAuthConfigValid,
+		configName, authType,
+	)
 	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
 		Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1beta1.ConditionReasonExternalAuthConfigValid,
-		Message:            fmt.Sprintf("MCPExternalAuthConfig '%s' is valid", configName),
+		Reason:             reason,
+		Message:            message,
 		ObservedGeneration: m.Generation,
 	})
 }

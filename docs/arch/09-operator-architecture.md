@@ -222,7 +222,11 @@ Manages reusable external authentication configurations. Each consumer supports
 a defined subset of auth types; incompatible references are reported with an
 `UnsupportedAuthType` condition rather than ignored. A backend (MCPServer or
 MCPRemoteProxy) also accepts the types that only a VirtualMCPServer applies,
-because discovered mode reads the reference from the backend resource.
+because discovered mode reads the reference from the backend resource. Its
+`ExternalAuthConfigValidated` condition stays `True` for those types but
+carries the reason `AppliedByVirtualMCPServer`, so a backend that no
+VirtualMCPServer discovers does not read as protected by a config its own
+proxy never applies.
 
 **Implementation**: `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`
 

@@ -1369,3 +1369,77 @@ func TestUpstreamTokenRefresher_InvalidGrantLostRace(t *testing.T) {
 		})
 	}
 }
+
+// TestUpstreamTokenRefresher_RotatedPersistFailureCleanup covers the cleanup
+// after a rotated refresh token could not be persisted: the row is deleted only
+// while it still holds the token this call redeemed, so a sign-in that stored a
+// new one in the meantime is not undone.
+func TestUpstreamTokenRefresher_RotatedPersistFailureCleanup(t *testing.T) {
+	t.Parallel()
+
+	expired := &storage.UpstreamTokens{
+		ProviderID: "github", RefreshToken: "old-refresh", UpstreamSubject: "subject",
+	}
+	errCASLost := errors.New("redis connection lost")
+
+	tests := []struct {
+		name         string
+		reRead       *storage.UpstreamTokens
+		reReadErr    error
+		wantDelete   bool
+		wantNotFound bool
+	}{
+		{
+			name:   "row replaced by a newer token is kept",
+			reRead: &storage.UpstreamTokens{ProviderID: "github", RefreshToken: "signed-in-refresh"},
+		},
+		{
+			name:       "row still holding the redeemed token is deleted",
+			reRead:     expired,
+			reReadErr:  storage.ErrExpired,
+			wantDelete: true, wantNotFound: true,
+		},
+		{
+			name:       "row that cannot be re-read is deleted",
+			reReadErr:  errors.New("redis down"),
+			wantDelete: true, wantNotFound: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			store := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+			provider := upstreammocks.NewMockOAuth2Provider(ctrl)
+
+			store.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session", "github").
+				Return(storage.UpstreamTokenRowID("row"), nil)
+			gomock.InOrder(
+				store.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(expired, storage.ErrExpired),
+				store.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(tt.reRead, tt.reReadErr),
+			)
+			provider.EXPECT().RefreshTokens(gomock.Any(), "old-refresh", "subject").Return(&upstream.Tokens{
+				AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresAt: time.Now().Add(time.Hour),
+			}, nil)
+			store.EXPECT().CompareAndSwapUpstreamTokens(gomock.Any(), "session", "github", "old-refresh", gomock.Any()).
+				Times(3).Return(errCASLost)
+			if tt.wantDelete {
+				store.EXPECT().DeleteUpstreamTokensForProvider(gomock.Any(), "session", "github").Return(nil)
+			}
+			// Without wantDelete the delete has no expectation, so any call fails.
+
+			refresher := &upstreamTokenRefresher{
+				providers: map[string]upstream.OAuth2Provider{"github": provider}, storage: store,
+				refreshTokenLifespan: time.Hour,
+			}
+			result, err := refresher.RefreshAndStore(context.Background(), "session", expired)
+			require.ErrorIs(t, err, errCASLost)
+			assert.Nil(t, result)
+			if tt.wantNotFound {
+				assert.ErrorIs(t, err, storage.ErrNotFound)
+			} else {
+				assert.NotErrorIs(t, err, storage.ErrNotFound)
+			}
+		})
+	}
+}

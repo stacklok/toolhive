@@ -323,7 +323,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	// on the server so UpstreamTokenRefresher() returns the identical object,
 	// and handed to the upstream refresh guard, ensuring every path shares one
 	// process-local singleflight.Group keyed by opaque storage-row identity.
-	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan)
+	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan, cfg.UserKeyedUpstreamStorage)
 	refresherIface := refresherInterface(refresher)
 
 	// Create fosite provider with the configured storage decorators.
@@ -1170,6 +1170,7 @@ func newUpstreamTokenRefresher(
 	upstreams []handlers.NamedUpstream,
 	stor storage.UpstreamTokenStorage,
 	refreshTokenLifespan time.Duration,
+	userKeyed bool,
 ) *upstreamTokenRefresher {
 	if len(upstreams) == 0 {
 		return nil
@@ -1188,6 +1189,7 @@ func newUpstreamTokenRefresher(
 		storage:              stor,
 		refreshTokenLifespan: refreshTokenLifespan,
 		rejected:             rejected,
+		userKeyed:            userKeyed,
 	}
 }
 

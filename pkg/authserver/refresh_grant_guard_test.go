@@ -595,7 +595,7 @@ func TestUpstreamRefreshGuard_RealIdPRejection(t *testing.T) {
 			t.Cleanup(func() { _ = stor.Close() })
 			require.NoError(t, stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", guardTestRow(time.Now().Add(-time.Minute), "rt")))
 			refresher := newUpstreamTokenRefresher(
-				[]handlers.NamedUpstream{{Name: "idp", Provider: provider}}, stor, time.Hour)
+				[]handlers.NamedUpstream{{Name: "idp", Provider: provider}}, stor, time.Hour, false)
 			guard, err := newUpstreamRefreshGuard(stor, refresher, []string{"idp"})
 			require.NoError(t, err)
 			guard.recheckDelay = 0

@@ -49,6 +49,11 @@ type Record interface {
 	// Lookup returns the call recorded under key, with Ended set once End has
 	// been called, until the key expires.
 	Lookup(ctx context.Context, key string) (Call, bool, error)
+	// Release forgets the call recorded under key, so the key can start a
+	// call again. The vMCP releases a call that it recorded but answered
+	// without a result, before anything of the call reached the client.
+	// Releasing an unknown key is not an error.
+	Release(ctx context.Context, key string) error
 }
 
 // MemoryRecord is a Record held in this process's memory.
@@ -97,6 +102,14 @@ func (m *MemoryRecord) End(_ context.Context, key string) error {
 	if e, ok := m.entries[key]; ok {
 		e.call.Ended = true
 	}
+	return nil
+}
+
+// Release implements Record.
+func (m *MemoryRecord) Release(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.entries, key)
 	return nil
 }
 

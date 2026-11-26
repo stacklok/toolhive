@@ -92,6 +92,30 @@ func TestMemoryRecordEndKeepsKeyUsed(t *testing.T) {
 	assert.False(t, started, "an ended call still uses up its key until expiry")
 }
 
+func TestMemoryRecordReleaseFreesKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	record, clock := newTestRecord()
+	expiry := clock.Now().Add(time.Minute)
+
+	started, err := record.Start(ctx, "k", Call{RequestID: "1"}, expiry)
+	require.NoError(t, err)
+	require.True(t, started)
+	started, err = record.Start(ctx, "k", Call{RequestID: "2"}, expiry)
+	require.NoError(t, err)
+	require.False(t, started, "a recorded key stays used until released")
+
+	require.NoError(t, record.Release(ctx, "k"))
+	require.NoError(t, record.Release(ctx, "unknown"), "releasing an unknown key is not an error")
+	_, ok, err := record.Lookup(ctx, "k")
+	require.NoError(t, err)
+	assert.False(t, ok, "a released call is forgotten")
+
+	started, err = record.Start(ctx, "k", Call{RequestID: "3"}, expiry)
+	require.NoError(t, err)
+	assert.True(t, started, "a released key can start a call again")
+}
+
 func TestMemoryRecordExpiry(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

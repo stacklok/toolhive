@@ -479,6 +479,15 @@ type nonSwappingUserStorage struct {
 	storage.UserStorage
 }
 
+// unwrappingExternalStorage wraps a full storage.Storage and exposes Unwrap(),
+// but does not implement ProviderIdentitySwapper itself. ProviderIdentitySwapperFor
+// must NOT peel past external decorators.
+type unwrappingExternalStorage struct {
+	storage.Storage
+}
+
+func (s unwrappingExternalStorage) Unwrap() storage.Storage { return s.Storage }
+
 func TestUserResolver_IdentityBinding(t *testing.T) {
 	t.Parallel()
 
@@ -639,42 +648,94 @@ func TestUserResolver_IdentityBinding(t *testing.T) {
 			assert.Nil(t, got)
 			assert.Equal(t, 1, base.Stats().Users, "must not create an orphan user when swap is unsupported")
 		})
+		t.Run("external decorator exposing Unwrap is not bypassed", func(t *testing.T) {
+			t.Parallel()
+			base := storage.NewMemoryStorage()
+			t.Cleanup(func() { require.NoError(t, base.Close()) })
+			ctx := context.Background()
+
+			u, err := NewUserResolver(base).ResolveUser(ctx, provider, subject)
+			require.NoError(t, err)
+
+			ext := unwrappingExternalStorage{Storage: base}
+			r := NewUserResolver(ext, WithIdentityBinding(provider, oldIssuer, oldClaim))
+			got, err := r.ResolveUser(ctx, provider, subject)
+			require.NoError(t, err)
+			assert.Equal(t, u.ID, got.ID)
+
+			// Row stays unstamped because ProviderIdentitySwapperFor does not peel ext.
+			row, err := base.GetProviderIdentity(ctx, provider, subject)
+			require.NoError(t, err)
+			assert.True(t, row.IsUnstamped())
+		})
 	})
 
 	t.Run("resolveLinkFailure never adopts a mismatching row", func(t *testing.T) {
 		t.Parallel()
-		ctrl := gomock.NewController(t)
-		m := mocks.NewMockUserStorage(ctrl)
-		ctx := context.Background()
+		t.Run("rolls back candidate on definite non-commit", func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			m := mocks.NewMockUserStorage(ctrl)
+			ctx := context.Background()
 
-		var createdID string
-		gomock.InOrder(
-			m.EXPECT().GetProviderIdentity(gomock.Any(), provider, subject).Return(nil, storage.ErrNotFound),
-			m.EXPECT().CreateUser(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, u *storage.User) error {
-				createdID = u.ID
-				return nil
-			}),
-			m.EXPECT().CreateProviderIdentity(gomock.Any(), gomock.Any()).Return(storage.ErrAlreadyExists),
-			// Re-read returns a row stamped under a DIFFERENT issuer.
-			m.EXPECT().GetProviderIdentity(gomock.Any(), provider, subject).Return(&storage.ProviderIdentity{
-				UserID: "other-idp-user", ProviderID: provider, ProviderSubject: subject,
-				Issuer: oldIssuer, SubjectClaim: oldClaim,
-			}, nil),
-			// Candidate must be rolled back on definite non-commit (ErrAlreadyExists) and never adopt other-idp-user.
-			m.EXPECT().DeleteUser(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id string) error {
-				require.Equal(t, createdID, id)
-				return nil
-			}),
-		)
+			var createdID string
+			gomock.InOrder(
+				m.EXPECT().GetProviderIdentity(gomock.Any(), provider, subject).Return(nil, storage.ErrNotFound),
+				m.EXPECT().CreateUser(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, u *storage.User) error {
+					createdID = u.ID
+					return nil
+				}),
+				m.EXPECT().CreateProviderIdentity(gomock.Any(), gomock.Any()).Return(storage.ErrAlreadyExists),
+				m.EXPECT().GetProviderIdentity(gomock.Any(), provider, subject).Return(&storage.ProviderIdentity{
+					UserID: "other-idp-user", ProviderID: provider, ProviderSubject: subject,
+					Issuer: oldIssuer, SubjectClaim: oldClaim,
+				}, nil),
+				m.EXPECT().DeleteUser(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id string) error {
+					require.Equal(t, createdID, id)
+					return nil
+				}),
+			)
 
-		r := NewUserResolver(m, WithIdentityBinding(provider, newIssuer, oldClaim))
-		user, err := r.ResolveUser(ctx, provider, subject)
-		require.Error(t, err)
-		assert.Nil(t, user)
+			r := NewUserResolver(m, WithIdentityBinding(provider, newIssuer, oldClaim))
+			user, err := r.ResolveUser(ctx, provider, subject)
+			require.Error(t, err)
+			assert.Nil(t, user)
+		})
+
+		t.Run("does not roll back candidate on ambiguous transport error", func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			m := mocks.NewMockUserStorage(ctrl)
+			ctx := context.Background()
+
+			gomock.InOrder(
+				m.EXPECT().GetProviderIdentity(gomock.Any(), provider, subject).Return(nil, storage.ErrNotFound),
+				m.EXPECT().CreateUser(gomock.Any(), gomock.Any()).Return(nil),
+				m.EXPECT().CreateProviderIdentity(gomock.Any(), gomock.Any()).Return(errors.New("i/o timeout")),
+				m.EXPECT().GetProviderIdentity(gomock.Any(), provider, subject).Return(&storage.ProviderIdentity{
+					UserID: "other-idp-user", ProviderID: provider, ProviderSubject: subject,
+					Issuer: oldIssuer, SubjectClaim: oldClaim,
+				}, nil),
+				// No DeleteUser expectation: ambiguous error must leave candidate intact.
+			)
+
+			r := NewUserResolver(m, WithIdentityBinding(provider, newIssuer, oldClaim))
+			user, err := r.ResolveUser(ctx, provider, subject)
+			require.Error(t, err)
+			assert.Nil(t, user)
+		})
+	})
+
+	t.Run("validateNamedUpstreams rejects half-populated binding", func(t *testing.T) {
+		t.Parallel()
+		mockProv := &mockIDPProvider{}
+		require.Error(t, validateNamedUpstreams([]NamedUpstream{{Name: "a", Provider: mockProv, Issuer: oldIssuer}}))
+		require.Error(t, validateNamedUpstreams([]NamedUpstream{{Name: "a", Provider: mockProv, SubjectClaim: oldClaim}}))
+		require.NoError(t, validateNamedUpstreams([]NamedUpstream{{Name: "a", Provider: mockProv, Issuer: oldIssuer, SubjectClaim: oldClaim}}))
 	})
 }
 
-// Not parallel: temporarily replaces slog.Default to assert once-only WARN logging.
+//nolint:paralleltest // captures the process-global slog default
 func TestUserResolver_UnstampedRowStampsAndWarnsOnce(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()

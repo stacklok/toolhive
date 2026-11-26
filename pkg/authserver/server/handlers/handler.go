@@ -244,21 +244,8 @@ func NewHandler(
 		return nil, fmt.Errorf(
 			"handlers: AuthorizationServerConfig with embedded *fosite.Config must be non-nil")
 	}
-	seen := make(map[string]struct{}, len(upstreams))
-	for _, u := range upstreams {
-		if u.Name == "" {
-			return nil, fmt.Errorf("handlers: upstream entry has empty name")
-		}
-		if u.Provider == nil {
-			return nil, fmt.Errorf("handlers: upstream %q has nil provider", u.Name)
-		}
-		if (u.Issuer == "") != (u.SubjectClaim == "") {
-			return nil, fmt.Errorf("handlers: upstream %q must set both Issuer and SubjectClaim or neither", u.Name)
-		}
-		if _, dup := seen[u.Name]; dup {
-			return nil, fmt.Errorf("handlers: duplicate upstream name %q", u.Name)
-		}
-		seen[u.Name] = struct{}{}
+	if err := validateNamedUpstreams(upstreams); err != nil {
+		return nil, err
 	}
 	h := &Handler{
 		provider:                 provider,
@@ -409,6 +396,28 @@ func (h *Handler) initConsentExemptions() error {
 		h.consentExemptClientIDSet[id] = struct{}{}
 	}
 	h.consentExemptClientIDs = nil
+	return nil
+}
+
+// validateNamedUpstreams checks that every upstream entry has a unique non-empty
+// name, a non-nil provider, and either both or neither binding fields set.
+func validateNamedUpstreams(upstreams []NamedUpstream) error {
+	seen := make(map[string]struct{}, len(upstreams))
+	for _, u := range upstreams {
+		if u.Name == "" {
+			return fmt.Errorf("handlers: upstream entry has empty name")
+		}
+		if u.Provider == nil {
+			return fmt.Errorf("handlers: upstream %q has nil provider", u.Name)
+		}
+		if (u.Issuer == "") != (u.SubjectClaim == "") {
+			return fmt.Errorf("handlers: upstream %q must set both Issuer and SubjectClaim or neither", u.Name)
+		}
+		if _, dup := seen[u.Name]; dup {
+			return fmt.Errorf("handlers: duplicate upstream name %q", u.Name)
+		}
+		seen[u.Name] = struct{}{}
+	}
 	return nil
 }
 

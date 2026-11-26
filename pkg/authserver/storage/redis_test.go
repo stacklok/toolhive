@@ -6275,6 +6275,43 @@ func TestRedisStorage_CompareAndSwapProviderIdentity_CorruptJSONFailsClosed(t *t
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrProviderIdentityChanged)
 	assert.NotErrorIs(t, err, ErrNotFound)
+
+	// Non-string issuer field must also fail closed as corrupt JSON, not coerce to "".
+	require.NoError(t, mr.Set(key, `{"user_id":"user-old","provider_id":"provider-a","provider_subject":"subject-1","issuer":123}`))
+	err = s.CompareAndSwapProviderIdentity(ctx, exp, rep)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrProviderIdentityChanged)
+	assert.NotErrorIs(t, err, ErrNotFound)
+}
+
+func TestRedisStorage_StaleReverseIndexEntryDoesNotLeakOrDeleteNewOwner(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	now := time.Now()
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-old", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-new", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, s.CreateProviderIdentity(ctx, &ProviderIdentity{
+		UserID: "user-new", ProviderID: "provider-a", ProviderSubject: "subject-1",
+		Issuer: "https://new.example.com", SubjectClaim: "sub", LinkedAt: now, LastUsedAt: now,
+	}))
+
+	// Simulate a stale reverse-index entry left in user-old's set pointing at user-new's key.
+	providerKey := redisProviderKey(s.keyPrefix, "provider-a", "subject-1")
+	_, err := mr.SAdd(redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-old"), providerKey)
+	require.NoError(t, err)
+
+	// GetUserProviderIdentities(user-old) must skip the entry owned by user-new.
+	oldLinks, err := s.GetUserProviderIdentities(ctx, "user-old")
+	require.NoError(t, err)
+	assert.Empty(t, oldLinks)
+
+	// DeleteUser(user-old) must not delete user-new's live provider identity.
+	require.NoError(t, s.DeleteUser(ctx, "user-old"))
+	got, err := s.GetProviderIdentity(ctx, "provider-a", "subject-1")
+	require.NoError(t, err)
+	assert.Equal(t, "user-new", got.UserID)
 }
 
 func TestRedisStorage_MigrateLegacyUpstreamData_PreservesBindingFields(t *testing.T) {

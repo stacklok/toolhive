@@ -323,11 +323,11 @@ func TestRememberedSecondAuthorizationSkipsConsent(t *testing.T) {
 
 func TestRememberedIdentityMismatchRevokesOriginatingSession(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"subject switch", "account relink", "synthetic", "issuer mismatch", "claim mismatch"} {
+	for _, scenario := range []string{"subject switch", "account relink", "synthetic", "issuer mismatch", "claim mismatch", "half-stamped"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			h, state, upstream, s, cookie := setupRememberedHandler(t)
-			if scenario == "issuer mismatch" || scenario == "claim mismatch" {
+			if scenario == "issuer mismatch" || scenario == "claim mismatch" || scenario == "half-stamped" {
 				h.userResolver = NewUserResolver(h.storage,
 					WithCreateOnlyFor("test-upstream"),
 					WithIdentityBinding("test-upstream", "https://new-idp.example.com", "oid"),
@@ -358,6 +358,11 @@ func TestRememberedIdentityMismatchRevokesOriginatingSession(t *testing.T) {
 				state.providerIdentities["test-upstream:user-123"] = &storage.ProviderIdentity{
 					UserID: "user", ProviderID: "test-upstream", ProviderSubject: "user-123",
 					Issuer: "https://new-idp.example.com", SubjectClaim: "sub",
+				}
+			case "half-stamped":
+				state.providerIdentities["test-upstream:user-123"] = &storage.ProviderIdentity{
+					UserID: "user", ProviderID: "test-upstream", ProviderSubject: "user-123",
+					Issuer: "https://new-idp.example.com",
 				}
 			}
 			callbackCookie := bindingCookieFromSecure(t, w, upstream.capturedState)

@@ -373,9 +373,7 @@ func (h *Handler) rememberedIdentityRejected(ctx context.Context, w http.Respons
 			return true
 		}
 		identity, lookupErr := h.storage.GetProviderIdentity(ctx, providerID, providerSubject)
-		if !result.Synthetic && providerSubject == pending.ExpectedProviderSubject &&
-			lookupErr == nil && identity != nil && identity.UserID == pending.ExpectedUserID &&
-			h.userResolver.matchesIdentityBinding(providerID, identity) {
+		if h.rememberedIdentityMatches(pending, result, providerID, identity, lookupErr) {
 			// The remembered identity was verified without changing user or token storage.
 		} else if lookupErr != nil && !isNotFoundOrExpired(lookupErr) {
 			slog.Error("failed to verify remembered identity", "error", lookupErr)
@@ -387,6 +385,23 @@ func (h *Handler) rememberedIdentityRejected(ctx context.Context, w http.Respons
 		}
 	}
 	return false
+}
+
+// rememberedIdentityMatches reports whether the looked-up provider identity
+// still belongs to the same linked user under the upstream's current binding.
+func (h *Handler) rememberedIdentityMatches(
+	pending *storage.PendingAuthorization,
+	result *upstream.Identity,
+	providerID string,
+	identity *storage.ProviderIdentity,
+	lookupErr error,
+) bool {
+	return !result.Synthetic &&
+		result.Subject == pending.ExpectedProviderSubject &&
+		lookupErr == nil &&
+		identity != nil &&
+		identity.UserID == pending.ExpectedUserID &&
+		h.userResolver.matchesIdentityBinding(providerID, identity)
 }
 
 // revokeRememberedSession deletes the originating consent session and answers

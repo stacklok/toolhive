@@ -78,7 +78,7 @@ func WithIdentityBinding(providerID, issuer, subjectClaim string) ResolverOption
 func NewUserResolver(stor storage.UserStorage, opts ...ResolverOption) *UserResolver {
 	r := &UserResolver{
 		storage: stor,
-		swapper: unwrapProviderIdentitySwapper(stor),
+		swapper: storage.ProviderIdentitySwapperFor(stor),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -143,7 +143,8 @@ func (r *UserResolver) ResolveUser(
 		}
 		if r.swapper == nil {
 			return nil, fmt.Errorf(
-				"provider identity for %q was created under a different issuer or subject claim and storage does not support atomic replacement",
+				"provider identity for %q was created under a different issuer or subject claim "+
+					"and storage does not support atomic replacement",
 				providerID,
 			)
 		}
@@ -183,19 +184,6 @@ func (r *UserResolver) matchesIdentityBinding(providerID string, identity *stora
 		return true
 	}
 	return identity.MatchesBinding(binding.issuer, binding.subjectClaim) || identity.IsUnstamped()
-}
-
-// unwrapProviderIdentitySwapper discovers the optional CAS capability on stor.
-// When stor is a full storage.Storage, it peels ToolHive's own storage decorators
-// via storage.Unwrap; external decorators that intentionally omit Unwrap remain
-// unpeeled so we never bypass them.
-func unwrapProviderIdentitySwapper(stor storage.UserStorage) storage.ProviderIdentitySwapper {
-	if full, ok := stor.(storage.Storage); ok {
-		swapper, _ := storage.Unwrap(full).(storage.ProviderIdentitySwapper)
-		return swapper
-	}
-	swapper, _ := stor.(storage.ProviderIdentitySwapper)
-	return swapper
 }
 
 // stampUnstampedIdentity stamps a pre-upgrade unstamped row with the current

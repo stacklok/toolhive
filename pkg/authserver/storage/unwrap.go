@@ -15,3 +15,31 @@ func Unwrap(stor Storage) Storage {
 		stor = unwrapper.Unwrap()
 	}
 }
+
+// ProviderIdentitySwapperFor returns the outermost ProviderIdentitySwapper on
+// stor. It peels only ToolHive's own storage decorators (which do not intercept
+// provider-identity rows) so an external decorator — even one that exposes
+// Unwrap() Storage — is never bypassed to write directly to a backing store
+// underneath it.
+func ProviderIdentitySwapperFor(stor UserStorage) ProviderIdentitySwapper {
+	for stor != nil {
+		if swapper, ok := stor.(ProviderIdentitySwapper); ok {
+			return swapper
+		}
+		switch d := stor.(type) {
+		case *UserKeyedUpstreamStorage:
+			stor = d.Storage
+		case *ClientAdmissionStorage:
+			stor = d.Storage
+		case *SPIFFEStorageDecorator:
+			stor = d.Storage
+		case *CIMDStorageDecorator:
+			stor = d.Storage
+		case cimdShapeGuardStorage:
+			stor = d.Storage
+		default:
+			return nil
+		}
+	}
+	return nil
+}

@@ -3531,8 +3531,13 @@ return redis.call('DEL', KEYS[1])
 var compareAndSwapProviderIdentityScript = redis.NewScript(`
 local function strField(tbl, k)
     local v = tbl[k]
-    if type(v) == 'string' then return v end
-    return ''
+    if v == nil or (cjson.null ~= nil and v == cjson.null) then
+        return '', true
+    end
+    if type(v) == 'string' then
+        return v, true
+    end
+    return '', false
 end
 
 if redis.call('EXISTS', KEYS[3]) == 0 then
@@ -3549,9 +3554,14 @@ if not ok or type(decoded) ~= 'table' then
     return redis.error_reply('ERR corrupt provider identity JSON')
 end
 
-if strField(decoded, 'user_id') ~= ARGV[1] or
-   strField(decoded, 'issuer') ~= ARGV[2] or
-   strField(decoded, 'subject_claim') ~= ARGV[3] then
+local curUser, okUser = strField(decoded, 'user_id')
+local curIssuer, okIssuer = strField(decoded, 'issuer')
+local curClaim, okClaim = strField(decoded, 'subject_claim')
+if not okUser or not okIssuer or not okClaim then
+    return redis.error_reply('ERR corrupt provider identity field type')
+end
+
+if curUser ~= ARGV[1] or curIssuer ~= ARGV[2] or curClaim ~= ARGV[3] then
     return 0
 end
 

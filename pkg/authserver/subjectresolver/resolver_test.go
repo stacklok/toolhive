@@ -288,7 +288,7 @@ func TestNewRefusesInvalidInput(t *testing.T) {
 	}
 }
 
-// Not parallel: temporarily replaces slog.Default to assert once-only WARN logging.
+//nolint:paralleltest // captures the process-global slog default
 func TestResolve_UnstampedRowWarnsOnceAndDoesNotWrite(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()

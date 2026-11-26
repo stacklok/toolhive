@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
@@ -30,10 +31,9 @@ func TestUpstreamProvidersForTokenLoad(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		cfg        *Config
-		wantNames  []string
-		wantFilter bool
+		name      string
+		cfg       *Config
+		wantNames []string
 	}{
 		{name: "nil config", cfg: nil},
 		{name: "no strategies, no cedar", cfg: &Config{OutgoingAuth: &OutgoingAuthConfig{Source: "inline"}}},
@@ -45,12 +45,12 @@ func TestUpstreamProvidersForTokenLoad(t *testing.T) {
 					"a": xaa, "b": te, "c": sts, "d": obo, "e": inject,
 					"f": {Type: authtypes.StrategyTypeUnauthenticated},
 				}}},
-			wantNames: []string{"inject", "obo", "sts", "te", "xaa"}, wantFilter: true,
+			wantNames: []string{"inject", "obo", "sts", "te", "xaa"},
 		},
 		{
 			name:      "default strategy",
 			cfg:       &Config{OutgoingAuth: &OutgoingAuthConfig{Default: te}},
-			wantNames: []string{"te"}, wantFilter: true,
+			wantNames: []string{"te"},
 		},
 		{
 			name: "cedar primary with no outgoing auth loads everything",
@@ -60,7 +60,7 @@ func TestUpstreamProvidersForTokenLoad(t *testing.T) {
 			name: "cedar primary and default naming nothing",
 			cfg: &Config{IncomingAuth: authz("cedar"),
 				OutgoingAuth: &OutgoingAuthConfig{Default: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUnauthenticated}}},
-			wantNames: []string{"cedar"}, wantFilter: true,
+			wantNames: []string{"cedar"},
 		},
 		{
 			name: "inline without default loads everything: a discovered backend keeps its own strategy",
@@ -73,7 +73,7 @@ func TestUpstreamProvidersForTokenLoad(t *testing.T) {
 			cfg: &Config{OutgoingAuth: &OutgoingAuthConfig{Default: te, Backends: map[string]*authtypes.BackendAuthStrategy{
 				defaultStrategyKey: {Type: authtypes.StrategyTypeUpstreamInject,
 					UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: "other"}}}}},
-			wantNames: []string{"other", "te"}, wantFilter: true,
+			wantNames: []string{"other", "te"},
 		},
 		{
 			name: "whitespace-only names contribute nothing",
@@ -84,7 +84,7 @@ func TestUpstreamProvidersForTokenLoad(t *testing.T) {
 			name: "padded name is trimmed",
 			cfg: &Config{OutgoingAuth: &OutgoingAuthConfig{Default: &authtypes.BackendAuthStrategy{
 				Type: authtypes.StrategyTypeTokenExchange, TokenExchange: &authtypes.TokenExchangeConfig{SubjectProviderName: " te "}}}},
-			wantNames: []string{"te"}, wantFilter: true,
+			wantNames: []string{"te"},
 		},
 		{
 			name: "duplicates across default, backends and cedar collapse",
@@ -92,7 +92,7 @@ func TestUpstreamProvidersForTokenLoad(t *testing.T) {
 				IncomingAuth: authz("te"),
 				OutgoingAuth: &OutgoingAuthConfig{Default: te, Backends: map[string]*authtypes.BackendAuthStrategy{"x": te}},
 			},
-			wantNames: []string{"te"}, wantFilter: true,
+			wantNames: []string{"te"},
 		},
 		{
 			name: "empty provider name (not yet injected) contributes nothing",
@@ -112,9 +112,39 @@ func TestUpstreamProvidersForTokenLoad(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			names, filter := UpstreamProvidersForTokenLoad(tt.cfg)
-			assert.Equal(t, tt.wantNames, names)
-			assert.Equal(t, tt.wantFilter, filter)
+			assert.Equal(t, tt.wantNames, UpstreamProvidersForTokenLoad(tt.cfg))
+		})
+	}
+}
+
+func TestValidStrategyTypesClassified(t *testing.T) {
+	t.Parallel()
+
+	withProvider := map[string]*authtypes.BackendAuthStrategy{
+		authtypes.StrategyTypeTokenExchange:  {TokenExchange: &authtypes.TokenExchangeConfig{SubjectProviderName: "p"}},
+		authtypes.StrategyTypeUpstreamInject: {UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: "p"}},
+		authtypes.StrategyTypeOBO:            {OBO: &authtypes.OBOConfig{SubjectTokenProviderName: "p"}},
+		authtypes.StrategyTypeAwsSts:         {AwsSts: &authtypes.AwsStsConfig{SubjectProviderName: "p"}},
+		authtypes.StrategyTypeXAA:            {XAA: &authtypes.XAAConfig{SubjectProviderName: "p"}},
+	}
+	noProvider := map[string]bool{
+		authtypes.StrategyTypeUnauthenticated: true,
+		authtypes.StrategyTypeHeaderInjection: true,
+	}
+
+	for _, typ := range validStrategyTypes {
+		t.Run(typ, func(t *testing.T) {
+			t.Parallel()
+			strategy, ok := withProvider[typ]
+			if !ok {
+				require.True(t, noProvider[typ],
+					"strategy type %q is accepted by the validator but not classified here: update "+
+						"BackendAuthStrategy.SubjectProviderName and DefaultSubjectProviderName, then this test", typ)
+				return
+			}
+			strategy.Type = typ
+			require.Equal(t, "p", strategy.SubjectProviderName(),
+				"update BackendAuthStrategy.SubjectProviderName and DefaultSubjectProviderName for %q", typ)
 		})
 	}
 }

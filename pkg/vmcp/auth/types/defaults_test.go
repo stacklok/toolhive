@@ -252,3 +252,41 @@ func TestDefaultSubjectProviderName(t *testing.T) {
 		})
 	}
 }
+
+func TestBackendAuthStrategy_SubjectProviderName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		strategy *BackendAuthStrategy
+		want     string
+	}{
+		{"nil receiver", nil, ""},
+		{"token_exchange", &BackendAuthStrategy{Type: StrategyTypeTokenExchange,
+			TokenExchange: &TokenExchangeConfig{SubjectProviderName: "te"}}, "te"},
+		{"upstream_inject", &BackendAuthStrategy{Type: StrategyTypeUpstreamInject,
+			UpstreamInject: &UpstreamInjectConfig{ProviderName: "inject"}}, "inject"},
+		{"obo", &BackendAuthStrategy{Type: StrategyTypeOBO,
+			OBO: &OBOConfig{SubjectTokenProviderName: "obo"}}, "obo"},
+		{"aws_sts", &BackendAuthStrategy{Type: StrategyTypeAwsSts,
+			AwsSts: &AwsStsConfig{SubjectProviderName: "sts"}}, "sts"},
+		{"xaa", &BackendAuthStrategy{Type: StrategyTypeXAA,
+			XAA: &XAAConfig{SubjectProviderName: "xaa"}}, "xaa"},
+		{"token_exchange nil config", &BackendAuthStrategy{Type: StrategyTypeTokenExchange}, ""},
+		{"upstream_inject nil config", &BackendAuthStrategy{Type: StrategyTypeUpstreamInject}, ""},
+		{"obo nil config", &BackendAuthStrategy{Type: StrategyTypeOBO}, ""},
+		{"aws_sts nil config", &BackendAuthStrategy{Type: StrategyTypeAwsSts}, ""},
+		{"xaa nil config", &BackendAuthStrategy{Type: StrategyTypeXAA}, ""},
+		{"unauthenticated", &BackendAuthStrategy{Type: StrategyTypeUnauthenticated}, ""},
+		{"header_injection", &BackendAuthStrategy{Type: StrategyTypeHeaderInjection,
+			HeaderInjection: &HeaderInjectionConfig{HeaderName: "X-Key", HeaderValue: "v"}}, ""},
+		{"unknown type ignores populated blocks", &BackendAuthStrategy{Type: "mystery",
+			TokenExchange: &TokenExchangeConfig{SubjectProviderName: "te"}}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.strategy.SubjectProviderName())
+		})
+	}
+}

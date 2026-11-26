@@ -234,23 +234,25 @@ func (v *DefaultValidator) validateOutgoingAuth(auth *OutgoingAuthConfig) error 
 	return nil
 }
 
+// validStrategyTypes lists the backend auth strategy types the validator accepts.
+var validStrategyTypes = []string{
+	authtypes.StrategyTypeUnauthenticated,
+	authtypes.StrategyTypeHeaderInjection,
+	authtypes.StrategyTypeTokenExchange,
+	authtypes.StrategyTypeUpstreamInject,
+	authtypes.StrategyTypeAwsSts,
+	authtypes.StrategyTypeOBO,
+	authtypes.StrategyTypeXAA,
+}
+
 //nolint:gocyclo // Strategy-specific validation requires checking multiple fields per type
 func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtypes.BackendAuthStrategy) error {
 	if strategy == nil {
 		return fmt.Errorf("strategy is nil")
 	}
 
-	validTypes := []string{
-		authtypes.StrategyTypeUnauthenticated,
-		authtypes.StrategyTypeHeaderInjection,
-		authtypes.StrategyTypeTokenExchange,
-		authtypes.StrategyTypeUpstreamInject,
-		authtypes.StrategyTypeAwsSts,
-		authtypes.StrategyTypeOBO,
-		authtypes.StrategyTypeXAA,
-	}
-	if !slices.Contains(validTypes, strategy.Type) {
-		return fmt.Errorf("type must be one of: %s", strings.Join(validTypes, ", "))
+	if !slices.Contains(validStrategyTypes, strategy.Type) {
+		return fmt.Errorf("type must be one of: %s", strings.Join(validStrategyTypes, ", "))
 	}
 
 	// Validate type-specific requirements

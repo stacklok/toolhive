@@ -6,8 +6,6 @@ package config
 import (
 	"slices"
 	"strings"
-
-	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // UpstreamProvidersForTokenLoad returns the upstream provider names the vMCP
@@ -22,17 +20,23 @@ import (
 //
 // Nothing calls it yet: it is not wired into thv vmcp serve or the runner.
 //
-// filter is false when the caller must load every provider: outgoing auth has
-// no Default strategy or its source is "discovered", or no provider name was
+// A nil result means the caller must load every provider, which is what
+// upstreamtoken.WithProviders does when given no names: outgoing auth has no
+// Default strategy or its source is "discovered", or no provider name was
 // found. Without a Default, a backend with no entry of its own keeps the
 // strategy it discovered, which cfg does not list.
-func UpstreamProvidersForTokenLoad(cfg *Config) (names []string, filter bool) {
+//
+// It covers vMCP only. The runner's middleware (pkg/auth/obo/middleware.go and
+// pkg/auth/upstreamswap/middleware.go) reads provider names from its own
+// config, so the runner must derive its own list; this helper does not cover
+// them.
+func UpstreamProvidersForTokenLoad(cfg *Config) []string {
 	if cfg == nil {
-		return nil, false
+		return nil
 	}
 	out := cfg.OutgoingAuth
 	if out == nil || out.Default == nil || out.Source == "discovered" {
-		return nil, false
+		return nil
 	}
 
 	seen := map[string]struct{}{}
@@ -41,50 +45,21 @@ func UpstreamProvidersForTokenLoad(cfg *Config) (names []string, filter bool) {
 			seen[name] = struct{}{}
 		}
 	}
-	add(strategyProviderName(out.Default))
+	add(out.Default.SubjectProviderName())
 	for _, strategy := range out.Backends {
-		add(strategyProviderName(strategy))
+		add(strategy.SubjectProviderName())
 	}
 	if cfg.IncomingAuth != nil && cfg.IncomingAuth.Authz != nil {
 		add(cfg.IncomingAuth.Authz.PrimaryUpstreamProvider)
 	}
 
 	if len(seen) == 0 {
-		return nil, false
+		return nil
 	}
-	names = make([]string, 0, len(seen))
+	names := make([]string, 0, len(seen))
 	for name := range seen {
 		names = append(names, name)
 	}
 	slices.Sort(names)
-	return names, true
-}
-
-func strategyProviderName(s *authtypes.BackendAuthStrategy) string {
-	if s == nil {
-		return ""
-	}
-	switch s.Type {
-	case authtypes.StrategyTypeTokenExchange:
-		if s.TokenExchange != nil {
-			return s.TokenExchange.SubjectProviderName
-		}
-	case authtypes.StrategyTypeUpstreamInject:
-		if s.UpstreamInject != nil {
-			return s.UpstreamInject.ProviderName
-		}
-	case authtypes.StrategyTypeOBO:
-		if s.OBO != nil {
-			return s.OBO.SubjectTokenProviderName
-		}
-	case authtypes.StrategyTypeAwsSts:
-		if s.AwsSts != nil {
-			return s.AwsSts.SubjectProviderName
-		}
-	case authtypes.StrategyTypeXAA:
-		if s.XAA != nil {
-			return s.XAA.SubjectProviderName
-		}
-	}
-	return ""
+	return names
 }

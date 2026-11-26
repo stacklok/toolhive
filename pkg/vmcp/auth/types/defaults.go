@@ -78,6 +78,44 @@ func DefaultSubjectProviderName(
 	}
 }
 
+// SubjectProviderName returns the upstream provider name the strategy reads
+// from Identity.UpstreamTokens: SubjectProviderName for token_exchange, aws_sts
+// and xaa, ProviderName for upstream_inject, and SubjectTokenProviderName for
+// obo. It returns "" for a nil receiver, a nil config block, an empty field,
+// and the types that read no upstream token (unauthenticated, header_injection)
+// or are unknown.
+//
+// A new strategy that reads upstream tokens must be added here and to
+// DefaultSubjectProviderName.
+func (s *BackendAuthStrategy) SubjectProviderName() string {
+	if s == nil {
+		return ""
+	}
+	switch s.Type {
+	case StrategyTypeTokenExchange:
+		if s.TokenExchange != nil {
+			return s.TokenExchange.SubjectProviderName
+		}
+	case StrategyTypeUpstreamInject:
+		if s.UpstreamInject != nil {
+			return s.UpstreamInject.ProviderName
+		}
+	case StrategyTypeOBO:
+		if s.OBO != nil {
+			return s.OBO.SubjectTokenProviderName
+		}
+	case StrategyTypeAwsSts:
+		if s.AwsSts != nil {
+			return s.AwsSts.SubjectProviderName
+		}
+	case StrategyTypeXAA:
+		if s.XAA != nil {
+			return s.XAA.SubjectProviderName
+		}
+	}
+	return ""
+}
+
 // defaultUnlessAmbiguous returns a deep copy of strategy with set applied, or
 // ErrAmbiguousSubjectProvider when more than one upstream is configured. It
 // serves the strategies that hard-error on ambiguity (xaa and obo).

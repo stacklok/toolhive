@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -193,52 +194,223 @@ func TestCallBinding_ListCallServerWithoutItems(t *testing.T) {
 	assert.Empty(t, listedKeys(t, "tools/list", resp.body))
 }
 
-// TestCallBinding_ListCallFollowsCursor walks a Modern tools/list larger than
-// one page with one list-call token: pages hold only the bound server's
-// tools, including an empty page that still carries a cursor, and the walk
-// collects exactly that server's tools.
-func TestCallBinding_ListCallFollowsCursor(t *testing.T) {
-	t.Parallel()
-	s := newCallBindingTestServer(t, cbServerOptions{wrap: func(fc *fakeCore) core.VMCP {
-		fc.tools = nil
-		for i := range modernPageSize + 5 {
-			fc.tools = append(fc.tools, vmcp.Tool{Name: fmt.Sprintf("other_%05d", i), BackendID: "other"})
-		}
-		fc.tools = append(fc.tools,
-			vmcp.Tool{Name: "zz_" + cbTool, BackendID: cbServer}, vmcp.Tool{Name: "zz_" + cbTool + "_2", BackendID: cbServer})
-		return fc
-	}})
-	token := s.tokens.add("list", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}))
-
-	var listed []string
-	cursor := ""
-	for page := 0; ; page++ {
-		require.Less(t, page, 5, "the walk must end")
-		params := `{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",` +
-			`"io.modelcontextprotocol/clientCapabilities":{}}`
-		if cursor != "" {
-			params += `,"cursor":` + cbJSON(cursor)
-		}
-		resp := s.send(t, http.MethodPost, token, "",
-			`{"jsonrpc":"2.0","id":`+cbJSON(page+2)+`,"method":"tools/list","params":`+params+`}}`,
-			http.Header{"Mcp-Protocol-Version": {"2026-07-28"}, "Mcp-Method": {"tools/list"}})
-		require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
-		keys := listedKeys(t, "tools/list", resp.body)
-		if page == 0 {
-			assert.Empty(t, keys, "the first page holds only other servers' tools")
-		}
-		listed = append(listed, keys...)
-		var result struct {
-			Result struct {
-				NextCursor string `json:"nextCursor"`
-			} `json:"result"`
-		}
-		require.NoError(t, json.Unmarshal([]byte(resp.body), &result))
-		if cursor = result.Result.NextCursor; cursor == "" {
-			break
-		}
+// pagedTools is more than one page of tools, all from another server, with
+// the bound server's tools sorted after them, or none when bound is false.
+func pagedTools(bound bool) []vmcp.Tool {
+	var tools []vmcp.Tool
+	for i := range modernPageSize + 5 {
+		tools = append(tools, vmcp.Tool{Name: fmt.Sprintf("other_%05d", i), BackendID: "other"})
 	}
-	assert.Equal(t, []string{"zz_" + cbTool, "zz_" + cbTool + "_2"}, listed)
+	if bound {
+		tools = append(tools,
+			vmcp.Tool{Name: "zz_" + cbTool, BackendID: cbServer}, vmcp.Tool{Name: "zz_" + cbTool + "_2", BackendID: cbServer})
+	}
+	return tools
+}
+
+func modernListParams(cursor string) string {
+	params := `{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",` +
+		`"io.modelcontextprotocol/clientCapabilities":{}}`
+	if cursor != "" {
+		params += `,"cursor":` + cbJSON(cursor)
+	}
+	return params + "}"
+}
+
+var modernListHeaders = http.Header{"Mcp-Protocol-Version": {"2026-07-28"}, "Mcp-Method": {"tools/list"}}
+
+// nextCursorOf returns a list response's nextCursor, "" when it has none.
+func nextCursorOf(t *testing.T, body string) string {
+	t.Helper()
+	var resp struct {
+		Result struct {
+			NextCursor string `json:"nextCursor"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &resp), "body: %s", body)
+	return resp.Result.NextCursor
+}
+
+// TestCallBinding_ListCallCollectsEveryPage checks that a list-call token's
+// list longer than one page comes back whole, in one response without
+// nextCursor, on Legacy and Modern: the first page holds only another
+// server's tools, so its cursor would name one of them. No other server's
+// tool appears anywhere in the response, cursor included, also when the
+// bound server lists nothing and when the client sends a cursor of its own.
+func TestCallBinding_ListCallCollectsEveryPage(t *testing.T) {
+	t.Parallel()
+	bothBound := []string{"zz_" + cbTool, "zz_" + cbTool + "_2"}
+	tests := []struct {
+		name   string
+		bound  bool
+		modern bool
+		// forged, when set, sends the cursor an unbound token's first Modern
+		// page carries, which names another server's tool.
+		forged bool
+		want   []string
+	}{
+		{name: "Legacy", bound: true, want: bothBound},
+		{name: "Modern", bound: true, modern: true, want: bothBound},
+		{name: "Legacy, server lists nothing", want: []string{}},
+		{name: "Modern, server lists nothing", modern: true, want: []string{}},
+		{name: "Modern, client's own cursor", bound: true, modern: true, forged: true, want: bothBound},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newCallBindingTestServer(t, cbServerOptions{wrap: func(fc *fakeCore) core.VMCP {
+				fc.tools = pagedTools(tc.bound)
+				return fc
+			}})
+			cursor := ""
+			if tc.forged {
+				plain := s.tokens.add("plain", claimsFor("other", "plain", nil))
+				first := s.send(t, http.MethodPost, plain, "",
+					`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":`+modernListParams("")+`}`, modernListHeaders)
+				require.Equal(t, http.StatusOK, first.status, "body: %s", first.body)
+				cursor = nextCursorOf(t, first.body)
+				require.NotEmpty(t, cursor, "an unbound token's long list is paged")
+			}
+
+			token := s.tokens.add("list", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}))
+			var resp cbResponse
+			if tc.modern {
+				resp = s.send(t, http.MethodPost, token, "",
+					`{"jsonrpc":"2.0","id":3,"method":"tools/list","params":`+modernListParams(cursor)+`}`, modernListHeaders)
+			} else {
+				resp = s.send(t, http.MethodPost, token, s.session(t, token), listBody(3, "tools/list"), nil)
+			}
+			require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
+			assert.Equal(t, tc.want, listedKeys(t, "tools/list", resp.body))
+			assert.NotContains(t, resp.body, "nextCursor")
+			assert.NotContains(t, resp.body, "other_", "no other server's tool, in an item or a cursor")
+			assert.JSONEq(t, "3", string(rpcID(t, resp.body)))
+		})
+	}
+}
+
+// TestCallBinding_ListCallPageWalk drives serveBound with a stand-in handler
+// that pages by params.cursor, to check how the pages are followed: each next
+// page is requested with the previous page's cursor and the same request
+// otherwise, and a walk that does not end, repeats a cursor, or meets a
+// failed page is answered with a 500 rather than part of the list.
+func TestCallBinding_ListCallPageWalk(t *testing.T) {
+	t.Parallel()
+	keep := map[string]struct{}{cbTool: {}, cbTool + "_2": {}}
+	cb, err := newCallBinding(callbinding.Config{}, nil,
+		func(context.Context, *auth.Identity, string, string) (map[string]struct{}, error) { return keep, nil })
+	require.NoError(t, err)
+	token, reason := callbinding.FromClaims(
+		claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}), nil)
+	require.Empty(t, reason)
+	// page is a page of items with nextCursor cursor, or none when cursor is
+	// nil.
+	page := func(items string, cursor *string) string {
+		result := `{"tools":[` + items + `]`
+		if cursor != nil {
+			result += `,"nextCursor":` + cbJSON(*cursor)
+		}
+		return `{"jsonrpc":"2.0","id":2,"result":` + result + `}}`
+	}
+	cur := func(c string) *string { return &c }
+	tool := func(name string) string { return `{"name":"` + name + `"}` }
+
+	tests := []struct {
+		name string
+		// pages answers the n-th page request (from 1), sent with cursor.
+		pages      func(n int, cursor string) (int, string)
+		wantStatus int
+		wantItems  []string
+	}{
+		{
+			name: "every page followed",
+			pages: func(n int, cursor string) (int, string) {
+				switch {
+				case n == 1:
+					return http.StatusOK, page(tool(cbTool)+","+tool("other_1"), cur("c1"))
+				case cursor == "c1":
+					return http.StatusOK, page(tool("other_2")+","+tool(cbTool+"_2"), nil)
+				default:
+					return http.StatusBadRequest, ""
+				}
+			},
+			wantStatus: http.StatusOK, wantItems: []string{cbTool, cbTool + "_2"},
+		},
+		{
+			name: "an empty cursor is followed too",
+			pages: func(n int, _ string) (int, string) {
+				if n == 1 {
+					return http.StatusOK, page(tool("other_1"), cur(""))
+				}
+				return http.StatusOK, page(tool(cbTool+"_2"), nil)
+			},
+			wantStatus: http.StatusOK, wantItems: []string{cbTool + "_2"},
+		},
+		{
+			name: "pages that never end",
+			pages: func(_ int, cursor string) (int, string) {
+				return http.StatusOK, page(tool("other"), cur(cursor+"x"))
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "a repeated cursor",
+			pages: func(int, string) (int, string) {
+				return http.StatusOK, page(tool("other"), cur("same"))
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "a failed page",
+			pages: func(n int, _ string) (int, string) {
+				if n == 1 {
+					return http.StatusOK, page(tool(cbTool), cur("c1"))
+				}
+				return http.StatusOK, `{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"invalid cursor"}}`
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var requests int
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				var req struct {
+					ID     json.RawMessage `json:"id"`
+					Method string          `json:"method"`
+					Params struct {
+						Cursor string `json:"cursor"`
+					} `json:"params"`
+				}
+				raw, _ := io.ReadAll(r.Body)
+				if json.Unmarshal(raw, &req) != nil || req.Method != "tools/list" || string(req.ID) != "2" {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if parsed := mcpparser.GetParsedMCPRequest(r.Context()); requests > 1 &&
+					(parsed == nil || !strings.Contains(string(parsed.Params), req.Params.Cursor)) {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				status, body := tc.pages(requests, req.Params.Cursor)
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(body))
+			})
+			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(listBody(2, "tools/list")))
+			rec := httptest.NewRecorder()
+			cb.serveBound(rec, req, next, &auth.Identity{}, token,
+				&mcpparser.ParsedMCPRequest{Method: "tools/list", ID: float64(2), IsRequest: true})
+
+			require.Equal(t, tc.wantStatus, rec.Code, "body: %s", rec.Body.String())
+			assert.NotContains(t, rec.Body.String(), "other")
+			assert.NotContains(t, rec.Body.String(), "nextCursor")
+			if tc.wantStatus == http.StatusOK {
+				assert.Equal(t, tc.wantItems, listedKeys(t, "tools/list", rec.Body.String()))
+			}
+		})
+	}
 }
 
 // TestCallBinding_ListCallRefusalIsAudited checks that a list-call token's
@@ -381,9 +553,9 @@ func TestCallBinding_ListCallResponseHandling(t *testing.T) {
 		{
 			name:       "filtered",
 			status:     http.StatusOK,
-			body:       `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbTool + `"},{"name":"` + cbOtherTool + `"}],"nextCursor":"c"}}`,
+			body:       `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbTool + `"},{"name":"` + cbOtherTool + `"}],"_meta":{}}}`,
 			wantStatus: http.StatusOK,
-			wantBody:   `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbTool + `"}],"nextCursor":"c"}}`,
+			wantBody:   `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbTool + `"}],"_meta":{}}}`,
 		},
 		{
 			name:       "plain error body passes unchanged",

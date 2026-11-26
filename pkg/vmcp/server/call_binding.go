@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -74,7 +75,7 @@ var callBindingTokenReasons = []string{
 // for identity, or to "" when the tool has no single backend.
 type callBindingRoute func(ctx context.Context, identity *auth.Identity, name string) (string, error)
 
-// callBindingListItems returns the keys (see callbinding.FilterListResult) of
+// callBindingListItems returns the keys (see callbinding.ReadListPage) of
 // the items that the list method lists for identity from the backend named
 // server.
 type callBindingListItems func(
@@ -353,14 +354,18 @@ func (cb *callBinding) servePost(
 // filtered here, on the response: a Legacy list is answered by the SDK from
 // the session's own tool store, which toolhive-core's mcpcompat offers no hook
 // to filter, so this is the one place that covers Legacy and Modern alike.
-// Every response body is filtered, whatever its status, so nothing that
-// carries a result goes out unfiltered; only an empty body (such as the 202
-// for a notification), a JSON-RPC error, and a body that is not JSON on a
-// status other than 2xx (such as the session-ownership 404) pass unchanged.
-// Anything else gets a 500.
 //
-// A list call starts no call and does not use up the token, so a client may
-// follow nextCursor with the same token.
+// Both revisions cut pages before this filter runs, and their cursors carry
+// the last key of the unfiltered page, which may name another server's item.
+// So the vMCP follows the pages itself (see listPages) and answers with every
+// one of the server's items in one response, without nextCursor: the client
+// never sees a cursor, so no cursor can name an item it may not list. A list
+// call starts no call and does not use up the token.
+//
+// Only an empty body (such as the 202 for a notification), a JSON-RPC error,
+// and a body that is not JSON on a status other than 2xx (such as the
+// session-ownership 404) pass unchanged. Any other response the filter cannot
+// read gets a 500.
 func (cb *callBinding) serveListCall(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
 	identity *auth.Identity, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
@@ -379,35 +384,121 @@ func (cb *callBinding) serveListCall(
 		cb.unavailable(w, r, parsed, token, "list", err)
 		return
 	}
-	buffered := &listResponseBuffer{header: w.Header(), status: http.StatusOK}
-	next.ServeHTTP(buffered, r)
-
-	body := buffered.body.Bytes()
-	if len(body) == 0 && r.Context().Err() != nil {
-		// The client went away before the handler answered: nothing to send.
-		slog.DebugContext(r.Context(), "call binding: a list call ended before it was answered", "jti", token.JTI)
-		return
-	}
-	if len(body) > 0 {
-		filtered, err := callbinding.FilterListResult(parsed.Method, body, keep)
-		switch {
-		case err == nil:
-			body = filtered
-		case buffered.status >= http.StatusMultipleChoices && !json.Valid(body):
-			// A plain error body, such as the session-ownership 404.
-		default:
-			slog.ErrorContext(r.Context(), "call binding: could not limit a list result to the token's server",
-				"jti", token.JTI, "mcp_method", parsed.Method, "status", buffered.status, "error", err)
-			w.Header().Del("Content-Length")
-			writeCallBindingError(w, parsed, http.StatusInternalServerError, mcpparser.CodeInternalError,
-				"Internal error: the list could not be limited to the access token's server")
+	first := &listResponseBuffer{header: w.Header(), status: http.StatusOK}
+	next.ServeHTTP(first, r)
+	body := first.body.Bytes()
+	if len(body) == 0 {
+		if r.Context().Err() != nil {
+			// The client went away before the handler answered: nothing to send.
+			slog.DebugContext(r.Context(), "call binding: a list call ended before it was answered", "jti", token.JTI)
 			return
 		}
+		writeListResponse(w, first.status, body)
+		return
+	}
+	page, isError, err := callbinding.ReadListPage(parsed.Method, body, keep)
+	switch {
+	case isError:
+		writeListResponse(w, first.status, body)
+		return
+	case err != nil && first.status >= http.StatusMultipleChoices && !json.Valid(body):
+		// A plain error body, such as the session-ownership 404.
+		writeListResponse(w, first.status, body)
+		return
+	case err != nil:
+		cb.listFailed(w, r, parsed, token, first.status, err)
+		return
+	}
+	items, err := cb.listPages(r, next, parsed, keep, page)
+	if err != nil {
+		cb.listFailed(w, r, parsed, token, first.status, err)
+		return
+	}
+	out, err := page.Encode(items)
+	if err != nil {
+		cb.listFailed(w, r, parsed, token, first.status, err)
+		return
 	}
 	slog.DebugContext(r.Context(), "call binding: answered a call-bound list call",
 		"jti", token.JTI, "client_id", token.ClientID, "server", token.Entry.Server, "method", token.Entry.Method)
+	writeListResponse(w, first.status, out)
+}
+
+// maxListPages bounds the pages one list call follows: at the SDK's page size
+// of 1,000 items, 100,000 items in one list. A longer walk, or a cursor seen
+// twice, fails the list call rather than answering with part of it.
+const maxListPages = 100
+
+// listPages returns the kept items of page and of every page after it,
+// requesting each next page from next as the client would: the same request
+// with params.cursor set to the previous page's nextCursor. Each page runs
+// through every later check again, on the request's session. The page
+// requests are internal: their headers are discarded, and the parsed request
+// the audit middleware reads is put back to the client's request afterwards.
+func (*callBinding) listPages(
+	r *http.Request, next http.Handler, parsed *mcpparser.ParsedMCPRequest,
+	keep map[string]struct{}, page *callbinding.ListPage,
+) ([]json.RawMessage, error) {
+	if holder, ok := mcpparser.ParsedRequestHolderFromContext(r.Context()); ok {
+		defer func() { holder.Parsed = parsed }()
+	}
+	items := page.Items
+	seen := map[string]struct{}{}
+	for pages := 1; page.HasNext; pages++ {
+		if _, again := seen[page.NextCursor]; again || pages >= maxListPages {
+			return nil, fmt.Errorf("%w: the pages do not end", callbinding.ErrListResult)
+		}
+		seen[page.NextCursor] = struct{}{}
+		body, err := callbinding.WithCursor(parsed.ID, parsed.Method, parsed.Params, page.NextCursor)
+		if err != nil {
+			return nil, err
+		}
+		req, err := mcpparser.RepublishParsedMCPRequest(r, body)
+		if err != nil {
+			return nil, fmt.Errorf("%w: cannot request the next page", callbinding.ErrListResult)
+		}
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.ContentLength = int64(len(body))
+		buffered := &listResponseBuffer{header: http.Header{}, status: http.StatusOK}
+		next.ServeHTTP(buffered, req)
+		if err := r.Context().Err(); err != nil {
+			return nil, err
+		}
+		if buffered.status != http.StatusOK {
+			return nil, fmt.Errorf("%w: a page was answered with status %d", callbinding.ErrListResult, buffered.status)
+		}
+		var isError bool
+		if page, isError, err = callbinding.ReadListPage(parsed.Method, buffered.body.Bytes(), keep); err != nil {
+			return nil, err
+		} else if isError {
+			return nil, fmt.Errorf("%w: a page was answered with an error", callbinding.ErrListResult)
+		}
+		items = append(items, page.Items...)
+	}
+	return items, nil
+}
+
+// listFailed answers a list call whose result cannot be limited to the
+// token's server with a 500, rather than any part of the unfiltered list.
+func (*callBinding) listFailed(
+	w http.ResponseWriter, r *http.Request, parsed *mcpparser.ParsedMCPRequest,
+	token *callbinding.Token, status int, err error,
+) {
+	level := slog.LevelError
+	if r.Context().Err() != nil {
+		level = slog.LevelDebug
+	}
+	slog.Log(r.Context(), level, "call binding: could not limit a list result to the token's server",
+		"jti", token.JTI, "mcp_method", parsed.Method, "status", status, "error", err)
 	w.Header().Del("Content-Length")
-	w.WriteHeader(buffered.status)
+	writeCallBindingError(w, parsed, http.StatusInternalServerError, mcpparser.CodeInternalError,
+		"Internal error: the list could not be limited to the access token's server")
+}
+
+// writeListResponse writes the answer to a list call.
+func writeListResponse(w http.ResponseWriter, status int, body []byte) {
+	w.Header().Del("Content-Length")
+	w.WriteHeader(status)
 	//nolint:gosec // G705: a JSON-RPC response, not rendered as HTML
 	_, _ = w.Write(body)
 }

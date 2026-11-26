@@ -1521,12 +1521,13 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   revisions. An item is kept when its name (tools, prompts), URI (resources) or URI
   template is one the vMCP's current admission-filtered view attributes to that
   backend; one without a single backend, such as a composite tool, or any tool on an
-  optimizer-enabled instance, is never listed. A list call starts no call and does
-  not use up the token, so a client may follow `nextCursor` with it. A `tools/call`
-  or another list method is refused with `method_mismatch`. Known limits: a Legacy
-  session lists what it registered, so a name that moved to the entry's backend since
-  then shows its earlier metadata; and pages are cut before filtering, so a
-  `nextCursor` (past 1,000 items) encodes the last key of the unfiltered page.
+  optimizer-enabled instance, is never listed. Pages are cut before this filter, and
+  a cursor carries the last key of the unfiltered page, so the vMCP follows the pages
+  itself and answers with all of the backend's items in one response, without
+  `nextCursor`. A list call starts no call and does not use up the token. A
+  `tools/call` or another list method is refused with `method_mismatch`. Known
+  limit: a Legacy session lists what it registered, so a name that moved to the
+  entry's backend since then shows its earlier metadata.
 - GET and DELETE. The session-ownership check then limits them to sessions the
   token's principal owns. Once the token has started its call, they are limited to
   that call's session (`session_mismatch`); a Modern call has none. Neither uses up

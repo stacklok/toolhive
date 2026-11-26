@@ -5,7 +5,6 @@
 package authserver
 
 import (
-	"cmp"
 	"crypto/rand"
 	"errors"
 	"fmt"

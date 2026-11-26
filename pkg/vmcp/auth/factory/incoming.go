@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -62,6 +63,7 @@ func NewIncomingAuthMiddleware(
 	upstreamReader upstreamtoken.TokenReader,
 	keyProvider keys.PublicKeyProvider,
 	embeddedAuthServerIssuer string,
+	opts ...IncomingAuthOption,
 ) (
 	authMw func(http.Handler) http.Handler,
 	authzMw func(http.Handler) http.Handler,
@@ -72,12 +74,17 @@ func NewIncomingAuthMiddleware(
 		return nil, nil, nil, fmt.Errorf("incoming auth config is required")
 	}
 
+	var options incomingAuthOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
+
 	var authMiddleware func(http.Handler) http.Handler
 
 	switch cfg.Type {
 	case "oidc":
 		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(
-			ctx, cfg.OIDC, upstreamReader, keyProvider, embeddedAuthServerIssuer)
+			ctx, cfg.OIDC, upstreamReader, keyProvider, embeddedAuthServerIssuer, options.callBinding)
 	case "local":
 		authMiddleware, authInfoHandler, err = newLocalAuthMiddleware(ctx)
 	case "anonymous":
@@ -127,6 +134,24 @@ func NewIncomingAuthMiddleware(
 	}
 
 	return composedAuth, authzMiddleware, authInfoHandler, nil
+}
+
+// IncomingAuthOption configures NewIncomingAuthMiddleware.
+type IncomingAuthOption func(*incomingAuthOptions)
+
+type incomingAuthOptions struct {
+	callBinding *callbinding.Binding
+}
+
+// WithCallBinding gives the OIDC token validator the call binding that the
+// vMCP server enforces, so it accepts the messages that belong to a call that
+// outlives its token (callbinding.Binding.TokenValidatorOption). Pass the same
+// Binding as the server's CallBinding. It has no effect on local or anonymous
+// incoming auth, whose identities never carry an expiring call-bound token.
+func WithCallBinding(binding *callbinding.Binding) IncomingAuthOption {
+	return func(o *incomingAuthOptions) {
+		o.callBinding = binding
+	}
 }
 
 // newCedarAuthzMiddleware creates Cedar authorization middleware from vMCP config.
@@ -219,6 +244,7 @@ func newOIDCAuthMiddleware(
 	reader upstreamtoken.TokenReader,
 	keyProvider keys.PublicKeyProvider,
 	embeddedAuthServerIssuer string,
+	callBinding *callbinding.Binding,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcCfg == nil {
 		return nil, nil, fmt.Errorf("OIDC configuration required when Type='oidc'")
@@ -252,6 +278,9 @@ func newOIDCAuthMiddleware(
 	}
 	if embeddedAuthServerIssuer != "" {
 		opts = append(opts, auth.WithEmbeddedAuthServerIssuer(embeddedAuthServerIssuer))
+	}
+	if callBinding != nil {
+		opts = append(opts, callBinding.TokenValidatorOption())
 	}
 
 	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity

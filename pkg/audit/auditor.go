@@ -21,6 +21,7 @@ import (
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -725,7 +726,37 @@ func (a *Auditor) addMetadata(event *AuditEvent, r *http.Request, duration time.
 		event.Metadata.Extra["backend_name"] = backendInfo.BackendName
 	}
 
+	stampAdmittedAfterExpiry(r, event)
 	stampTraceContext(r.Context(), event)
+}
+
+// stampAdmittedAfterExpiry marks the event of a request whose access token the
+// validator accepted after it expired, and records the operation ID of the call
+// the request belongs to when the token's mcp_tool_call entry names one. It
+// adds nothing for any other request.
+func stampAdmittedAfterExpiry(r *http.Request, event *AuditEvent) {
+	identity, ok := identityFromRequest(r)
+	if !ok || identity == nil || identity.AdmittedAfterExpiry.IsZero() {
+		return
+	}
+	event.Metadata.Extra[MetadataExtraKeyAdmittedAfterExpiry] = true
+	if operationID := callOperationID(identity.Claims); operationID != "" {
+		event.Metadata.Extra[MetadataExtraKeyOperationID] = operationID
+	}
+}
+
+// callOperationID returns the operation_id of the first mcp_tool_call entry in
+// the claims' authorization_details, or "" when there is none.
+func callOperationID(claims map[string]any) string {
+	details, _ := claims["authorization_details"].([]any)
+	for _, detail := range details {
+		entry, _ := detail.(map[string]any)
+		if typ, _ := entry["type"].(string); typ == toolcalldetails.Type {
+			operationID, _ := entry["operation_id"].(string)
+			return operationID
+		}
+	}
+	return ""
 }
 
 // stampTraceContext records the trace and span IDs carried by ctx on the event,

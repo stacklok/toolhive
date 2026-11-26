@@ -7,6 +7,7 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 
@@ -145,6 +146,14 @@ type Identity struct {
 	// for equality with AdmissionRouteDelegated (or AdmissionRouteInteractive),
 	// never with != AdmissionRouteUnspecified.
 	AdmissionRoute AdmissionRoute
+
+	// AdmittedAfterExpiry is the exp of a token that TokenValidator accepted
+	// after it expired, through WithExpiredTokenAdmission; it is zero for every
+	// other identity. Such an identity has no upstream tokens, and consumers
+	// must not let it start anything new. It is internal provenance and is
+	// intentionally not included in PrincipalInfo, SafeIdentity, or
+	// MarshalJSON.
+	AdmittedAfterExpiry time.Time
 
 	// UpstreamTokens maps upstream provider names to their access tokens.
 	// This is populated by the auth middleware when an embedded auth server

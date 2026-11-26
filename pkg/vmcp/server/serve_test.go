@@ -20,7 +20,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
@@ -167,15 +166,6 @@ func TestServePreservesExplicitConfig(t *testing.T) {
 	assert.Equal(t, "my-group", srv.config.GroupRef)
 	assert.Equal(t, 7*time.Minute, srv.config.SessionTTL)
 	assert.Equal(t, 11*time.Second, srv.config.StatusReportingInterval)
-}
-
-func TestServeRefusesInvalidCallBinding(t *testing.T) {
-	t.Parallel()
-	cfg := testMinimalServeConfig()
-	cfg.CallBinding = callbinding.Config{MaxCallDuration: -time.Second}
-	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
-	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
-	assert.Nil(t, srv)
 }
 
 func TestServeHandlerRegistersUnauthenticatedRoutes(t *testing.T) {
@@ -434,7 +424,7 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		UsageMetricsMiddleware:  func(h http.Handler) http.Handler { return h },
 		AuditConfig:             &audit.Config{},
 		AuditSubjectEnricher:    stubSubjectEnricher,
-		CallBinding:             callbinding.Config{Clients: []string{"c"}},
+		CallBinding:             testCallBinding(),
 	}
 
 	got := reflect.ValueOf(*buildServeConfig(src))

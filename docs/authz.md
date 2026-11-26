@@ -122,10 +122,12 @@ with the reason, and the request is audited as `denied` with
 
 Two consequences are easy to miss. A token whose `authorization_details` claim is
 malformed is refused on every request, whatever its client, even one that never
-asked for call binding. And messages for a call are accepted only until the earlier of
-the token's `exp` and the end of the call's request: an elicitation answer or
-cancellation sent after `exp` gets 401, even while the call is still open, and a fresh
-token does not help because it has no call of its own. See
+asked for call binding. And `exp` limits only when a call can start: a tool call that
+outlives its token keeps, on its session, its cancellation, elicitation answers, and
+GET and DELETE, until the call's request ends or the call has run for the maximum
+call duration (30 minutes by default). Anything else after `exp` gets 401. This needs
+the token validator to share the vMCP's call binding, as the `vmcp` command wires it.
+See
 [Call-bound access tokens](arch/10-virtual-mcp-architecture.md#call-bound-access-tokens).
 
 For Legacy vMCP and stateful proxy requests, a delegated session is bound to the

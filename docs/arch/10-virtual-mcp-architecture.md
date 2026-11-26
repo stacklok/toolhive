@@ -1581,22 +1581,50 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   does not see which server-to-client requests the SDK is waiting on, so any response
   on that session is accepted. A Modern call has no session, whatever
   `Mcp-Session-Id` it sends, so it admits neither: a Modern client cancels by closing
-  the request. Because `exp` is checked first, these messages are accepted until the
-  earlier of the token's `exp` and the end of the call's request; an elicitation
-  answer sent after `exp` gets 401 even while the call is open, and a fresh token
-  gets `no_open_call`. Known limitation: a Legacy client that closes the call's POST
-  before it sends the cancellation (go-sdk does) gets `no_open_call`, because the
-  call's request has already returned. Accepting messages for a call after its
-  request returns, like accepting them after `exp`, is not implemented yet.
+  the request. These messages are accepted after the token's `exp` too (see **After
+  `exp`** below); a fresh token gets `no_open_call`, as it has no call of its own. A
+  Legacy client that closes the call's POST before it sends the cancellation (go-sdk
+  does) gets `no_open_call`: closing the POST ends the call's request, and with it
+  the call.
 
 Everything else is refused, including list methods a tool-call entry does not allow.
 Single use means
 one token, one call: a retried `tools/call`, such as the retry after a URL elicitation
 (Legacy `-32042`, Modern `input_required`), is a second call and is refused with
-`token_reused`. The client needs a fresh call-bound token for the retry. After the
-token's `exp` every request to the MCP endpoint is refused with `token_expired`: the
-middleware applies the token validator's leeway, which is zero, so this fires only
-when the embedder's validator allows more. A stream opened before `exp` keeps running.
+`token_reused`. The client needs a fresh call-bound token for the retry.
+
+**After `exp`.** The token's `exp` limits only when a call can start. A tool call that
+outlives its token keeps its own messages, while the call's request is open and
+younger than the maximum call duration, on the call's session: a
+`notifications/cancelled` for the call's ID, a JSON-RPC response such as an
+elicitation answer, and a GET or DELETE. The GET lets a client whose stream dropped
+receive the call's messages again: the vMCP sends a backend's elicitation on the
+session's standalone stream. The DELETE ends the session. Neither starts anything.
+Nothing else is accepted after `exp`: no new call, list, handshake or `ping`. A list
+call is recorded ended and a Modern call has no session, so neither has messages
+after `exp`. A stream opened before `exp` keeps running.
+
+The token validator refuses an expired JWT before this middleware runs, so the two
+share one `callbinding.Binding`, built by `callbinding.New` from the configuration:
+the embedder passes it as `ServerConfig.CallBinding` and to the incoming auth factory
+(`factory.WithCallBinding`), which gives the OIDC validator
+`Binding.TokenValidatorOption`. With that option (`auth.WithExpiredTokenAdmission`),
+the validator takes a JWT refused for its `exp` alone, checks it again on everything
+else (signature, `iss`, `aud`, `nbf`, subject restriction), requires its `exp` to be
+less than the maximum call duration in the past, and asks the binding
+(`Binding.AdmitExpiredToken`). The binding admits a POST, GET or DELETE only when the
+token carries an entry, its key has an open call in this replica's record, and the
+request names that call's session; it never reads the body. Anything else gets the
+validator's usual 401, and opaque tokens never qualify. An admitted identity is marked
+(`auth.Identity.AdmittedAfterExpiry`) and gets no upstream tokens: its messages travel
+on the open call's backend connection. The middleware checks the call again, admits
+only the call's own messages, and refuses the rest with 401 `token_expired`;
+`core.CallTool` and the pre-dispatch gate refuse a marked identity as a backstop. The
+audit event of an admitted request carries `metadata.extra.admitted_after_expiry` and
+the entry's `operation_id`. Without the option every request after `exp` gets the
+validator's 401, and the vMCP warns once when a call-bound tool call starts; the
+`vmcp` command wires it. The record is per replica, so a message sent to another
+replica after `exp` gets 401, which does not widen the single-use gap.
 
 **Single use.** The `jti` (keyed with the issuer) is recorded when the call starts, in
 a `callbinding.Record`, and stays recorded until `exp` or until the call has run for
@@ -1622,7 +1650,8 @@ dispatches on another, and a backend can drop out of the view in between, moving
 tool name to another backend or to a composite it shadowed. So `core.CallTool` repeats
 the check on the view it dispatches from, as it repeats admission: for a call-bound
 token it refuses a composite tool and a backend other than the entry's `server`, with
-`ErrAuthorizationFailed`, before reaching any backend.
+`ErrAuthorizationFailed`, before reaching any backend. It refuses every call from an
+identity accepted after its token expired.
 
 **Refusal.** A refusal that describes the token gets HTTP 401 with an `invalid_token`
 challenge and an RFC 6750 error body: `token_expired`, `token_reused`,

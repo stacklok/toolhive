@@ -150,10 +150,15 @@ func (c *coreVMCP) CallTool(
 // backend or to a composite it shadowed. Like the admission decision above,
 // the check is repeated here on the view the call is dispatched from, and
 // fails closed with ErrAuthorizationFailed, as it does for a list-call entry or
-// an unusable claim. A token without an entry passes.
+// an unusable claim. A token without an entry passes. An identity whose token
+// was accepted after it expired never starts a call, whatever its token
+// carries: it may only send messages of a call already running.
 func checkCallBinding(ctx context.Context, identity *auth.Identity, name string, target *vmcp.BackendTarget) error {
 	if identity == nil {
 		return nil
+	}
+	if !identity.AdmittedAfterExpiry.IsZero() {
+		return fmt.Errorf("%w: tool %q: the access token has expired", vmcp.ErrAuthorizationFailed, name)
 	}
 	token, reason := callbinding.FromClaims(identity.Claims, nil)
 	switch {

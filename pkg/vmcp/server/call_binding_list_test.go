@@ -516,12 +516,10 @@ var standInItems = []json.RawMessage{json.RawMessage(`{"name":"` + cbTool + `"}`
 // standInBinding is a callBinding whose list lookup answers standInItems.
 func standInBinding(t *testing.T) *callBinding {
 	t.Helper()
-	cb, err := newCallBinding(callbinding.Config{}, nil,
+	return newCallBinding(nil, nil,
 		func(context.Context, *auth.Identity, string, string) ([]json.RawMessage, error) {
 			return standInItems, nil
 		})
-	require.NoError(t, err)
-	return cb
 }
 
 // standInToken is a list-call token for tools/list with its own jti.

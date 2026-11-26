@@ -117,7 +117,7 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 				"google": {AccessToken: "gcp-access-token", IDToken: "gcp-id-token"},
 			}, map[string]error(nil), nil)
 
-		authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, reader, nil, "")
+		authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, reader, nil, "", nil)
 		require.NoError(t, err, "middleware creation should succeed with non-nil reader")
 		require.NotNil(t, authMw)
 
@@ -151,7 +151,7 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 	t.Run("upstream tokens nil when reader is nil", func(t *testing.T) {
 		t.Parallel()
 
-		authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, nil, nil, "")
+		authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, nil, nil, "", nil)
 		require.NoError(t, err)
 		require.NotNil(t, authMw)
 
@@ -189,7 +189,7 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 		// No EXPECT -- reader should not be called when tsid is absent.
 
-		authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, reader, nil, "")
+		authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, reader, nil, "", nil)
 		require.NoError(t, err)
 		require.NotNil(t, authMw)
 

@@ -389,9 +389,20 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		embeddedAuthServerIssuer = authServerRC.Issuer
 	}
 
+	// One call binding is shared by the token validator and the server: the
+	// validator accepts the messages of a call that outlives its token, and
+	// the server answers a refused call-bound token with the same challenge
+	// parameters as the validator.
+	callBinding, err := callbinding.New(callbinding.Config{
+		Challenge: authfactory.IncomingBearerChallenge(vmcpCfg.IncomingAuth),
+	})
+	if err != nil {
+		return err
+	}
+
 	authMiddleware, authzMiddleware, authInfoHandler, err :=
 		authfactory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, vmcpCfg.Name, passThroughTools,
-			upstreamReader, keyProvider, embeddedAuthServerIssuer)
+			upstreamReader, keyProvider, embeddedAuthServerIssuer, authfactory.WithCallBinding(callBinding))
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
@@ -471,9 +482,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		CodeModeConfig:          codeModeCfg,
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
-		// Call binding answers a refused call-bound token with the same
-		// challenge parameters as the token validator.
-		CallBinding: callbinding.Config{Challenge: authfactory.IncomingBearerChallenge(vmcpCfg.IncomingAuth)},
+		CallBinding:             callBinding,
 		// Core collaborators: server.New routes through core.New + Serve, so the core
 		// is the single aggregator and authorizer. The aggregator is the same instance
 		// that backs discovery; Authz feeds the core admission seam (nil = allow-all).

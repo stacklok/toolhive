@@ -149,4 +149,11 @@ const (
 	// MetadataExtraKeyDenialReason is the key for the reason an inner
 	// middleware gave for a denial, when it gave one
 	MetadataExtraKeyDenialReason = "denial_reason"
+	// MetadataExtraKeyAdmittedAfterExpiry is the key that marks a request whose
+	// access token the validator accepted after it expired, as a message of a
+	// call already running (auth.WithExpiredTokenAdmission)
+	MetadataExtraKeyAdmittedAfterExpiry = "admitted_after_expiry"
+	// MetadataExtraKeyOperationID is the key for the operation ID of the call
+	// that a request admitted after its token expired belongs to
+	MetadataExtraKeyOperationID = "operation_id"
 )

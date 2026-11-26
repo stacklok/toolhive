@@ -571,6 +571,27 @@ Then `tools/list` will only show the "weather" tool for that user.
 
 A filtered list depends on the caller's permissions, so `tools/list`, `prompts/list`, and `resources/list` responses carry the HTTP header `Cache-Control: private, no-store`, and a `cacheScope` or `ttlMs` member the backend sent in the result is replaced with `"private"` or `0`. The proxy does not add either member when the backend omitted it, so a list from a backend on an MCP revision that predates these members reaches the client without them. A result that repeats `cacheScope` or `ttlMs`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error. `resources/templates/list` responses carry the same header, and their result always includes `cacheScope: "private"` and `ttlMs: 0`.
 
+The SSE transport (`--transport sse`) and the GET stream of streamable HTTP filter list answers on the event stream. The middleware wraps every `GET`, so this applies to each GET it sees. Each event is filtered as it arrives, with the filter chosen from the result's shape:
+
+- A list answer (tools, prompts, resources, resource templates, skills) is filtered by policy.
+- A `find_tool` answer is filtered.
+- A `tools/call` answer from any other tool that names a tool under a `tools` key, at any depth, fails closed with a JSON-RPC error, because the stream cannot see which tool was called. It is stricter than the POST path, which filters only the answer to a call to `find_tool`. A `tools/call` answer that is a valid `find_tool` answer, but carries another `tools` member naming a tool (under `_meta` or beside `tools`), also fails closed.
+- A tool name under a member with another key, such as `related`, is not checked.
+- A result that is not a clean JSON-RPC response, carries more than one list, or is ambiguous fails closed with a JSON-RPC error that carries the request id.
+- Other results pass through unchanged.
+
+Permissions are taken from the request that opens the stream, and each event is checked against the authorizer as it arrives. A change to the caller's role or token takes effect when the client reconnects, not mid-stream.
+
+Other limits:
+
+- A 2xx response that is not `text/event-stream` is held until the handler returns, then read as one JSON-RPC message or as SSE events.
+- A non-2xx response passes through unchanged.
+- A body larger than 16 MiB ends the stream with one error.
+- A filtered stream with a `Content-Encoding` other than `identity` gets `502 Bad Gateway`. The filter removes `Accept-Encoding` from every GET so the backend sends an identity body.
+- A frame with no readable id is dropped, because an error without an id ends the client's session.
+- Every GET behind authz is wrapped, including non-MCP GETs on the transparent proxy. A filtered 2xx GET response carries `Cache-Control: private, no-store`.
+- A request to upgrade the connection (Hijack) is refused on a filtered GET.
+
 ##### Methods covered by a prompt or resource policy
 
 Some MCP methods do not name a capability directly but still act on one. They are

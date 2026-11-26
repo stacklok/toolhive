@@ -146,6 +146,10 @@ type fakeCore struct {
 	// unavailableBackends are configured backends missing from the current
 	// view, as an unreachable backend is.
 	unavailableBackends []string
+	// backendStatus is the registry health status of a configured backend,
+	// set with setBackendStatus; absent means none (healthy).
+	backendStatusMu sync.Mutex
+	backendStatus   map[string]vmcp.BackendHealthStatus
 
 	listToolsCalls             atomic.Int32
 	listResourcesCalls         atomic.Int32
@@ -442,13 +446,26 @@ func (f *fakeCore) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.B
 		ids = append(ids, t.BackendID)
 	}
 	slices.Sort(ids)
+	f.backendStatusMu.Lock()
+	defer f.backendStatusMu.Unlock()
 	backends := []vmcp.Backend{}
 	for _, id := range slices.Compact(ids) {
 		if id != "" {
-			backends = append(backends, vmcp.Backend{ID: id, Name: id})
+			backends = append(backends, vmcp.Backend{ID: id, Name: id, HealthStatus: f.backendStatus[id]})
 		}
 	}
 	return backends, nil
+}
+
+// setBackendStatus sets the registry health status ListBackends reports for
+// backend id.
+func (f *fakeCore) setBackendStatus(id string, status vmcp.BackendHealthStatus) {
+	f.backendStatusMu.Lock()
+	defer f.backendStatusMu.Unlock()
+	if f.backendStatus == nil {
+		f.backendStatus = map[string]vmcp.BackendHealthStatus{}
+	}
+	f.backendStatus[id] = status
 }
 
 // LookupBackend finds a configured backend that is not unavailable.

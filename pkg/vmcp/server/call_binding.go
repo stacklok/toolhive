@@ -25,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
 // callBindingLeeway is the clock skew allowed on a call-bound token's exp. It
@@ -170,10 +171,12 @@ func (s *Server) callBindingRoute(ctx context.Context, identity *auth.Identity, 
 // the optimizer, no tool is.
 //
 // The server must be one of the vMCP's backends (errListServerNotConfigured
-// otherwise) and must be in identity's current view: a backend that is
-// unreachable, degraded or failing discovery contributes nothing to it, and
+// otherwise) and must be in the view the items come from (see
+// callBindingListServer): a backend marked unhealthy, unknown or
+// unauthenticated, or whose discovery fails, contributes nothing to it, and
 // listing it then would answer an empty list for a server that has items, so
-// its absence is an error, which the caller answers with 503.
+// its absence is an error, which the caller answers with 503. A degraded
+// backend stays in the view and is listed.
 func (s *Server) callBindingListItems(
 	ctx context.Context, identity *auth.Identity, method, server string,
 ) ([]json.RawMessage, error) {
@@ -210,15 +213,30 @@ func (s *Server) callBindingListItems(
 	}
 }
 
-// callBindingListServer checks that server is a configured backend in
-// identity's current view.
+// callBindingListServer checks that server is a configured backend in the
+// view the list's items come from. The core's lists aggregate only backends
+// whose health status health.ShouldAdvertise admits, read from the health
+// monitor and else from the registry, as here: an unhealthy, unknown or
+// unauthenticated backend is left out of them even when it still answers, and
+// a degraded one stays in. A backend whose discovery fails contributes
+// nothing either, which LookupBackend reports.
 func (s *Server) callBindingListServer(ctx context.Context, identity *auth.Identity, server string) error {
 	configured, err := s.core.ListBackends(ctx, identity, false)
 	if err != nil {
 		return err
 	}
-	if !slices.ContainsFunc(configured, func(b vmcp.Backend) bool { return b.ID == server }) {
+	i := slices.IndexFunc(configured, func(b vmcp.Backend) bool { return b.ID == server })
+	if i < 0 {
 		return errListServerNotConfigured
+	}
+	status := configured[i].HealthStatus
+	if monitor := s.core.BackendHealth(); monitor != nil {
+		if monitored, ok := monitor.QueryBackendStatus(server); ok {
+			status = monitored
+		}
+	}
+	if !health.ShouldAdvertise(status) {
+		return fmt.Errorf("call binding: the list call's server is not in the current view: it is %s", status)
 	}
 	if _, err := s.core.LookupBackend(ctx, identity, server); err != nil {
 		return fmt.Errorf("call binding: the list call's server is not in the current view: %w", err)
@@ -503,20 +521,28 @@ func (cb *callBinding) admitListCall(
 // with items in place of the items of its response. It reports whether the
 // client got a list; when it did not, it has answered with the handler's
 // response as it is (an empty body, a JSON-RPC error or a plain error body),
-// with a 500 for anything else, or with nothing when the client went away.
+// with a 500 for anything else, or with a 503 when the client went away.
 func (cb *callBinding) answerListCall(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
 	token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest, items []json.RawMessage,
 ) bool {
 	first := &listResponseBuffer{header: w.Header(), status: http.StatusOK}
 	next.ServeHTTP(first, r)
+	if r.Context().Err() != nil {
+		// The client went away before the answer reached it, whatever the
+		// handler wrote: a Legacy handler writes nothing then, a Modern one
+		// its full answer. The client got no list, so the call is released;
+		// the 503 it cannot read records the call as an error in the audit
+		// log, as call binding records a call it could not complete.
+		slog.DebugContext(r.Context(), "call binding: a list call was cancelled before it was answered",
+			"jti", token.JTI)
+		w.Header().Del("Content-Length")
+		writeCallBindingError(w, parsed, http.StatusServiceUnavailable, mcpparser.CodeInternalError,
+			"Service unavailable: the list call was cancelled before it was answered")
+		return false
+	}
 	body := first.body.Bytes()
 	if len(body) == 0 {
-		if r.Context().Err() != nil {
-			// The client went away before the handler answered: nothing to send.
-			slog.DebugContext(r.Context(), "call binding: a list call ended before it was answered", "jti", token.JTI)
-			return false
-		}
 		writeListResponse(w, first.status, body)
 		return false
 	}

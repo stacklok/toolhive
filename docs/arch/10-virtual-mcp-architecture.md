@@ -1525,8 +1525,10 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   item, so neither the handler's items nor its cursor reach the client. An item
   without a single backend, such as a composite tool, or any tool on an
   optimizer-enabled instance, is never listed. The `server` must be a backend
-  (`server_not_found` otherwise) in the identity's current view (503 otherwise, for
-  example while it is unreachable). A list call that carries a cursor is refused with
+  (`server_not_found` otherwise) in the view the items come from (503 otherwise):
+  a backend that is unreachable, fails discovery, or is marked unhealthy, unknown or
+  unauthenticated, even while it still answers, is left out of the core's lists; a
+  degraded backend stays in them and is listed. A list call that carries a cursor is refused with
   `invalid_params`. A `tools/call` or another list method is refused with
   `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
   a tool-call entry: it uses up the token.
@@ -1564,12 +1566,14 @@ a `callbinding.Record`, and stays recorded until `exp` or until the call has run
 the maximum call duration (`CallBinding.MaxCallDuration`, 30 minutes by default),
 whichever is later, plus a one-minute margin for a record whose clock runs ahead of
 the replica's. Once the token has started its call, a `tools/call` or a list
-method it could otherwise send is refused with `token_reused`, whatever it names,
-so the client learns it needs a new token. A refusal by this middleware does not use
+method is refused with `token_reused`, whatever it names, so the client learns it
+needs a new token; a tool-call token's `tools/list` stays allowed (see above). A refusal by this middleware does not use
 up the token; a later refusal of a `tools/call`, such as the session-ownership 404 or
-a Cedar 403, does. A list call answered without a list (a JSON-RPC error, a later
-refusal, or a response that cannot be read) releases the token, since nothing of the
-call reached the client. The default record is in memory, so it
+a Cedar 403, does. A list call that gives the client no list (a JSON-RPC error, a
+later refusal, a response that cannot be read, or a client that went away before the
+answer reached it, even when the handler had answered) releases the token, since
+nothing of the call reached the client; a call cancelled that way is answered, and
+audited, as a 503. The default record is in memory, so it
 covers one replica: a replay to another replica is accepted, and the vMCP warns at
 startup when sessions are stored in Redis without a shared `Record`. An embedder may
 supply another `Record`. When the call returns, the record marks it ended, with a

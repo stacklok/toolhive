@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
 func listEntry(server, method string) map[string]any {
@@ -532,8 +534,8 @@ func recorded(t *testing.T, cb *callBinding, token *callbinding.Token) bool {
 }
 
 // TestCallBinding_ListCallClientGone checks that a list call whose client
-// went away before the handler answered writes nothing and does not use the
-// token up.
+// went away before the handler answered is released, and answered with the
+// 503 that records it as an error in the audit log.
 func TestCallBinding_ListCallClientGone(t *testing.T) {
 	t.Parallel()
 	cb := standInBinding(t)
@@ -543,8 +545,28 @@ func TestCallBinding_ListCallClientGone(t *testing.T) {
 	rec := httptest.NewRecorder()
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { cancel() })
 	cb.serveBound(rec, req, next, &auth.Identity{}, token, parsed)
-	assert.Empty(t, rec.Body.String())
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code, "body: %s", rec.Body.String())
+	assert.NotContains(t, rec.Body.String(), cbTool, "no list")
 	assert.False(t, rec.Flushed)
+	assert.False(t, recorded(t, cb, token), "the token is released")
+}
+
+// TestCallBinding_ListCallCancelledAfterAnswer checks that a list call whose
+// client went away is released even when the handler then wrote its whole
+// answer, as Modern dispatch does: the answer never reached the client.
+func TestCallBinding_ListCallCancelledAfterAnswer(t *testing.T) {
+	t.Parallel()
+	cb := standInBinding(t)
+	token := standInToken(t, "jti-1")
+	ctx, cancel := context.WithCancel(context.Background())
+	req, parsed := standInList(ctx)
+	rec := httptest.NewRecorder()
+	cb.serveBound(rec, req, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		cancel()
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`))
+	}), &auth.Identity{}, token, parsed)
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code, "body: %s", rec.Body.String())
+	assert.NotContains(t, rec.Body.String(), cbTool, "no list")
 	assert.False(t, recorded(t, cb, token), "the token is released")
 }
 
@@ -744,4 +766,173 @@ func TestCallBinding_ListCallResponseHandling(t *testing.T) {
 			assert.JSONEq(t, "2", string(resp.ID))
 		})
 	}
+}
+
+// TestCallBinding_ListCallServerHealth checks that a list call on a configured
+// backend that the core's lists leave out for its health status, though it
+// may still answer, gets 503 without using the token up, and that the same
+// token lists once the backend is healthy again. A degraded backend stays in
+// the lists and is answered with its items.
+func TestCallBinding_ListCallServerHealth(t *testing.T) {
+	t.Parallel()
+	for _, status := range []vmcp.BackendHealthStatus{
+		vmcp.BackendUnhealthy, vmcp.BackendUnknown, vmcp.BackendUnauthenticated,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
+			s := newCallBindingTestServer(t, cbServerOptions{})
+			s.fc.setBackendStatus(cbServer, status)
+			token := s.tokens.add("list", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}))
+			body, headers := cbModernList(2, "tools/list")
+			for range 2 {
+				resp := s.send(t, http.MethodPost, token, "", body, headers)
+				require.Equal(t, http.StatusServiceUnavailable, resp.status, "the token stays unused: %s", resp.body)
+				assert.NotContains(t, resp.body, cbTool)
+			}
+
+			s.fc.setBackendStatus(cbServer, vmcp.BackendHealthy)
+			resp := s.send(t, http.MethodPost, token, "", body, headers)
+			require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
+			assert.Equal(t, []string{cbTool}, listedKeys(t, "tools/list", resp.body))
+		})
+	}
+
+	t.Run(string(vmcp.BackendDegraded), func(t *testing.T) {
+		t.Parallel()
+		s := newCallBindingTestServer(t, cbServerOptions{})
+		s.fc.setBackendStatus(cbServer, vmcp.BackendDegraded)
+		token := s.tokens.add("list", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}))
+		resp := s.send(t, http.MethodPost, token, s.session(t, token), listBody(2, "tools/list"), nil)
+		require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
+		assert.Equal(t, []string{cbTool}, listedKeys(t, "tools/list", resp.body))
+	})
+}
+
+// monitoredCore is a fakeCore whose health monitor reports statuses.
+type monitoredCore struct {
+	*fakeCore
+	statuses map[string]vmcp.BackendHealthStatus
+}
+
+func (m *monitoredCore) BackendHealth() health.Reporter {
+	return statusReporter{statuses: m.statuses}
+}
+
+// statusReporter is a health monitor that answers QueryBackendStatus only;
+// callBindingListServer calls nothing else.
+type statusReporter struct {
+	health.Reporter
+	statuses map[string]vmcp.BackendHealthStatus
+}
+
+func (r statusReporter) QueryBackendStatus(id string) (vmcp.BackendHealthStatus, bool) {
+	status, ok := r.statuses[id]
+	return status, ok
+}
+
+// TestCallBinding_ListServerPrefersMonitor checks that the health monitor's
+// status for a backend decides over the registry's, as it does for the
+// core's lists.
+func TestCallBinding_ListServerPrefersMonitor(t *testing.T) {
+	t.Parallel()
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: cbTool, BackendID: cbServer}, {Name: cbOtherTool, BackendID: "other"}}}
+	fc.setBackendStatus(cbServer, vmcp.BackendHealthy)
+	fc.setBackendStatus("other", vmcp.BackendUnhealthy)
+	s := &Server{core: &monitoredCore{fakeCore: fc, statuses: map[string]vmcp.BackendHealthStatus{
+		cbServer: vmcp.BackendUnhealthy, "other": vmcp.BackendHealthy,
+	}}}
+	require.Error(t, s.callBindingListServer(context.Background(), nil, cbServer),
+		"the monitor says unhealthy, whatever the registry says")
+	require.NoError(t, s.callBindingListServer(context.Background(), nil, "other"),
+		"the monitor says healthy, whatever the registry says")
+	require.ErrorIs(t, s.callBindingListServer(context.Background(), nil, "missing"), errListServerNotConfigured)
+}
+
+// cancelledListCore holds the Modern dispatch's core.ListTools until the
+// client has gone, then answers it in full, as a backend slower than the
+// client's timeout does. The list lookup before the call is recorded is the
+// first ListTools call of a list call; dispatch makes the second.
+type cancelledListCore struct {
+	*fakeCore
+	hold    atomic.Bool
+	calls   atomic.Int32
+	waiting chan struct{}
+}
+
+func (c *cancelledListCore) ListTools(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, error) {
+	if c.hold.Load() && c.calls.Add(1) == 2 {
+		close(c.waiting)
+		<-ctx.Done()
+	}
+	return c.fakeCore.ListTools(ctx, identity)
+}
+
+// TestCallBinding_ModernListCallCancelled checks that a Modern list call whose
+// client cancels while dispatch runs gives the token back, though dispatch
+// then writes its whole answer: a retry with the same token gets the list.
+// The cancelled call is audited as an error, not a success.
+func TestCallBinding_ModernListCallCancelled(t *testing.T) {
+	t.Parallel()
+	auditPath := filepath.Join(t.TempDir(), "audit.log")
+	cc := &cancelledListCore{waiting: make(chan struct{})}
+	cc.hold.Store(true)
+	s := newCallBindingTestServer(t, cbServerOptions{auditFile: auditPath, wrap: func(fc *fakeCore) core.VMCP {
+		cc.fakeCore = fc
+		return cc
+	}})
+	token := s.tokens.add("list-token-value", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}))
+	body, headers := cbModernList(2, "tools/list")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url+"/mcp", strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+token)
+	for k, vs := range headers {
+		req.Header[k] = vs
+	}
+	failed := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		failed <- err
+	}()
+	select {
+	case <-cc.waiting:
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "dispatch did not run")
+	}
+	cancel()
+	require.Error(t, <-failed, "the client cancelled")
+	cc.hold.Store(false)
+
+	// The release runs as the cancelled request returns; until then the
+	// call is still in flight and a retry is refused without using the
+	// token.
+	var retry cbResponse
+	require.Eventually(t, func() bool {
+		retry = s.send(t, http.MethodPost, token, "", body, headers)
+		return retry.status != http.StatusUnauthorized
+	}, 10*time.Second, 20*time.Millisecond)
+	require.Equal(t, http.StatusOK, retry.status, "body: %s", retry.body)
+	assert.Equal(t, []string{cbTool}, listedKeys(t, "tools/list", retry.body))
+
+	require.Eventually(t, func() bool {
+		raw, err := os.ReadFile(auditPath)
+		if err != nil {
+			return false
+		}
+		outcomes := map[string]int{}
+		for _, line := range bytes.Split(raw, []byte("\n")) {
+			var event map[string]any
+			if json.Unmarshal(line, &event) == nil && strings.Contains(string(line), "tools/list") {
+				outcome, _ := event["outcome"].(string)
+				outcomes[outcome]++
+			}
+		}
+		return outcomes[audit.OutcomeError] == 1 && outcomes[audit.OutcomeSuccess] == 1
+	}, 5*time.Second, 20*time.Millisecond, "the cancelled call is an error, the retry a success")
 }

@@ -458,14 +458,12 @@ func (d *DefaultManager) stopRemoteWorkload(ctx context.Context, name string, ru
 	// A remote workload's proxy can outlive its recorded status (e.g. the status
 	// file went missing), so we always try to free an orphaned proxy below — only
 	// the status transitions and client-config cleanup are gated on the workload
-	// being active. An unhealthy remote workload is active: its proxy keeps
-	// running and returns it to running when the server recovers.
+	// being active, meaning its status is one its proxy keeps running in.
 	workload, err := d.statuses.GetWorkload(ctx, name)
 	if err != nil && !errors.Is(err, rt.ErrWorkloadNotFound) {
 		return fmt.Errorf("failed to find workload %s: %w", name, err)
 	}
-	active := err == nil &&
-		(workload.Status == rt.WorkloadStatusRunning || workload.Status == rt.WorkloadStatusUnhealthy)
+	active := err == nil && remoteProxyActive(workload.Status)
 	switch {
 	case err != nil:
 		// Status is gone (e.g. a missing status file); don't fail the operation,
@@ -501,6 +499,24 @@ func (d *DefaultManager) stopRemoteWorkload(ctx context.Context, name string, ru
 		slog.Debug("remote workload stopped", "workload", name)
 	}
 	return nil
+}
+
+// remoteProxyActive reports whether a remote workload's proxy keeps running in the
+// given status, so stopping it must mark it stopped and remove its client
+// configuration: while starting, running, unhealthy (the proxy monitors for
+// recovery), retrying token refresh, or unauthenticated (the proxy keeps
+// serving and rejecting requests until the workload is restarted).
+func remoteProxyActive(status rt.WorkloadStatus) bool {
+	switch status {
+	case rt.WorkloadStatusStarting, rt.WorkloadStatusRunning, rt.WorkloadStatusUnhealthy,
+		rt.WorkloadStatusAuthRetrying, rt.WorkloadStatusUnauthenticated:
+		return true
+	case rt.WorkloadStatusStopping, rt.WorkloadStatusStopped, rt.WorkloadStatusRemoving,
+		rt.WorkloadStatusError, rt.WorkloadStatusPolicyStopped, rt.WorkloadStatusUnknown:
+		return false
+	default:
+		return false
+	}
 }
 
 // stopContainerWorkload stops a container-based workload. runConfig may be nil

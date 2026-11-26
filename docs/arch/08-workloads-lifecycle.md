@@ -31,12 +31,14 @@ stateDiagram-v2
     Stopped --> Removing: Delete
 
     Unauthenticated --> Starting: Re-authenticate
+    Unauthenticated --> Stopping: Stop
     Unauthenticated --> Removing: Delete
 
     Unhealthy --> Running: Remote Health Recovered
     Unhealthy --> Stopping: Stop
 
     AuthRetrying --> Running: Refresh Succeeds
+    AuthRetrying --> Stopping: Stop
     AuthRetrying --> Unauthenticated: Ceiling Exceeded or Permanent Error
 
     Removing --> [*]: Success
@@ -54,8 +56,9 @@ A local workload whose health checks fail has its proxy stopped, so
 running and checking, and returns the workload to `running` when the remote
 server passes a health check again, so default `thv list` shows unhealthy
 remote workloads with the status context "Remote server failed health checks".
-Stopping an unhealthy remote workload stops its proxy and marks it `stopped`,
-as for a running one.
+Stopping a remote workload whose proxy is still running, whether it is
+`starting`, `running`, `unhealthy`, `auth_retrying` or `unauthenticated`, stops
+the proxy, removes its client configuration and marks it `stopped`.
 
 The `auth_retrying` cadence and ceiling can be tuned via environment
 variables on the proxy process:

@@ -61,6 +61,7 @@ func (r *PrefixConflictResolver) ResolveToolConflicts(
 			resolved[resolvedName] = &ResolvedTool{
 				ResolvedName:              resolvedName,
 				OriginalName:              tool.Name,
+				Title:                     tool.Title,
 				Description:               tool.Description,
 				InputSchema:               tool.InputSchema,
 				OutputSchema:              tool.OutputSchema,

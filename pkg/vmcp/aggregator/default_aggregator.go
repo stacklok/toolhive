@@ -309,6 +309,7 @@ func (a *defaultAggregator) ResolveConflicts(
 				resolvedTools[tool.Name] = &ResolvedTool{
 					ResolvedName: tool.Name,
 					OriginalName: tool.Name,
+					Title:        tool.Title,
 					Description:  tool.Description,
 					InputSchema:  tool.InputSchema,
 					OutputSchema: tool.OutputSchema,
@@ -395,6 +396,7 @@ func (a *defaultAggregator) MergeCapabilities(
 		if shouldAdvertise {
 			tools = append(tools, vmcp.Tool{
 				Name:         resolvedTool.ResolvedName,
+				Title:        resolvedTool.Title,
 				Description:  resolvedTool.Description,
 				InputSchema:  resolvedTool.InputSchema,
 				OutputSchema: resolvedTool.OutputSchema,

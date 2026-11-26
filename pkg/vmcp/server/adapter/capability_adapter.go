@@ -67,6 +67,7 @@ func (a *CapabilityAdapter) ToSDKTools(tools []vmcp.Tool) ([]server.ServerTool, 
 		// Create SDK tool with annotations and output schema
 		sdkTool := mcp.Tool{
 			Name:           tool.Name,
+			Title:          tool.Title,
 			Description:    tool.Description,
 			RawInputSchema: schemaJSON,
 			Annotations:    conversion.ToMCPToolAnnotations(tool.Annotations),
@@ -210,6 +211,7 @@ func (a *CapabilityAdapter) ToCompositeToolSDKTools(
 		// Create SDK tool with annotations and output schema
 		sdkTool := mcp.Tool{
 			Name:           tool.Name,
+			Title:          tool.Title,
 			Description:    tool.Description,
 			RawInputSchema: schemaJSON,
 			Annotations:    conversion.ToMCPToolAnnotations(tool.Annotations),

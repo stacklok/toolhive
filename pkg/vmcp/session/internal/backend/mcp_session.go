@@ -843,6 +843,7 @@ func queryBackendTools(ctx context.Context, c *mcpclient.Client, target *vmcp.Ba
 	for _, t := range tools {
 		out = append(out, vmcp.Tool{
 			Name:         t.Name,
+			Title:        t.Title,
 			Description:  t.Description,
 			InputSchema:  conversion.ConvertToolInputSchema(t.InputSchema),
 			OutputSchema: conversion.ConvertToolOutputSchema(t.OutputSchema),

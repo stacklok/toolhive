@@ -144,3 +144,37 @@ func TestRegression_ToolSchemaWithoutTypeObject_ProjectedIntact(t *testing.T) {
 	assert.Equal(t, originalSchema["required"], inputSchema["required"],
 		"required must be preserved; got %v", inputSchema)
 }
+
+func TestRegression_ServeToolsList_PreservesTopLevelTitle(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{tools: []vmcp.Tool{{
+		Name:        "get_weather",
+		Title:       "Weather Information Provider",
+		Description: "Get weather info",
+		InputSchema: map[string]any{"type": "object"},
+	}}}
+	_, sessionID, baseURL := registerServeSession(t, fc)
+
+	resp := postServeMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "tools/list",
+		"params":  map[string]any{},
+	}, sessionID)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode, "tools/list should succeed")
+
+	env, body := readServeJSONRPC(t, resp)
+	result, ok := env["result"].(map[string]any)
+	require.True(t, ok, "tools/list must have a result; body: %s", string(body))
+
+	tools, ok := result["tools"].([]any)
+	require.True(t, ok, "result.tools must be an array; result: %v", result)
+	require.Len(t, tools, 1)
+
+	toolMap, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "get_weather", toolMap["name"])
+	assert.Equal(t, "Weather Information Provider", toolMap["title"])
+}

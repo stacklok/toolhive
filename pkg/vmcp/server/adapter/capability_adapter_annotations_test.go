@@ -173,6 +173,29 @@ func TestCapabilityAdapter_ToSDKTools_Annotations(t *testing.T) {
 				assert.Contains(t, string(tool.RawOutputSchema), `"status"`)
 			},
 		},
+		{
+			name: "Top-level Title preserved without Annotations",
+			tools: []vmcp.Tool{
+				{
+					Name:        "get_weather",
+					Title:       "Weather Information Provider",
+					Description: "Fetches weather",
+					InputSchema: map[string]any{"type": "object"},
+					BackendID:   "backend1",
+				},
+			},
+			setupMocks: func(mf *mocks.MockHandlerFactory) {
+				mf.EXPECT().CreateToolHandler("get_weather").Return(func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					return &mcp.CallToolResult{}, nil
+				})
+			},
+			checkResult: func(t *testing.T, result []server.ServerTool) {
+				t.Helper()
+				require.Len(t, result, 1)
+				assert.Equal(t, "Weather Information Provider", result[0].Tool.Title)
+				assert.Empty(t, result[0].Tool.Annotations.Title)
+			},
+		},
 	}
 
 	for _, tt := range tests {

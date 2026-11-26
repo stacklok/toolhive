@@ -143,6 +143,7 @@ func (r *ManualConflictResolver) resolveToolWithOverride(backendID string, tool 
 	return &ResolvedTool{
 		ResolvedName:              resolvedName,
 		OriginalName:              tool.Name,
+		Title:                     tool.Title,
 		Description:               description,
 		InputSchema:               tool.InputSchema,
 		OutputSchema:              tool.OutputSchema,

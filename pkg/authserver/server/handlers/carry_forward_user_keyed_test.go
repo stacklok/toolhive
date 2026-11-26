@@ -257,14 +257,12 @@ func TestRefreshTokenCarryForward_UserKeyedStorage(t *testing.T) {
 				}
 				upstreams := []NamedUpstream{{Name: providerName, Provider: mockUpstream}}
 				var wrapped storage.Storage = stor
-				var opts []Option
 				if tc.userKeyed {
 					wrapper, wrapErr := storage.NewUserKeyedUpstreamStorage(stor)
 					require.NoError(t, wrapErr)
 					wrapped = wrapper
-					opts = append(opts, WithUserKeyedUpstreamStorage())
 				}
-				handler, err := NewHandler(provider, oauth2Config, wrapped, upstreams, opts...)
+				handler, err := NewHandler(provider, oauth2Config, wrapped, upstreams)
 				require.NoError(t, err)
 
 				userCtx := serveridentity.WithCanonicalUser(context.Background(), userID)

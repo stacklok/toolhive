@@ -433,7 +433,7 @@ func runUserKeyedGuardCase(t *testing.T, warns *warnRecorder, tt userKeyedGuardC
 	names := []string{env.idp, env.conn}
 	refresher := newUpstreamTokenRefresher([]handlers.NamedUpstream{
 		{Name: env.idp, Provider: idpProvider}, {Name: env.conn, Provider: connProvider},
-	}, env.spy, time.Hour, true)
+	}, env.spy, time.Hour)
 	guard, err := newUserKeyedUpstreamRefreshGuard(env.spy, refresher, names)
 	require.NoError(t, err)
 	guard.recheckDelay = tt.recheckDelay
@@ -811,7 +811,7 @@ func newUserKeyedRememberedEnv(t *testing.T) *userKeyedRememberedEnv {
 	require.NoError(t, err)
 	env.wrapper = wrapper
 	env.refresher = newUpstreamTokenRefresher(
-		[]handlers.NamedUpstream{{Name: "idp", Provider: env.idp.provider(t)}}, wrapper, time.Hour, true)
+		[]handlers.NamedUpstream{{Name: "idp", Provider: env.idp.provider(t)}}, wrapper, time.Hour)
 	require.NoError(t, wrapper.StoreUpstreamTokens(
 		guardUserCtx(), "ignored", "idp", guardTestRow(time.Now().Add(-time.Minute), "dead-rt")))
 

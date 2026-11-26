@@ -70,7 +70,7 @@ type Handler struct {
 	// expired upstream leg during chain evaluation instead of re-prompting. Nil
 	// when no refresher is configured; an expired leg is then treated as missing.
 	refresher storage.UpstreamTokenRefresher
-	// userKeyedUpstreamStorage is set when h.storage keys upstream rows by the
+	// userKeyedUpstreamStorage is derived from h.storage: set when it keys upstream rows by the
 	// canonical user, so one row is shared by all of a user's clients. It
 	// changes how a login preserves a prior refresh token (storeWithCarryForward).
 	userKeyedUpstreamStorage bool
@@ -190,17 +190,6 @@ func WithUpstreamRefresher(r storage.UpstreamTokenRefresher) Option {
 	}
 }
 
-// WithUserKeyedUpstreamStorage tells the handler its storage keys upstream
-// token rows by the canonical user (storage.UserKeyedUpstreamStorage), so a
-// login that gets no refresh token reads the shared row through the storage
-// and writes with compare-and-swap rather than copying from the newest
-// session-keyed row. When unset, behavior is unchanged.
-func WithUserKeyedUpstreamStorage() Option {
-	return func(h *Handler) {
-		h.userKeyedUpstreamStorage = true
-	}
-}
-
 // WithUpstreamFilter injects a filter that narrows the authorization chain to a
 // subset of the configured upstreams once the first leg resolves. When unset, the
 // handler walks all configured upstreams — the behavior before this option
@@ -264,16 +253,17 @@ func NewHandler(
 		seen[u.Name] = struct{}{}
 	}
 	h := &Handler{
-		provider:             provider,
-		config:               config,
-		storage:              stor,
-		upstreams:            upstreams,
-		tokenOnly:            len(upstreams) == 0,
-		userResolver:         newUserResolver(stor, upstreams),
-		continuationFallback: storage.ClientStoreBelowCIMD(stor),
-		registerLimiter:      rate.NewLimiter(DefaultRegisterRate, DefaultRegisterBurst),
-		meterProvider:        otel.GetMeterProvider(),
-		deviceCodeInterval:   deviceCodeInterval(config.DeviceCodeInterval),
+		provider:                 provider,
+		config:                   config,
+		storage:                  stor,
+		userKeyedUpstreamStorage: storage.IsUserKeyed(stor),
+		upstreams:                upstreams,
+		tokenOnly:                len(upstreams) == 0,
+		userResolver:             newUserResolver(stor, upstreams),
+		continuationFallback:     storage.ClientStoreBelowCIMD(stor),
+		registerLimiter:          rate.NewLimiter(DefaultRegisterRate, DefaultRegisterBurst),
+		meterProvider:            otel.GetMeterProvider(),
+		deviceCodeInterval:       deviceCodeInterval(config.DeviceCodeInterval),
 	}
 	if config.DeviceFlowEnabled {
 		// Same rate as registerLimiter's default: this gate protects the same kind of

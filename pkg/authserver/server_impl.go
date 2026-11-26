@@ -323,7 +323,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	// on the server so UpstreamTokenRefresher() returns the identical object,
 	// and handed to the upstream refresh guard, ensuring every path shares one
 	// process-local singleflight.Group keyed by opaque storage-row identity.
-	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan, cfg.UserKeyedUpstreamStorage)
+	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan)
 	refresherIface := refresherInterface(refresher)
 
 	// Create fosite provider with the configured storage decorators.
@@ -334,8 +334,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	}
 
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams,
-		buildHandlerOptions(refresherIface, cfg.UpstreamFilter, cfg.RegistrationRateLimit, cfg.ConsentExemptClientIDs,
-			cfg.UserKeyedUpstreamStorage)...)
+		buildHandlerOptions(refresherIface, cfg.UpstreamFilter, cfg.RegistrationRateLimit, cfg.ConsentExemptClientIDs)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -1005,8 +1004,8 @@ func buildTokenExchangeFactories(
 // refresher, because no upstreams are configured), then the embedder's
 // Config.RefreshGrantHandlers. The guard's set of configured providers comes
 // from upstreams, the same resolved list the refresher was built from. With
-// Config.UserKeyedUpstreamStorage the guard checks only the first upstream, the
-// identity provider; stor is then the user-keyed layer.
+// user-keyed storage (stor is, or decorates, the user-keyed layer) the guard
+// checks only the first upstream, the identity provider.
 func refreshGrantValidatorChain(
 	cfg Config, stor storage.Storage, refresher storage.UpstreamTokenRefresher, upstreams []handlers.NamedUpstream,
 ) ([]fosite.TokenEndpointHandler, error) {
@@ -1018,7 +1017,7 @@ func refreshGrantValidatorChain(
 		upstreamNames[i] = u.Name
 	}
 	newGuard := newUpstreamRefreshGuard
-	if cfg.UserKeyedUpstreamStorage {
+	if storage.IsUserKeyed(stor) {
 		newGuard = newUserKeyedUpstreamRefreshGuard
 	}
 	guard, err := newGuard(stor, refresher, upstreamNames)
@@ -1121,12 +1120,8 @@ func buildHandlerOptions(
 	filter upstreamfilter.UpstreamFilter,
 	registrationRateLimit *RegistrationRateLimitRunConfig,
 	consentExemptClientIDs []string,
-	userKeyedUpstreamStorage bool,
 ) []handlers.Option {
 	opts := []handlers.Option{handlers.WithUpstreamRefresher(refresher)}
-	if userKeyedUpstreamStorage {
-		opts = append(opts, handlers.WithUserKeyedUpstreamStorage())
-	}
 	if filter != nil {
 		opts = append(opts, handlers.WithUpstreamFilter(filter))
 	}
@@ -1181,7 +1176,6 @@ func newUpstreamTokenRefresher(
 	upstreams []handlers.NamedUpstream,
 	stor storage.UpstreamTokenStorage,
 	refreshTokenLifespan time.Duration,
-	userKeyed bool,
 ) *upstreamTokenRefresher {
 	if len(upstreams) == 0 {
 		return nil
@@ -1200,7 +1194,7 @@ func newUpstreamTokenRefresher(
 		storage:              stor,
 		refreshTokenLifespan: refreshTokenLifespan,
 		rejected:             rejected,
-		userKeyed:            userKeyed,
+		userKeyed:            storage.IsUserKeyed(stor),
 	}
 }
 

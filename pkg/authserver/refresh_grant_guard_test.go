@@ -494,6 +494,8 @@ func TestRefreshGrantValidatorChain(t *testing.T) {
 
 	stor := storage.NewMemoryStorage()
 	t.Cleanup(func() { _ = stor.Close() })
+	userKeyedStor, err := storage.NewUserKeyedUpstreamStorage(stor)
+	require.NoError(t, err)
 	refresher := mocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
 	upstreams := []handlers.NamedUpstream{{Name: "first"}, {Name: "second"}}
 
@@ -522,12 +524,13 @@ func TestRefreshGrantValidatorChain(t *testing.T) {
 			// into its backing array.
 			embedders := make([]fosite.TokenEndpointHandler, 2, 4)
 			embedders[0], embedders[1] = first, second
-			cfg := Config{
-				RefreshGrantHandlers: embedders, DisableUpstreamRefreshGuard: tt.disabled,
-				UserKeyedUpstreamStorage: tt.userKeyed,
+			cfg := Config{RefreshGrantHandlers: embedders, DisableUpstreamRefreshGuard: tt.disabled}
+			var chainStor storage.Storage = stor
+			if tt.userKeyed {
+				chainStor = userKeyedStor
 			}
 
-			chain, err := refreshGrantValidatorChain(cfg, stor, tt.refresher, upstreams)
+			chain, err := refreshGrantValidatorChain(cfg, chainStor, tt.refresher, upstreams)
 			require.NoError(t, err)
 
 			assert.Len(t, cfg.RefreshGrantHandlers, 2)
@@ -544,7 +547,7 @@ func TestRefreshGrantValidatorChain(t *testing.T) {
 				require.NotNil(t, guard.userKeyed)
 				assert.Equal(t, "first", guard.userKeyed.identityProvider)
 			} else {
-				assert.Nil(t, guard.userKeyed, "the field-off guard has no user-keyed check")
+				assert.Nil(t, guard.userKeyed, "the guard over plain storage has no user-keyed check")
 			}
 			assert.Same(t, first, chain[1])
 			assert.Same(t, second, chain[2])
@@ -697,7 +700,7 @@ func TestUpstreamRefreshGuard_RealIdPRejection(t *testing.T) {
 			t.Cleanup(func() { _ = stor.Close() })
 			require.NoError(t, stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", guardTestRow(time.Now().Add(-time.Minute), "rt")))
 			refresher := newUpstreamTokenRefresher(
-				[]handlers.NamedUpstream{{Name: "idp", Provider: provider}}, stor, time.Hour, false)
+				[]handlers.NamedUpstream{{Name: "idp", Provider: provider}}, stor, time.Hour)
 			guard, err := newUpstreamRefreshGuard(stor, refresher, []string{"idp"})
 			require.NoError(t, err)
 			guard.recheckDelay = 0

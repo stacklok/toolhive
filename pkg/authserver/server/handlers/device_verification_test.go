@@ -833,8 +833,7 @@ func TestDeviceVerificationConfirmHandler_UpstreamAccountConflict(t *testing.T) 
 		Config: fositeConfig, ScopesSupported: []string{"openid"}, DeviceFlowEnabled: true,
 	}
 	h, err := NewHandler(fosite.NewOAuth2Provider(stor, fositeConfig), config, stor,
-		[]NamedUpstream{{Name: providerName, Provider: &mockIDPProvider{providerType: upstream.ProviderTypeOAuth2}}},
-		WithUserKeyedUpstreamStorage())
+		[]NamedUpstream{{Name: providerName, Provider: &mockIDPProvider{providerType: upstream.ProviderTypeOAuth2}}})
 	require.NoError(t, err)
 
 	deviceCode, userCode := issueDeviceCode(t, h)

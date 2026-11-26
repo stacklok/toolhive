@@ -978,7 +978,7 @@ func TestNewUpstreamTokenRefresher_NilWhenNoUpstreams(t *testing.T) {
 	stor := storage.NewMemoryStorage()
 	t.Cleanup(func() { _ = stor.Close() })
 
-	refresher := newUpstreamTokenRefresher(nil, stor, 24*time.Hour, false)
+	refresher := newUpstreamTokenRefresher(nil, stor, 24*time.Hour)
 	require.Nil(t, refresher)
 	// Direct == nil comparison, not assert.Nil: testify's Nil also passes for a
 	// typed nil pointer, which would hide exactly the bug this guards against.

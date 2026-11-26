@@ -112,7 +112,7 @@ func NewInProcessService(
 	return &InProcessService{
 		storage:             stor,
 		refresher:           refresher,
-		userKeyed:           isUserKeyed(stor),
+		userKeyed:           storage.IsUserKeyed(stor),
 		idTokenSuppressions: make(map[string]idTokenSuppression),
 	}
 }
@@ -647,10 +647,4 @@ func classifyUserRefreshError(err error) error {
 		return needsAuthorization(err)
 	}
 	return err
-}
-
-// isUserKeyed reports whether stor is the user-keyed layer or reaches it
-// through Unwrap() storage.Storage or Unwrap() storage.UpstreamTokenStorage.
-func isUserKeyed(stor storage.UpstreamTokenStorage) bool {
-	return storage.IsUserKeyed(stor)
 }

@@ -23,29 +23,6 @@ import (
 	upstreammocks "github.com/stacklok/toolhive/pkg/authserver/upstream/mocks"
 )
 
-// canonicalUserMatcher matches a context by the canonical user it carries.
-// wantUser "" matches a context with no canonical user at all.
-type canonicalUserMatcher struct{ wantUser string }
-
-func (m canonicalUserMatcher) Matches(x any) bool {
-	ctx, ok := x.(context.Context)
-	if !ok {
-		return false
-	}
-	got, present := serveridentity.CanonicalUserFromContext(ctx)
-	if m.wantUser == "" {
-		return !present
-	}
-	return present && got == m.wantUser
-}
-
-func (m canonicalUserMatcher) String() string {
-	if m.wantUser == "" {
-		return "context without a canonical user"
-	}
-	return "context with canonical user " + m.wantUser
-}
-
 func userKeyedExpiredRow(userID, refreshToken string) *storage.UpstreamTokens {
 	return &storage.UpstreamTokens{
 		ProviderID:       "github",
@@ -73,18 +50,16 @@ func TestUpstreamTokenRefresher_UserKeyed_ContextUser(t *testing.T) {
 		userKeyed bool
 		ctx       context.Context
 		rowUser   string // the owner of the row the caller presents
-		// wantUser is the canonical user storage sees on success.
-		wantUser string
 		// wantErr is set when the refresher must refuse before any storage call.
 		wantErr error
 	}{
 		{
 			name: "field on sets the user from expired.UserID", userKeyed: true,
-			ctx: context.Background(), rowUser: "user-1", wantUser: "user-1",
+			ctx: context.Background(), rowUser: "user-1",
 		},
 		{
 			name: "field on keeps a context user that matches the row", userKeyed: true,
-			ctx: serveridentity.WithCanonicalUser(context.Background(), "user-1"), rowUser: "user-1", wantUser: "user-1",
+			ctx: serveridentity.WithCanonicalUser(context.Background(), "user-1"), rowUser: "user-1",
 		},
 		{
 			name: "field off adds no canonical user", userKeyed: false,
@@ -110,23 +85,31 @@ func TestUpstreamTokenRefresher_UserKeyed_ContextUser(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			ctrl := gomock.NewController(t)
-			// Without expectations, any call fails the test.
-			store := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+			base := storage.NewMemoryStorage()
+			t.Cleanup(func() { _ = base.Close() })
+			var stor storage.Storage = base
+			var wrapper *storage.UserKeyedUpstreamStorage
+			if tt.userKeyed {
+				var err error
+				wrapper, err = storage.NewUserKeyedUpstreamStorage(base)
+				require.NoError(t, err)
+				stor = wrapper
+			}
 			provider := upstreammocks.NewMockOAuth2Provider(ctrl)
 			expired := userKeyedExpiredRow(tt.rowUser, "stale")
 
 			if tt.wantErr == nil {
-				m := canonicalUserMatcher{wantUser: tt.wantUser}
-				store.EXPECT().ResolveUpstreamTokenRowID(m, "session", "github").
-					Return(storage.UpstreamTokenRowID("row"), nil)
-				store.EXPECT().GetUpstreamTokens(m, "session", "github").Return(expired, storage.ErrExpired)
+				if tt.userKeyed {
+					seedUserKeyedRow(t, wrapper, expired)
+				} else {
+					require.NoError(t, base.StoreUpstreamTokens(tt.ctx, "session", "github", expired))
+				}
 				provider.EXPECT().RefreshTokens(gomock.Any(), "stale", "upstream-user-1").
 					Return(&upstream.Tokens{AccessToken: "fresh", ExpiresAt: time.Now().Add(time.Hour)}, nil)
-				store.EXPECT().CompareAndSwapUpstreamTokens(m, "session", "github", "stale", gomock.Any()).Return(nil)
 			}
 
 			refresher := newUpstreamTokenRefresher(
-				[]handlers.NamedUpstream{{Name: "github", Provider: provider}}, store, time.Hour, tt.userKeyed)
+				[]handlers.NamedUpstream{{Name: "github", Provider: provider}}, stor, time.Hour)
 			result, err := refresher.RefreshAndStore(tt.ctx, "session", expired)
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
@@ -134,6 +117,17 @@ func TestUpstreamTokenRefresher_UserKeyed_ContextUser(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, "fresh", result.AccessToken)
+
+			if tt.userKeyed {
+				stored, getErr := wrapper.GetUpstreamTokens(
+					serveridentity.WithCanonicalUser(context.Background(), tt.rowUser), "ignored", "github")
+				require.NoError(t, getErr)
+				assert.Equal(t, "fresh", stored.AccessToken, "the row under the user's key is refreshed")
+				return
+			}
+			stored, getErr := base.GetUpstreamTokens(context.Background(), "session", "github")
+			require.NoError(t, getErr)
+			assert.Equal(t, "fresh", stored.AccessToken)
 		})
 	}
 }
@@ -150,6 +144,9 @@ type resolveSignalStorage struct {
 	mu       sync.Mutex
 	rowIDs   []storage.UpstreamTokenRowID
 }
+
+// Unwrap lets storage.IsUserKeyed see the wrapper beneath this decorator.
+func (s *resolveSignalStorage) Unwrap() storage.UpstreamTokenStorage { return s.UpstreamTokenStorage }
 
 func (s *resolveSignalStorage) ResolveUpstreamTokenRowID(
 	ctx context.Context, sessionID, providerName string,
@@ -194,7 +191,7 @@ func TestUpstreamTokenRefresher_UserKeyed_TwoSessionsOneUpstreamRefresh(t *testi
 		})
 
 	refresher := newUpstreamTokenRefresher(
-		[]handlers.NamedUpstream{{Name: "github", Provider: provider}}, stor, time.Hour, true)
+		[]handlers.NamedUpstream{{Name: "github", Provider: provider}}, stor, time.Hour)
 
 	var wg sync.WaitGroup
 	results := make([]*storage.UpstreamTokens, 2)
@@ -291,7 +288,7 @@ func TestUpstreamTokenRefresher_ReReadRowOwner(t *testing.T) {
 			// Field off: the storage is not user-keyed, so only the re-read
 			// check stands between the caller and the foreign row.
 			refresher := newUpstreamTokenRefresher(
-				[]handlers.NamedUpstream{{Name: "github", Provider: provider}}, store, time.Hour, false)
+				[]handlers.NamedUpstream{{Name: "github", Provider: provider}}, store, time.Hour)
 			result, err := refresher.RefreshAndStore(ctx, "session", userKeyedExpiredRow("user-a", "rt-a"))
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
@@ -360,7 +357,7 @@ func TestUpstreamTokenRefresher_ConflictWinnerOwner(t *testing.T) {
 			tt.setupStore(store)
 
 			refresher := newUpstreamTokenRefresher(
-				[]handlers.NamedUpstream{{Name: "github", Provider: provider}}, store, time.Hour, false)
+				[]handlers.NamedUpstream{{Name: "github", Provider: provider}}, store, time.Hour)
 			ctx := serveridentity.WithCanonicalUser(context.Background(), "user-a")
 			result, err := refresher.RefreshAndStore(ctx, "session", userKeyedExpiredRow("user-a", "rt-a"))
 			require.ErrorIs(t, err, tt.wantErr)

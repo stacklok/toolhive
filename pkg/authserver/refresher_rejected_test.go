@@ -661,7 +661,7 @@ func TestNewUpstreamTokenRefresher_RemembersRejections(t *testing.T) {
 	require.NoError(t, stor.StoreUpstreamTokens(ctx, "session", "idp", row))
 
 	refresher := newUpstreamTokenRefresher(
-		[]handlers.NamedUpstream{{Name: "idp", Provider: idp.provider(t)}}, stor, time.Hour, false)
+		[]handlers.NamedUpstream{{Name: "idp", Provider: idp.provider(t)}}, stor, time.Hour)
 	_, err := refresher.RefreshAndStore(ctx, "session", row)
 	require.ErrorIs(t, err, upstream.ErrGrantRejected)
 	callsBefore := idp.calls.Load()

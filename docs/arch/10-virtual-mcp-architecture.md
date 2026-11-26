@@ -646,7 +646,9 @@ also omits an empty object (`{}`); the Legacy edge forwards it. Clients therefor
 never see a shape the backend did not produce, such as `{"text": "<string>"}`
 for a text result or a second copy of a file's base64 payload. In code mode, an
 inner tool call that returns JSON text without `structuredContent` gives the
-script the parsed JSON.
+script the parsed JSON, and one that returns no text content item (for example
+only an image or a blob resource) gives the script `None`; binary payloads are
+not passed into scripts.
 
 Composite tool workflows are unchanged. When a step's backend result has no
 `structuredContent`, the workflow engine builds the step output from `content`

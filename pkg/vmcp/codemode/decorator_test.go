@@ -232,6 +232,52 @@ func TestCallTool_DataArgsInjected(t *testing.T) {
 	assert.Contains(t, resultText(t, res), "alice")
 }
 
+// TestCallTool_NonTextResultReachesScriptAsNone pins that an inner result with neither
+// structuredContent nor a text item (only an image or a blob resource) reaches the script
+// as None. vMCP does not synthesize structuredContent from content, so binary payloads are
+// deliberately not passed into scripts.
+func TestCallTool_NonTextResultReachesScriptAsNone(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		content vmcp.Content
+	}{
+		{name: "image only", content: vmcp.Content{Type: vmcp.ContentTypeImage, Data: "iVBORw0KGgo=", MimeType: "image/png"}},
+		{name: "blob resource only", content: vmcp.Content{
+			Type: vmcp.ContentTypeResource, URI: "file:///f.bin", MimeType: "application/octet-stream", Data: "UEsDBA==",
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			inner := echoBackend()
+			inner.callTool = func(_ context.Context, _ *auth.Identity, name string,
+				_, _ map[string]any) (*vmcp.ToolCallResult, error) {
+				if name != "fetch" {
+					return nil, errors.New("unknown tool")
+				}
+				return &vmcp.ToolCallResult{Content: []vmcp.Content{tc.content}}, nil
+			}
+			inner.listTools = func(_ context.Context, _ *auth.Identity) ([]vmcp.Tool, error) {
+				return []vmcp.Tool{{Name: "fetch", Description: "Fetches a file"}}, nil
+			}
+			d := NewDecorator(inner, nil)
+
+			args := map[string]any{"script": `
+r = fetch()
+return "is-none" if r == None else "has-value"
+`}
+			res, err := d.CallTool(context.Background(), nil, script.ExecuteToolScriptName, args, nil)
+			require.NoError(t, err)
+			require.False(t, res.IsError)
+			text := resultText(t, res)
+			assert.Contains(t, text, "is-none")
+			assert.NotContains(t, text, tc.content.Data, "binary payload must not reach the script result")
+		})
+	}
+}
+
 // TestCallTool_StructuredContentRoundTrips covers the case where a backend tool returns
 // StructuredContent (a map) rather than JSON text: it must survive toMCPResult (the
 // typed-nil guard), be readable as a dict inside the script, and the script's result must

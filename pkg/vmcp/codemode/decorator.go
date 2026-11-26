@@ -482,6 +482,10 @@ func errorResult(msg string) *vmcp.ToolCallResult {
 // placed in the mcp-go `any` field directly would be a non-nil interface wrapping a typed
 // nil, which the engine's result parser treats as present and prefers over the text
 // content — silently dropping it.
+//
+// vMCP no longer synthesizes StructuredContent from Content, so an inner result without
+// structuredContent and without a text item (for example only an image or a blob
+// resource) reaches the script as None: binary payloads are not passed into scripts.
 func toMCPResult(r *vmcp.ToolCallResult) *mcp.CallToolResult {
 	if r == nil {
 		return nil

@@ -246,6 +246,20 @@ Compatibility warning: some resource servers reject `at+jwt` by default. Java re
 
 The default may switch to `at+jwt` in a later release, once the setting is also a RunConfig field.
 
+## Non-fatal secondary chain legs
+
+By default, a failed leg of a multi-upstream authorization chain ends the authorization with an error to the client. An embedder can opt in to treating a failed leg after the first as skipped. The setting is Go-only: set `authserver.Config.NonFatalSecondaryLegs`. It is not a RunConfig field, so config files, the CLI and operator CRDs cannot set it yet.
+
+With the option on, these failures on a non-first leg are recorded and the walk goes on to the next missing leg: an error the upstream IdP returns in place of a code, a failed code exchange or identity resolution (ID token, userinfo, or token-derived subject) at the leg's callback, and a failure to build the leg's authorization URL. Each skipped leg is logged once at WARN with the provider name and failure class. The walk stores nothing for the skipped leg. A credential stored by an earlier authorization is left in place.
+
+These stay fatal whatever the setting is: any failure on the first (identity) leg, a `SingleLeg` authorization, a missing, unknown, expired or replayed state, a failed browser-binding check, the consent-stage check, a pending whose stored redirect URI cannot be parsed, an upstream provider that is not configured, and any storage failure.
+
+Skipped legs are carried in the `skipped_upstreams` field of the stored `PendingAuthorization` (Redis JSON, omitted when empty), so the next leg's callback does not prompt for them again. The handler validates the field when it loads the pending: every entry must be a member of the carried chain, must not be the first upstream, and must not repeat. A first-leg pending that carries a chain or skipped legs is rejected too. A pending that fails validation ends the authorization with a server error.
+
+Because a kept credential may be unusable, the option has a caveat. ToolHive's token validator and the upstream refresh guard treat an unusable stored credential as fatal for the whole session. With storage that keeps credentials across authorizations, a kept credential that cannot be refreshed makes the issued token unusable until the credential is replaced.
+
+During a rolling upgrade, an older replica does not know `skipped_upstreams`. If it handles the callback of a leg that carries the field, it drops the field when it stores the next pending, and it then prompts the skipped leg again. A second failure on that leg is fatal. A replica with the option off still honours skips that another replica recorded, for the life of that pending (10 minutes). Upgrade every replica before enabling the option. Before rolling back to an older version, turn the option off and let in-flight authorizations drain.
+
 ## Callback identity and storage context
 
 The first upstream callback passes an `upstreamfilter.FilterPrincipal` to `upstreamfilter.UpstreamFilter`. Both contracts are owned by `pkg/authserver/upstreamfilter`, which does not depend on the root authserver, server, or storage packages. Go embedders implement this contract and set `authserver.Config.UpstreamFilter` without importing HTTP handlers. Previously these contracts were owned by `pkg/authserver/server/handlers`; `handlers.FilterPrincipal` and `handlers.UpstreamFilter` remain type aliases, so existing implementations and `handlers.WithUpstreamFilter` calls remain source-compatible. This changes import ownership only, not authorization behavior.

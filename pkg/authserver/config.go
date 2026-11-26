@@ -2138,16 +2138,24 @@ type Config struct {
 	// skipped, continue the walk to the next missing leg, and issue the
 	// authorization code without it: an error the upstream IdP returns in place of
 	// a code (for example the user cancelling consent with access_denied), a failed
-	// code exchange or ID-token validation on the leg's callback, and a failure to
-	// build the leg's authorization URL. The skipped leg gets no stored token and is
-	// not prompted again in the same walk; tokens stored by earlier legs are kept.
-	// Each skipped leg is logged once at WARN ("skipping failed upstream chain
+	// code exchange or identity resolution (ID token, userinfo, or token-derived
+	// subject) on the leg's callback, and a failure to build the leg's
+	// authorization URL. This walk stores nothing for the skipped leg, and a
+	// credential stored by an earlier authorization is left in place. The skipped
+	// leg is not prompted again in the same walk; tokens stored by earlier legs are
+	// kept. ToolHive's token validator and the upstream refresh guard treat an
+	// unusable stored credential as fatal for the whole session, so with storage
+	// that keeps credentials across authorizations, a kept credential that cannot
+	// be refreshed makes the issued token unusable until it is replaced. Each
+	// skipped leg is logged once at WARN ("skipping failed upstream chain
 	// leg") with the provider name and failure class; an IdP error is also logged
 	// by the existing "upstream IDP returned error" WARN.
 	//
 	// These stay fatal whatever this says: every failure on the first (identity)
 	// leg; a missing, unknown, expired or replayed state; a failed browser-binding
-	// check; and a storage failure loading or storing the pending authorization.
+	// check; the consent-stage check; a pending whose stored redirect URI cannot be
+	// parsed; an upstream provider that is not configured; and a storage failure
+	// loading or storing the pending authorization.
 	// Skipping past those would let a forwarded callback URL complete an
 	// authorization in the wrong browser.
 	//

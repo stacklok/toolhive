@@ -591,6 +591,10 @@ func buildStatefulSetSpec(
 // ensureBackendServices creates the headless and ClusterIP services needed by
 // HTTP-based transports (SSE, streamable-http). Both services are owned by the
 // StatefulSet so Kubernetes GC can clean them up automatically.
+//
+// blockOwnerDeletion is deliberately not set: under OwnerReferencesPermissionEnforcement
+// (enabled on OpenShift) it would require update on statefulsets/finalizers, and it only
+// matters for foreground cascading deletion, which toolhive never uses.
 func (c *Client) ensureBackendServices(
 	ctx context.Context,
 	containerName, namespace string,
@@ -604,12 +608,11 @@ func (c *Client) ensureBackendServices(
 	}
 
 	stsOwner := &metav1.OwnerReference{
-		APIVersion:         appsv1.SchemeGroupVersion.String(),
-		Kind:               "StatefulSet",
-		Name:               sts.Name,
-		UID:                sts.UID,
-		BlockOwnerDeletion: ptr.To(true),
-		Controller:         ptr.To(true),
+		APIVersion: appsv1.SchemeGroupVersion.String(),
+		Kind:       "StatefulSet",
+		Name:       sts.Name,
+		UID:        sts.UID,
+		Controller: ptr.To(true),
 	}
 
 	// Create a headless service for DNS discovery
@@ -1141,7 +1144,6 @@ func (c *Client) applyService(
 			WithKind(owner.Kind).
 			WithName(owner.Name).
 			WithUID(owner.UID).
-			WithBlockOwnerDeletion(true).
 			WithController(true))
 	}
 

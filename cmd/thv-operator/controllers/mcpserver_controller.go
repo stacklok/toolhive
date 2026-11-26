@@ -77,6 +77,10 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 		Resources: []string{"statefulsets"},
 		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 	},
+	// The proxy runner no longer sets blockOwnerDeletion on its Service owner
+	// references (#6836), but older runner images (pinned via
+	// operator.toolhiveRunnerImage) still do, which needs this grant under
+	// OwnerReferencesPermissionEnforcement. Kept for one release; remove later.
 	{
 		APIGroups: []string{"apps"},
 		Resources: []string{"statefulsets/finalizers"},

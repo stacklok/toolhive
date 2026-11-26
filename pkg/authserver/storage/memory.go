@@ -1526,6 +1526,7 @@ func cloneUpstreamTokens(t *UpstreamTokens) *UpstreamTokens {
 	}
 	return &UpstreamTokens{
 		ProviderID:       t.ProviderID,
+		Issuer:           t.Issuer,
 		AccessToken:      t.AccessToken,
 		RefreshToken:     t.RefreshToken,
 		IDToken:          t.IDToken,

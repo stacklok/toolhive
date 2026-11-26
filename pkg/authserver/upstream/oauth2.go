@@ -377,7 +377,39 @@ type IdleConnectionCloser interface {
 }
 
 // Compile-time capability check.
-var _ IdleConnectionCloser = (*BaseOAuth2Provider)(nil)
+var (
+	_ IdleConnectionCloser = (*BaseOAuth2Provider)(nil)
+	_ IssuerIdentifier     = (*BaseOAuth2Provider)(nil)
+)
+
+// IssuerIdentifier is an optional capability implemented by upstream providers
+// that expose the canonical issuer or authority URL their tokens belong to.
+// OIDC providers return their configured issuer URL; pure OAuth 2.0 providers
+// return their token endpoint URL.
+//
+// Like IdleConnectionCloser, this is kept separate from OAuth2Provider so
+// external OAuth2Provider implementations are not broken.
+type IssuerIdentifier interface {
+	Issuer() string
+}
+
+// ProviderIssuer returns the canonical issuer or authority URL for provider
+// when it implements IssuerIdentifier, or empty string otherwise.
+func ProviderIssuer(provider OAuth2Provider) string {
+	if id, ok := provider.(IssuerIdentifier); ok {
+		return id.Issuer()
+	}
+	return ""
+}
+
+// Issuer returns the configured token endpoint URL identifying this pure
+// OAuth 2.0 provider's token authority.
+func (p *BaseOAuth2Provider) Issuer() string {
+	if p == nil || p.config == nil {
+		return ""
+	}
+	return p.config.TokenEndpoint
+}
 
 // OAuth2ProviderOption configures a BaseOAuth2Provider.
 type OAuth2ProviderOption func(*BaseOAuth2Provider)

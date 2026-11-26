@@ -307,6 +307,7 @@ func (h *Handler) completeDeviceLogin(
 		// PendingDeviceConfirmation.UpstreamTokens's doc comment.
 		UpstreamTokens: &storage.UpstreamTokens{
 			ProviderID:      pending.UpstreamProviderName,
+			Issuer:          h.upstreamIssuerFor(pending.UpstreamProviderName, result),
 			AccessToken:     result.Tokens.AccessToken,
 			RefreshToken:    result.Tokens.RefreshToken,
 			IDToken:         result.Tokens.IDToken,

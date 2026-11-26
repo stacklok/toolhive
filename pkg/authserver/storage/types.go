@@ -68,6 +68,11 @@ var (
 	// (e.g., subject or client ID mismatch).
 	ErrInvalidBinding = errors.New("storage: token binding validation failed")
 
+	// ErrIssuerMismatch is returned when a stored upstream token row was issued
+	// by a different issuer/authority than the upstream provider currently
+	// configured under that ProviderID.
+	ErrIssuerMismatch = errors.New("storage: upstream token issuer mismatch")
+
 	// ErrNoCanonicalUser is returned by user-keyed upstream token storage when
 	// the context carries no canonical user (see identity.CanonicalUserFromContext).
 	// The storage never falls back to another key: without a user there is no
@@ -139,6 +144,12 @@ type UpstreamTokens struct {
 	// used as the storage key for multi-upstream token lookups.
 	ProviderID string
 
+	// Issuer identifies the upstream authority that issued these tokens
+	// (the configured OIDC issuer URL, or the token endpoint URL for pure
+	// OAuth 2.0 providers). Empty on legacy rows written before this field
+	// was recorded; treated as compatible until stamped on first match.
+	Issuer string
+
 	// Token values from the upstream IDP
 	AccessToken  string //nolint:gosec // G117: field legitimately holds sensitive data
 	RefreshToken string //nolint:gosec // G117: field legitimately holds sensitive data
@@ -177,6 +188,18 @@ type UpstreamTokens struct {
 	// client of a user shares one row per provider; ClientID records the
 	// client that last wrote it, and reads do not check it.
 	ClientID string
+}
+
+// UpstreamIssuerMatches reports whether a stored upstream token's issuer is
+// compatible with configuredIssuer. Empty storedIssuer denotes a legacy row
+// written before issuer binding existed (stamp-on-first-match compatibility),
+// and empty configuredIssuer denotes a caller or mock without a configured
+// issuer identifier. When both are non-empty, they must match exactly.
+func UpstreamIssuerMatches(storedIssuer, configuredIssuer string) bool {
+	if storedIssuer == "" || configuredIssuer == "" {
+		return true
+	}
+	return storedIssuer == configuredIssuer
 }
 
 // IsExpired returns true if the access token has expired.

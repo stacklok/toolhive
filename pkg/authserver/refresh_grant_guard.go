@@ -102,20 +102,31 @@ const guardRevokeTimeout = 5 * time.Second
 // other refusals repeat on every replay of a kept refresh token, so they are
 // logged at DEBUG.
 type upstreamRefreshGuard struct {
-	tokens       storage.UpstreamTokenStorage
-	refresher    storage.UpstreamTokenRefresher
-	providers    map[string]struct{}
-	revoker      oauth2.TokenRevocationStorage
-	recheckDelay time.Duration
-	checkTimeout time.Duration
+	tokens          storage.UpstreamTokenStorage
+	refresher       storage.UpstreamTokenRefresher
+	providers       map[string]struct{}
+	providerIssuers map[string]string
+	revoker         oauth2.TokenRevocationStorage
+	recheckDelay    time.Duration
+	checkTimeout    time.Duration
 }
 
 var _ fosite.TokenEndpointHandler = (*upstreamRefreshGuard)(nil)
+
+// withRefreshGuardIssuers records the configured issuer/authority per upstream
+// name so checkRow refuses rows issued by a previous IdP without contacting
+// the newly configured IdP.
+func withRefreshGuardIssuers(issuers map[string]string) func(*upstreamRefreshGuard) {
+	return func(g *upstreamRefreshGuard) {
+		g.providerIssuers = maps.Clone(issuers)
+	}
+}
 
 // newUpstreamRefreshGuard returns the guard for the given storage, the
 // server's shared refresher and the names of the configured upstreams.
 func newUpstreamRefreshGuard(
 	stor storage.Storage, refresher storage.UpstreamTokenRefresher, providerNames []string,
+	opts ...func(*upstreamRefreshGuard),
 ) (*upstreamRefreshGuard, error) {
 	if stor == nil {
 		return nil, errors.New("upstream refresh guard requires storage")
@@ -127,14 +138,18 @@ func newUpstreamRefreshGuard(
 	for _, name := range providerNames {
 		providers[name] = struct{}{}
 	}
-	return &upstreamRefreshGuard{
+	g := &upstreamRefreshGuard{
 		tokens:       stor,
 		refresher:    refresher,
 		providers:    providers,
 		revoker:      stor,
 		recheckDelay: rejectionRecheckDelay,
 		checkTimeout: guardCheckTimeout,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(g)
+	}
+	return g, nil
 }
 
 // CanSkipClientAuth always returns false. refreshGrantValidators never calls
@@ -265,6 +280,15 @@ func (g *upstreamRefreshGuard) checkRow(
 			reason:   "upstream access token expired and its provider is no longer configured",
 		}
 	}
+	if !storage.UpstreamIssuerMatches(row.Issuer, g.providerIssuers[name]) {
+		// Not revoked: the stored credential was issued by a previous IdP
+		// before the upstream was repointed; refusing without revoking avoids
+		// breaking sessions across a rolling deploy while forcing re-auth.
+		return false, &refusal{
+			provider: name,
+			reason:   "upstream access token expired and its issuer does not match the configured provider",
+		}
+	}
 	if row.RefreshToken == "" {
 		return false, &refusal{
 			provider: name, revoke: true,
@@ -291,6 +315,12 @@ func (g *upstreamRefreshGuard) checkRow(
 		// The row was deleted after the guard read it (logout, expiry, another
 		// replica's cleanup). Not revoked, for the same reason as no rows.
 		return false, &refusal{provider: name, reason: "upstream token row was deleted during refresh"}
+	}
+	if errors.Is(err, storage.ErrIssuerMismatch) {
+		return false, &refusal{
+			provider: name,
+			reason:   "upstream token issuer does not match the configured provider",
+		}
 	}
 	if !errors.Is(err, upstream.ErrGrantRejected) {
 		slog.DebugContext(ctx, "upstream refresh failed transiently; refresh grant guard is not refusing",

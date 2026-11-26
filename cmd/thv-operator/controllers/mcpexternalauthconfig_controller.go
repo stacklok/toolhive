@@ -348,17 +348,16 @@ func (*MCPExternalAuthConfigReconciler) applyIdentitySynthesizedCondition(
 	})
 }
 
-// triageOBOValidation runs ctrlutil.OBOValidate on cfg and hands the result to
+// triageOBOValidation runs ctrlutil.ValidateOBO on cfg and hands the result to
 // applyOBOValidationResult. The two are split only so tests can drive
 // applyOBOValidationResult with an injected error (for example a transient,
-// non-ValidationError one, which the built-in validator never returns but a
-// handler registered through the deprecated ctrlutil.RegisterOBOHandler may);
+// non-ValidationError one, which the validator does not return today);
 // Reconcile always enters through this function.
 func (r *MCPExternalAuthConfigReconciler) triageOBOValidation(
 	ctx context.Context,
 	cfg *mcpv1beta1.MCPExternalAuthConfig,
 ) (handled bool, err error) {
-	return r.applyOBOValidationResult(ctx, cfg, ctrlutil.OBOValidate(cfg))
+	return r.applyOBOValidationResult(ctx, cfg, ctrlutil.ValidateOBO(cfg))
 }
 
 // applyOBOValidationResult routes an OBO validation result through the error

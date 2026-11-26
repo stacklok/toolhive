@@ -241,11 +241,11 @@ func TestCreateMiddleware_InstallsUpstreamProviderMode(t *testing.T) {
 	assert.Equal(t, testProvider, installed.providerName)
 }
 
-// TestDefaultFactory_InvalidParameters verifies the factory fails
+// TestCreateMiddleware_InvalidParameters verifies the factory fails
 // loudly (returns an error, installs nothing) for malformed parameters or a
 // missing secret. A mock runner with no expectations fails the test if
 // AddMiddleware is called.
-func TestDefaultFactory_InvalidParameters(t *testing.T) {
+func TestCreateMiddleware_InvalidParameters(t *testing.T) {
 	t.Parallel()
 
 	valid := map[string]any{
@@ -319,17 +319,17 @@ func TestDefaultFactory_InvalidParameters(t *testing.T) {
 				cfg.Parameters = raw
 			}
 
-			err := DefaultFactory(cfg, mockRunner)
+			err := CreateMiddleware(cfg, mockRunner)
 			require.Error(t, err)
 			assert.ErrorContains(t, err, tt.wantErrContains)
 		})
 	}
 }
 
-// TestDefaultFactory_BadTokenURL verifies that an entra-build failure
+// TestCreateMiddleware_BadTokenURL verifies that an entra-build failure
 // (bad token URL, secret present) is surfaced as a factory error and installs
 // nothing.
-func TestDefaultFactory_BadTokenURL(t *testing.T) {
+func TestCreateMiddleware_BadTokenURL(t *testing.T) {
 	t.Setenv("TEST_OBO_SECRET_BADURL", "the-client-secret")
 
 	ctrl := gomock.NewController(t)
@@ -344,18 +344,18 @@ func TestDefaultFactory_BadTokenURL(t *testing.T) {
 	cfg, err := types.NewMiddlewareConfig(MiddlewareType, params)
 	require.NoError(t, err)
 
-	err = DefaultFactory(cfg, mockRunner)
+	err = CreateMiddleware(cfg, mockRunner)
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "the-client-secret")
 }
 
-// TestDefaultFactory_WiresCacheSkew drives DefaultFactory against a stub Entra
+// TestCreateMiddleware_WiresCacheSkew drives CreateMiddleware against a stub Entra
 // token endpoint issuing 30s tokens and counts exchanges for two requests from
 // one session. The default 60s skew exceeds the token lifetime, so every
 // request re-exchanges; only a configured skew shorter than the lifetime lets
 // the second request hit the cache, which proves the factory passes
 // cacheSkewSeconds to the cache and that zero keeps the default.
-func TestDefaultFactory_WiresCacheSkew(t *testing.T) {
+func TestCreateMiddleware_WiresCacheSkew(t *testing.T) {
 	tests := []struct {
 		name      string
 		skew      *int
@@ -396,7 +396,7 @@ func TestDefaultFactory_WiresCacheSkew(t *testing.T) {
 				AddMiddleware(MiddlewareType, gomock.Any()).
 				Do(func(_ string, mw types.Middleware) { captured = mw }).
 				Times(1)
-			require.NoError(t, DefaultFactory(cfg, mockRunner))
+			require.NoError(t, CreateMiddleware(cfg, mockRunner))
 			installed, ok := captured.(*middleware)
 			require.True(t, ok)
 
@@ -873,36 +873,4 @@ func TestMiddleware_Close(t *testing.T) {
 	t.Parallel()
 
 	assert.NoError(t, (&middleware{}).Close())
-}
-
-// withDefaultFactory restores the package factory after a test that calls the
-// deprecated RegisterFactory, so the mutation does not leak to other tests.
-func withDefaultFactory(t *testing.T) {
-	t.Helper()
-	factoryMu.RLock()
-	original := currentFactory
-	factoryMu.RUnlock()
-	t.Cleanup(func() {
-		factoryMu.Lock()
-		currentFactory = original
-		factoryMu.Unlock()
-	})
-}
-
-//nolint:paralleltest // Mutates package-level currentFactory; must not race other tests.
-func TestRegisterFactory_ReplacesDefault(t *testing.T) {
-	withDefaultFactory(t)
-
-	sentinel := errors.New("replacement factory")
-	RegisterFactory(func(*types.MiddlewareConfig, types.MiddlewareRunner) error { return sentinel })
-
-	err := CreateMiddleware(&types.MiddlewareConfig{Type: MiddlewareType}, nil)
-	require.ErrorIs(t, err, sentinel, "CreateMiddleware must dispatch to the registered factory")
-}
-
-func TestRegisterFactory_PanicsOnNil(t *testing.T) {
-	t.Parallel()
-
-	assert.Panics(t, func() { RegisterFactory(nil) },
-		"RegisterFactory must panic when the supplied factory is nil")
 }

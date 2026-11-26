@@ -75,7 +75,7 @@ func NewOutgoingAuthRegistry(
 	}
 	if err := registry.RegisterStrategy(
 		authtypes.StrategyTypeOBO,
-		auth.NewOBOStrategy(envReader),
+		strategies.NewOBOStrategy(envReader),
 	); err != nil {
 		return nil, err
 	}

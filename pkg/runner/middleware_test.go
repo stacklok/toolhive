@@ -6,7 +6,6 @@ package runner
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -773,26 +772,6 @@ func TestGetSupportedMiddlewareFactories(t *testing.T) {
 		_, ok := factories[key]
 		assert.True(t, ok, "factory map should contain %q", key)
 	}
-}
-
-// TestOBOFactoryHonorsRegisterFactory verifies the runner's factory map
-// dispatches obo.MiddlewareType through obo.CreateMiddleware rather than
-// binding obo.DefaultFactory directly, so a replacement installed with the
-// deprecated obo.RegisterFactory is still honored.
-//
-//nolint:paralleltest // Replaces the package-level OBO factory; must not overlap other tests.
-func TestOBOFactoryHonorsRegisterFactory(t *testing.T) {
-	sentinel := errors.New("replacement obo factory")
-	//nolint:staticcheck // SA1019: exercising the deprecated override path is the point of this test.
-	obo.RegisterFactory(func(*types.MiddlewareConfig, types.MiddlewareRunner) error { return sentinel })
-	t.Cleanup(func() {
-		obo.RegisterFactory(obo.DefaultFactory) //nolint:staticcheck // SA1019: restores the default.
-	})
-
-	factory, ok := GetSupportedMiddlewareFactories()[obo.MiddlewareType]
-	require.True(t, ok)
-	err := factory(&types.MiddlewareConfig{Type: obo.MiddlewareType}, nil)
-	require.ErrorIs(t, err, sentinel, "the runner must dispatch through obo.CreateMiddleware")
 }
 
 // TestOBORegistration exercises the proxyrunner path for an operator-injected

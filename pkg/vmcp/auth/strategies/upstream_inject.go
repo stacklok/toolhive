@@ -13,27 +13,20 @@ import (
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
-// UpstreamInjectStrategy injects an upstream IDP token into backend request headers.
-// The token is obtained by the embedded authorization server during the OAuth flow
-// and stored in identity.UpstreamTokens, keyed by provider name.
+// UpstreamInjectStrategy passes an upstream provider's access token through to
+// the backend as a Bearer token. Non-delegated routes use Identity.UpstreamTokens.
+// Delegated admission uses a UserCredentialReader keyed by platform user ID and
+// provider, without falling back to the identity's token map.
 //
-// This strategy looks up the provider-specific token from the authenticated identity
-// and sets it as a Bearer token in the Authorization header of the backend request.
-//
-// Required configuration fields (in BackendAuthStrategy.UpstreamInject):
-//   - ProviderName: The upstream provider name matching an entry in AuthServer.Upstreams.
-//     The token for this provider must be present in the identity's UpstreamTokens map.
-//
-// This strategy is appropriate when:
-//   - The backend requires a user-specific upstream IDP token for authentication
-//   - The embedded authorization server has been configured to obtain tokens from
-//     the upstream provider during the OAuth flow
-//   - The upstream token should be passed through to the backend as-is (no exchange)
-type UpstreamInjectStrategy struct{}
+// UpstreamInject.ProviderName must match an entry in AuthServer.Upstreams.
+type UpstreamInjectStrategy struct {
+	creds upstreamCredentials
+}
 
-// NewUpstreamInjectStrategy creates a new UpstreamInjectStrategy instance.
-func NewUpstreamInjectStrategy() *UpstreamInjectStrategy {
-	return &UpstreamInjectStrategy{}
+// NewUpstreamInjectStrategy creates an UpstreamInjectStrategy. Delegated
+// authentication fails closed unless a reader is configured.
+func NewUpstreamInjectStrategy(opts ...Option) *UpstreamInjectStrategy {
+	return &UpstreamInjectStrategy{creds: newUpstreamCredentials(opts...)}
 }
 
 // Name returns the strategy identifier.
@@ -41,7 +34,7 @@ func (*UpstreamInjectStrategy) Name() string {
 	return authtypes.StrategyTypeUpstreamInject
 }
 
-// Authenticate injects the upstream IDP token from the identity into the request header.
+// Authenticate injects the configured provider's upstream access token into the request header.
 //
 // This method:
 //  1. Skips authentication for health check requests (no user identity to inject)
@@ -57,8 +50,8 @@ func (*UpstreamInjectStrategy) Name() string {
 // Returns an error if:
 //   - No identity is found in the context
 //   - Strategy configuration is nil or missing UpstreamInject
-//   - The upstream token for the configured provider is not found in the identity
-func (*UpstreamInjectStrategy) Authenticate(
+//   - The upstream token cannot be resolved for the configured provider
+func (s *UpstreamInjectStrategy) Authenticate(
 	ctx context.Context, req *http.Request, strategy *authtypes.BackendAuthStrategy,
 ) error {
 	// Health checks have no user identity — skip authentication.
@@ -75,11 +68,9 @@ func (*UpstreamInjectStrategy) Authenticate(
 		return fmt.Errorf("upstream_inject configuration required")
 	}
 
-	providerName := strategy.UpstreamInject.ProviderName
-
-	token := identity.UpstreamTokens[providerName]
-	if token == "" {
-		return fmt.Errorf("provider %q: %w", providerName, authtypes.ErrUpstreamTokenNotFound)
+	token, err := s.creds.accessToken(ctx, identity, strategy.UpstreamInject.ProviderName)
+	if err != nil {
+		return err
 	}
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))

@@ -171,10 +171,15 @@ func TestCallBindingIDJAG_ElicitationAfterExpiry(t *testing.T) {
 		ID     json.RawMessage `json:"id"`
 		Method string          `json:"method"`
 	}
+	deadline := time.After(30 * time.Second)
 	for question.Method != "elicitation/create" {
-		data, open := <-events
-		require.True(t, open, "the stream closed before the question arrived")
-		require.NoError(t, json.Unmarshal([]byte(data), &question), "event: %s", data)
+		select {
+		case data, open := <-events:
+			require.True(t, open, "the stream closed before the question arrived")
+			require.NoError(t, json.Unmarshal([]byte(data), &question), "event: %s", data)
+		case <-deadline:
+			require.FailNow(t, "the question did not arrive on the stream")
+		}
 	}
 
 	reply := `{"jsonrpc":"2.0","id":` + string(question.ID) + `,"result":{"action":"accept","content":{}}}`

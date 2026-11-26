@@ -1602,7 +1602,9 @@ receive the call's messages again: the vMCP sends a backend's elicitation on the
 session's standalone stream. The DELETE ends the session. Neither starts anything.
 Nothing else is accepted after `exp`: no new call, list, handshake or `ping`. A list
 call is recorded ended and a Modern call has no session, so neither has messages
-after `exp`. A stream opened before `exp` keeps running.
+after `exp`. A stream is checked only when it opens: one opened before `exp`, or
+by a GET admitted after it, keeps running after the call ends, until the client or
+the session closes it.
 
 The token validator refuses an expired JWT before this middleware runs, so the two
 share one `callbinding.Binding`, built by `callbinding.New` from the configuration:

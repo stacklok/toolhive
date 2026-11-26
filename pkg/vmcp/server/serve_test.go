@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
@@ -436,4 +437,13 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		}
 		assert.Falsef(t, got.Field(i).IsZero(), "Config.%s was not populated by buildServeConfig", name)
 	}
+}
+
+func TestServeRefusesUnbuiltCallBinding(t *testing.T) {
+	t.Parallel()
+	cfg := testMinimalServeConfig()
+	cfg.CallBinding = &callbinding.Binding{}
+	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
+	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
+	assert.Nil(t, srv)
 }

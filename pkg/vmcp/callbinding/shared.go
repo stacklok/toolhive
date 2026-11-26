@@ -30,6 +30,8 @@ import (
 // call that outlives its token. Without it, they get the validator's 401 once
 // the token expires, and the vMCP logs a warning the first time a call-bound
 // tool call starts.
+//
+// Build a Binding with New only: its zero value is not usable.
 type Binding struct {
 	required        map[string]struct{}
 	maxCallDuration time.Duration
@@ -85,7 +87,8 @@ func (b *Binding) ClientsListed() bool { return len(b.required) > 0 }
 // MaxCallDuration is how long a call keeps its record open.
 func (b *Binding) MaxCallDuration() time.Duration { return b.maxCallDuration }
 
-// Record is the single-use record.
+// Record is the single-use record. It is nil only for a Binding that New did
+// not build.
 func (b *Binding) Record() Record { return b.record }
 
 // RecordShared reports whether the embedder supplied the record. A
@@ -140,6 +143,10 @@ func (b *Binding) ValidatorWired() bool { return b.validatorWired.Load() }
 // trigger a refusal at request rate; the jti is logged, never the subject.
 func (b *Binding) AdmitExpiredToken(r *http.Request, expired auth.ExpiredToken, now time.Time) bool {
 	ctx := r.Context()
+	if b.record == nil {
+		// Not built by New: nothing was recorded, so nothing is open.
+		return false
+	}
 	token, reason := b.Token(expired.Claims)
 	refused := func(why string) bool {
 		jti := ""
@@ -163,7 +170,10 @@ func (b *Binding) AdmitExpiredToken(r *http.Request, expired auth.ExpiredToken, 
 	call, found, err := b.record.Lookup(ctx, token.Key)
 	switch {
 	case err != nil:
-		slog.WarnContext(ctx, "call binding: could not look up the call of an expired token",
+		// DEBUG, as every refusal here: a caller with an expired token sets
+		// the rate. The record's failure shows in the call-binding check's
+		// own warnings.
+		slog.DebugContext(ctx, "call binding: an expired token was not admitted: the record failed",
 			"jti", token.JTI, "error", err)
 		return false
 	case !found || !b.CallOpen(token.Key, call, now):

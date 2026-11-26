@@ -156,3 +156,11 @@ func TestAdmitExpiredToken(t *testing.T) {
 		})
 	}
 }
+
+func TestAdmitExpiredTokenZeroBinding(t *testing.T) {
+	t.Parallel()
+	var b Binding
+	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	r.Header.Set("Mcp-Session-Id", "session-1")
+	assert.False(t, b.AdmitExpiredToken(r, auth.ExpiredToken{Claims: testClaims([]any{testEntry()})}, time.Now()))
+}

@@ -403,7 +403,9 @@ func (cb *callBinding) serveBound(
 //
 // A GET on the call's session lets a client whose stream dropped receive the
 // call's messages again, and a DELETE ends the session; neither starts
-// anything. Admitting any response on the call's session is a shortcut, as it
+// anything. Like a stream opened before exp, a stream the GET opens is checked
+// only when it opens: it keeps running after the call ends, until the client
+// or the session closes it. Admitting any response on the call's session is a shortcut, as it
 // is before exp (see serveCallMessage).
 func (cb *callBinding) serveAfterExpiry(
 	w http.ResponseWriter, r *http.Request, next http.Handler,

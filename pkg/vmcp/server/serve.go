@@ -198,8 +198,9 @@ type ServerConfig struct {
 // by the core (built/started in core.New, stopped in core.Close); Serve neither constructs
 // nor starts it, and the status reporter reads it back through the core (#5443 reversal).
 //
-// Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, or a
-// nil required collaborator (SessionManagerConfig or BackendRegistry). The session
+// Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, a
+// nil required collaborator (SessionManagerConfig or BackendRegistry), or a
+// CallBinding that callbinding.New did not build. The session
 // hooks close over the constructed *Server, so they are registered after it is
 // assembled.
 //
@@ -243,6 +244,9 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	// auto-advertise the completions capability at initialize.
 	var srv *Server
 
+	if cfg.CallBinding != nil && cfg.CallBinding.Record() == nil {
+		return nil, fmt.Errorf("%w: CallBinding must be built by callbinding.New", vmcp.ErrInvalidConfig)
+	}
 	// Call binding's route and list lookups close over the late-assigned srv
 	// like the completion handler below, and run only at request time.
 	callBinding := newCallBinding(cfg.CallBinding, func(

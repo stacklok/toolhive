@@ -718,13 +718,6 @@ func (r *Runner) Run(ctx context.Context) error {
 			slog.Warn("failed to cleanup telemetry", "error", err)
 		}
 
-		// Remove the PID file if it exists. Use PID-guarded reset so that a
-		// dying process does not clobber the PID of a replacement process that
-		// started in the meantime (e.g. during thv rm + thv run).
-		if err := r.statusManager.ResetWorkloadPIDIfMatch(cleanupCtx, r.Config.BaseName, os.Getpid()); err != nil {
-			slog.Warn("failed to reset workload PID", "container", r.Config.ContainerName, "error", err)
-		}
-
 		slog.Debug("mcp server stopped", "container", r.Config.ContainerName)
 	}
 
@@ -799,12 +792,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		stopMCPServer("Context cancelled")
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container exit)
-		// Remove the old PID from the state file. Use PID-guarded reset to
-		// avoid clobbering a replacement process's PID.
-		if err := r.statusManager.ResetWorkloadPIDIfMatch(ctx, r.Config.BaseName, os.Getpid()); err != nil {
-			slog.Warn("failed to reset workload PID", "workload", r.Config.BaseName, "error", err)
-		}
-
 		// Check if workload still exists (using status manager and runtime)
 		// If it doesn't exist, it was removed - clean up client config
 		// If it exists, it exited unexpectedly - signal restart needed
@@ -834,7 +821,8 @@ func (r *Runner) Run(ctx context.Context) error {
 			return nil // Exit gracefully, no restart
 		}
 
-		// Workload still exists - signal restart needed
+		// Keep the PID: the same supervisor handles the restart and must remain
+		// stoppable even while its transport is down during retry backoff.
 		slog.Debug("MCP server stopped, restart needed", "container", r.Config.ContainerName)
 		return ErrContainerExitedRestartNeeded
 	}

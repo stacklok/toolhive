@@ -339,10 +339,17 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 			)
 			// Log session_id at DEBUG only; it is credential-adjacent.
 			slog.Debug("stale upstream token row delete failure session", "session_id", sessionID)
+			return nil, fmt.Errorf(
+				"failed to persist rotated upstream refresh token for provider %q: %w",
+				expired.ProviderID, err,
+			)
 		}
+		// The row is gone, so the error also matches storage.ErrNotFound: callers
+		// that classify by cause can tell "connection removed, authorize again"
+		// from a transient failure on a row that still exists.
 		return nil, fmt.Errorf(
-			"failed to persist rotated upstream refresh token for provider %q: %w",
-			expired.ProviderID, err,
+			"failed to persist rotated upstream refresh token for provider %q; row deleted: %w: %w",
+			expired.ProviderID, storage.ErrNotFound, err,
 		)
 	}
 

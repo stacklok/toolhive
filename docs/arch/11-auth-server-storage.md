@@ -642,7 +642,7 @@ other docs link here.
 | Rows exist but none holds an access token | Yes |
 | A row's access token is expired and its provider is no longer configured, so nothing can refresh it | No |
 | A row's access token is expired and the row has no refresh token | Yes |
-| The row was deleted while the guard refreshed it | No |
+| The row was deleted while the guard refreshed it, including by the refresher itself when the IdP rotated the refresh token and the new one could not be saved | No |
 | The IdP rejects the row's refresh with `invalid_grant` (`upstream.ErrGrantRejected`) | No (the session's upstream rows are deleted) |
 
 A revoking refusal also revokes the grant's access tokens, as an RFC 7009
@@ -683,7 +683,8 @@ to sign in again. Any other outcome is uncertain and grants the refresh, since
 the bearer validator answers those with 503 or a retryable 401 anyway:
 
 - a transient upstream failure (network, 5xx, 429);
-- a storage error;
+- a storage error, unless the refresher deleted the row because it could not
+  save a rotated refresh token (that is the deleted-row refusal above);
 - the request being cancelled; or
 - the check running past its 10-second budget. A refresh still in flight then
   completes in the background and stores its result.

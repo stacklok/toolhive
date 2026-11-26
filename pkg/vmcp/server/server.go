@@ -815,7 +815,8 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// server/discover results and the Modern dispatcher's server/discover
 	// result alike, and inside the MCP-parsing middleware, whose parse names
 	// the request a response answers. vMCP serves Streamable HTTP only, so
-	// the middleware leaves GET streams alone.
+	// LegacySSE stays unset: of its GET streams, the middleware reads only
+	// one a GET with Last-Event-ID resumes, which may replay a result.
 	if s.config.Instructions != nil {
 		instructionsMiddleware, err := mcpparser.NewInstructionsMiddleware(
 			mcpparser.InstructionsMiddlewareParams{Instructions: *s.config.Instructions})

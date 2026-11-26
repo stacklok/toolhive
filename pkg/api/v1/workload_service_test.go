@@ -527,6 +527,44 @@ func TestBuildFullRunConfig_ProxyReadTimeout(t *testing.T) {
 // TestBuildFullRunConfig_NoOtelConfigLeavesTelemetryNil verifies that when no
 // OpenTelemetry config is set, the RunConfig's TelemetryConfig remains nil —
 // the API path does not invent an endpoint.
+func TestBuildFullRunConfig_NoOtelConfigLeavesTelemetryNil(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockGroupManager := groupsmocks.NewMockManager(ctrl)
+	mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+
+	const testImage = "test-image"
+
+	mockRetriever := func(
+		_ context.Context,
+		_ string, _ string, _ string, _ string,
+		_ *templates.RuntimeConfig,
+	) (string, regtypes.ServerMetadata, error) {
+		return testImage, &regtypes.ImageMetadata{Image: testImage}, nil
+	}
+
+	service := &WorkloadService{
+		groupManager:      mockGroupManager,
+		imageRetriever:    mockRetriever,
+		imagePuller:       func(_ context.Context, _ string) error { return nil },
+		configProvider:    config.NewPathProvider(t.TempDir() + "/empty.yaml"),
+		imageVerification: retriever.VerifyImageWarn,
+	}
+
+	req := &createRequest{
+		Name:          "testserver",
+		updateRequest: updateRequest{Image: testImage},
+	}
+
+	runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0, nil)
+	require.NoError(t, err)
+	assert.Nil(t, runConfig.TelemetryConfig,
+		"TelemetryConfig must remain nil when config.OTEL has no endpoint or prometheus path")
+}
+
 // TestBuildFullRunConfig_KeepsPersistedInstructions verifies that an edit
 // through the API, which cannot set instructions yet, keeps the ones the
 // workload was created with, along with their middleware.
@@ -567,44 +605,6 @@ func TestBuildFullRunConfig_KeepsPersistedInstructions(t *testing.T) {
 			assert.Equal(t, tt.want != nil, hasMiddleware)
 		})
 	}
-}
-
-func TestBuildFullRunConfig_NoOtelConfigLeavesTelemetryNil(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	mockGroupManager := groupsmocks.NewMockManager(ctrl)
-	mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
-
-	const testImage = "test-image"
-
-	mockRetriever := func(
-		_ context.Context,
-		_ string, _ string, _ string, _ string,
-		_ *templates.RuntimeConfig,
-	) (string, regtypes.ServerMetadata, error) {
-		return testImage, &regtypes.ImageMetadata{Image: testImage}, nil
-	}
-
-	service := &WorkloadService{
-		groupManager:      mockGroupManager,
-		imageRetriever:    mockRetriever,
-		imagePuller:       func(_ context.Context, _ string) error { return nil },
-		configProvider:    config.NewPathProvider(t.TempDir() + "/empty.yaml"),
-		imageVerification: retriever.VerifyImageWarn,
-	}
-
-	req := &createRequest{
-		Name:          "testserver",
-		updateRequest: updateRequest{Image: testImage},
-	}
-
-	runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0, nil)
-	require.NoError(t, err)
-	assert.Nil(t, runConfig.TelemetryConfig,
-		"TelemetryConfig must remain nil when config.OTEL has no endpoint or prometheus path")
 }
 
 // writeFactorySentinelConfig writes a YAML config file with DisableUsageMetrics: true

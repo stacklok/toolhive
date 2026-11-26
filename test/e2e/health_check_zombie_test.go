@@ -4,6 +4,7 @@
 package e2e_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -209,6 +210,19 @@ func (m *controllableMockServer) handleRequest(w http.ResponseWriter, r *http.Re
 	w.Header().Set("Mcp-Session-Id", "test-session-123")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+
+	// Echo the id of a JSON-RPC request: the proxy rejects a 200
+	// application/json answer to an id-bearing request unless it is a valid
+	// JSON-RPC response. Traffic without an id (the test's bodiless GET,
+	// notifications) is not validated and keeps the id-less body.
+	var rpcRequest struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if r.Method == http.MethodPost && json.NewDecoder(r.Body).Decode(&rpcRequest) == nil &&
+		len(rpcRequest.ID) > 0 && string(rpcRequest.ID) != "null" {
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(rpcRequest.ID) + `,"result":{}}`))
+		return
+	}
 	_, _ = w.Write([]byte(`{"jsonrpc":"2.0","result":{}}`))
 }
 

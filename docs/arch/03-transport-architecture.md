@@ -158,9 +158,10 @@ ToolHive uses two different proxy implementations:
 - Uses Go's `httputil.ReverseProxy`
 - Validates every POST routed to the backend-forwarding MCP handler with shared MCP message admission, regardless of path or Content-Type
 - Forwards admitted body bytes and headers without reserializing the envelope.
-  The one exception is `Accept-Encoding`, which the authorization middleware
-  (on requests whose response it filters) and the tool filter (on every request)
-  withhold, so that Go's
+  The one exception is `Accept-Encoding`, which the proxy itself withholds on
+  every id-bearing request (see [Upstream response validation](#upstream-response-validation)),
+  and which the authorization middleware (on requests whose response it filters)
+  and the tool filter (on every request) also withhold, so that Go's
   transport negotiates and decodes the encoding itself (see
   [Middleware Architecture](../middleware.md))
 - Applies the MCP middleware chain only to traffic routed to the backend-forwarding handler
@@ -185,6 +186,49 @@ Current admission is stricter than base JSON-RPC:
 - Valid client error responses may omit the ID, as MCP permits; successful responses require an ID. Client responses remain subject to transport and authorization handling.
 - Invalid envelopes and unreadable bodies return `400`; bodies exceeding the configured limit return `413`.
 - Only a `POST` body is parsed as an MCP message. A request carrying a body on any other method (matched case-sensitively, so `post` is not `POST`) is rejected with `400` rather than forwarded unparsed: forwarding it would skip the request-level middleware that act on the parsed message. Bodyless `GET` (SSE stream), `DELETE` (session termination), and `OPTIONS` (CORS preflight) pass through unchanged; method-specific `405`/`Allow` responses stay with the transport handlers, which know the methods their endpoint serves.
+
+##### Upstream response validation
+
+When a POST carries a JSON-RPC request with an `id`, the proxy checks the
+backend's answer before forwarding it. A `200` response labeled
+`application/json` (media type matched case-insensitively, parameters ignored)
+must hold a single structurally valid JSON-RPC response, as checked by
+`mcp.ValidateResponse` with the envelope rules used for client messages: a
+leading UTF-8 BOM, string or integer ids, and an error response without an `id`
+are accepted, while invalid JSON, an empty body, batches, requests,
+notifications, `null` or fractional ids, and an envelope that repeats a member
+or aliases a reserved one by case are rejected. Only the envelope is checked:
+member names inside `result` and `error.data` may differ only by case, as JSON
+permits. A valid body is forwarded byte for byte, BOM included. The body is
+buffered up to 100 MiB, so a larger response that was previously streamed
+through is now rejected.
+
+A response that fails the check, exceeds the limit, cannot be read, or still
+carries a content coding is replaced with HTTP `502 Bad Gateway` and a JSON-RPC
+error that echoes the client's request `id`:
+
+```json
+{"jsonrpc":"2.0","id":7,"error":{"code":-32603,"message":"Invalid upstream JSON-RPC response"}}
+```
+
+The replacement carries none of the backend's headers (no `Mcp-Session-Id` or
+`Set-Cookie`), and the proxy logs one warning naming the cause, the method and
+the target. A rejected `initialize` response registers no proxy session and does
+not mark the server initialized.
+
+So that the body can be read, the proxy forwards id-bearing requests without the
+client's `Accept-Encoding`. Go's transport then asks for gzip itself and decodes
+it, so the client receives an uncompressed response. A body that still arrives
+with a content coding (one the backend applied unprompted, or one the transport
+does not decode, such as `br` or `zstd`) is rejected rather than forwarded
+unchecked.
+
+Scope: SSE (`text/event-stream`) responses, non-`200` statuses, other media
+types, responses to notifications and client responses, bodiless `GET`/`DELETE`,
+and the requests replayed during backend session recovery are not validated.
+This is a best-effort structural check that keeps a broken backend's output
+from reaching clients as a successful response. It is not a security control:
+a well-formed response with malicious content passes.
 
 **Why transparent:**
 - Container already speaks HTTP

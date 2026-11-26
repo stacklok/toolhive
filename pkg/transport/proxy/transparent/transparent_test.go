@@ -2048,7 +2048,11 @@ func TestPrefixHandlers_WellKnownNamespaceCoexistence(t *testing.T) {
 			// Get the actual port from the listener
 			actualPort := proxy.listener.Addr().(*net.TCPAddr).Port
 
-			resp, err := http.Get(fmt.Sprintf("http://%s:%d%s", proxy.host, actualPort, tt.path))
+			// A dedicated client, not http.DefaultClient: every httptest.Server.Close
+			// in the package's parallel tests calls CloseIdleConnections on the
+			// shared transport, which can break a connection this request reuses.
+			client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+			resp, err := client.Get(fmt.Sprintf("http://%s:%d%s", proxy.host, actualPort, tt.path))
 			require.NoError(t, err)
 			resp.Body.Close()
 

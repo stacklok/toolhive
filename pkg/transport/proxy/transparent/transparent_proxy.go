@@ -608,9 +608,14 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	sawInitialize := false
 	revision := mcp.RevisionLegacy
-	// Only ID-bearing requests are classified and supply an ID for local errors.
-	// Notifications, client responses and bodiless GET/DELETE leave it absent.
-	var requestID any
+	// Only ID-bearing requests are classified, supply an ID for local errors,
+	// and have their upstream response validated. Notifications, client
+	// responses and bodiless GET/DELETE leave them absent.
+	var (
+		requestID any
+		rpcID     jsonrpc2.ID
+		rpcMethod string
+	)
 
 	if req.Method == http.MethodPost {
 		msg, err := mcp.DecodeMessage(reqBody)
@@ -621,6 +626,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			sawInitialize = rpcRequest.Method == "initialize"
 			if rpcRequest.ID.IsValid() {
 				requestID = rpcRequest.ID.Raw()
+				rpcID, rpcMethod = rpcRequest.ID, rpcRequest.Method
 				meta := mcp.ExtractMeta(rpcRequest.Params)
 				rev, cerr := mcp.ClassifyRevision(rpcRequest.Method, meta, req.Header.Get("MCP-Protocol-Version"))
 				if cerr != nil {
@@ -633,6 +639,15 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	//nolint:gosec // G706: logging target URI from config
 	slog.Debug("classified request revision", "modern", revision == mcp.RevisionModern, "target", t.p.targetURI)
+
+	// The response to an id-bearing request is validated below, which needs its
+	// bytes in the clear. Without the client's Accept-Encoding, Go's transport
+	// asks for gzip itself and decodes it (as mcp.WithoutAcceptEncoding does for
+	// the filters). req is the outbound clone httputil.ReverseProxy owns, and the
+	// redirect and recovery paths derive their requests from it.
+	if requestID != nil {
+		req.Header.Del("Accept-Encoding")
+	}
 
 	// Transparent requests forward backend session authority even for Modern MCP.
 	clientSID, carrierErr := requestSessionID(req)
@@ -760,6 +775,15 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 				_ = resp.Body.Close()
 				return reInitResp, reInitErr
 			}
+		}
+	}
+
+	// Validate before the response can register a session or mark the server
+	// initialized: a malformed initialize response must do neither. Responses
+	// returned by the recovery replay paths above are not validated.
+	if requestID != nil {
+		if rejected := t.validateUpstreamResponse(req, resp, rpcID, rpcMethod); rejected != nil {
+			return rejected, nil
 		}
 	}
 

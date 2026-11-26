@@ -144,7 +144,9 @@ type PlatformUserContextKey = serveridentity.CanonicalUserContextKey
 // Request-serving paths that already carry the host Identity, typically attached
 // after authentication, do NOT need to call this — CanonicalUserFromContext falls
 // back to that Identity's PlatformUserID, so the canonical user is read from one
-// accessor without storing it twice.
+// accessor without storing it twice. The exception is the token validator bound
+// to the embedded issuer: it sets the key on its upstream-token load so that
+// only an interactive session names a user to storage.
 func WithPlatformUser(ctx context.Context, userID string) context.Context {
 	return serveridentity.WithCanonicalUser(ctx, userID)
 }
@@ -171,7 +173,9 @@ func PlatformUserFromContext(ctx context.Context) (string, bool) {
 // attached on authenticated request paths). Context lookup alone does not prove that
 // authentication succeeded. Returns "" and false if neither is present. A string
 // directly stored under the canonical-user key wins even if empty, so an explicit
-// value overrides the identity-derived value.
+// value overrides the identity-derived value. The key is also set, including to
+// an explicit "", by a validator bound to the embedded issuer on its
+// upstream-token load.
 func CanonicalUserFromContext(ctx context.Context) (string, bool) {
 	if userID, ok := PlatformUserFromContext(ctx); ok {
 		return userID, true

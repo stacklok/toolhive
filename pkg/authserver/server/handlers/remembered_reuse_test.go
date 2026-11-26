@@ -365,12 +365,19 @@ func TestRememberedIdentityMismatchRevokesOriginatingSession(t *testing.T) {
 					Issuer: "https://new-idp.example.com",
 				}
 			}
+			var rowBefore storage.ProviderIdentity
+			if row := state.providerIdentities["test-upstream:user-123"]; row != nil {
+				rowBefore = *row
+			}
 			callbackCookie := bindingCookieFromSecure(t, w, upstream.capturedState)
 			req := newCallbackRequest("code=upstream-code&state="+upstream.capturedState, callbackCookie,
 				&http.Cookie{Name: h.consentCookieName(), Value: "another-session"})
 			result := httptest.NewRecorder()
 			h.CallbackHandler(result, req)
 			require.Contains(t, result.Header().Get("Location"), "error=access_denied")
+			if row := state.providerIdentities["test-upstream:user-123"]; row != nil {
+				require.Equal(t, rowBefore, *row, "a refused remembered flow must not replace or restamp the row")
+			}
 			require.Contains(t, result.Header().Get("Location"), "state=browser-state")
 			require.Empty(t, state.users, "ResolveUser must not auto-provision the switched identity")
 			require.Empty(t, state.upstreamTokens, "no upstream token may be stored")
@@ -390,20 +397,22 @@ func TestRememberedIdentityAllowsMatchingAndUnstampedBinding(t *testing.T) {
 		claim  string
 	}{
 		{name: "matching binding", issuer: "https://idp.example.com", claim: "oid"},
-		{name: "legacy unstamped row", issuer: "", claim: ""},
+		{name: "legacy unstamped row is accepted and stamped", issuer: "", claim: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			h, state, upstream, _, cookie := setupRememberedHandler(t)
-			h.userResolver = NewUserResolver(h.storage,
+			h, state, upstream, mem, cookie := setupRememberedHandler(t)
+			h.userResolver = NewUserResolver(mem,
 				WithCreateOnlyFor("test-upstream"),
 				WithIdentityBinding("test-upstream", "https://idp.example.com", "oid"),
 			)
-			state.users["user"] = &storage.User{ID: "user"}
-			state.providerIdentities["test-upstream:user-123"] = &storage.ProviderIdentity{
+			ctx := context.Background()
+			now := time.Now()
+			require.NoError(t, mem.CreateUser(ctx, &storage.User{ID: "user", CreatedAt: now, UpdatedAt: now}))
+			require.NoError(t, mem.CreateProviderIdentity(ctx, &storage.ProviderIdentity{
 				UserID: "user", ProviderID: "test-upstream", ProviderSubject: "user-123",
-				Issuer: tc.issuer, SubjectClaim: tc.claim,
-			}
+				Issuer: tc.issuer, SubjectClaim: tc.claim, LinkedAt: now, LastUsedAt: now,
+			}))
 			w := httptest.NewRecorder()
 			h.AuthorizeHandler(w, rememberedAuthorizeRequest(cookie, "openid", "https://api.example.com", testAuthRedirectURI))
 			require.Equal(t, http.StatusSeeOther, w.Code, w.Body.String())
@@ -412,6 +421,17 @@ func TestRememberedIdentityAllowsMatchingAndUnstampedBinding(t *testing.T) {
 			h.CallbackHandler(completed, newCallbackRequest("code=upstream-code&state="+upstream.capturedState,
 				bindingCookieFromSecure(t, w, upstream.capturedState)))
 			require.Contains(t, completed.Header().Get("Location"), "code=")
+
+			require.Len(t, state.upstreamTokens, 1)
+			for _, tokens := range state.upstreamTokens {
+				require.Equal(t, "user", tokens.UserID, "the remembered user must be the authorised user")
+			}
+			require.Equal(t, 1, mem.Stats().Users, "a remembered flow must not create users")
+			row, err := mem.GetProviderIdentity(ctx, "test-upstream", "user-123")
+			require.NoError(t, err)
+			require.Equal(t, "user", row.UserID)
+			require.Equal(t, "https://idp.example.com", row.Issuer)
+			require.Equal(t, "oid", row.SubjectClaim)
 		})
 	}
 }

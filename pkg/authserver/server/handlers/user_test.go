@@ -324,7 +324,7 @@ func TestUserResolver_CreateUserWithIdentity_LinkFailure(t *testing.T) {
 		{
 			name:    "already exists but winner user read fails returns an error",
 			linkErr: alreadyExists, owner: "winner", wantDelete: true, userReadErr: storage.ErrNotFound,
-			wantErr: "re-read winner",
+			wantErr: "winner of the identity link race",
 		},
 		{
 			// The write committed but its reply was lost, so a retry saw
@@ -473,8 +473,8 @@ func TestUserResolver_WithCreateOnlyFor(t *testing.T) {
 }
 
 // nonSwappingUserStorage wraps a UserStorage without implementing
-// storage.ProviderIdentitySwapper or Unwrap, mirroring an external enterprise
-// storage decorator (such as SEP's directory-bound store).
+// storage.ProviderIdentitySwapper or Unwrap, mirroring an external storage
+// decorator.
 type nonSwappingUserStorage struct {
 	storage.UserStorage
 }
@@ -581,7 +581,8 @@ func TestUserResolver_IdentityBinding(t *testing.T) {
 			WithIdentityBinding("later", newIssuer, oldClaim),
 		)
 		user, err := r.ResolveUser(ctx, "later", subject)
-		require.ErrorIs(t, err, ErrUpstreamCannotCreateUsers)
+		require.ErrorIs(t, err, ErrIdentityBindingMismatch)
+		require.NotErrorIs(t, err, ErrUpstreamCannotCreateUsers)
 		require.Nil(t, user)
 
 		// Existing row and user must be untouched.
@@ -600,10 +601,12 @@ func TestUserResolver_IdentityBinding(t *testing.T) {
 		require.NoError(t, err)
 		ctx := context.Background()
 
-		oldUser, err := NewUserResolver(decorated, WithIdentityBinding(provider, oldIssuer, oldClaim)).ResolveUser(ctx, provider, subject)
+		oldResolver := NewUserResolver(decorated, WithIdentityBinding(provider, oldIssuer, oldClaim))
+		oldUser, err := oldResolver.ResolveUser(ctx, provider, subject)
 		require.NoError(t, err)
 
-		newUser, err := NewUserResolver(decorated, WithIdentityBinding(provider, newIssuer, oldClaim)).ResolveUser(ctx, provider, subject)
+		newResolver := NewUserResolver(decorated, WithIdentityBinding(provider, newIssuer, oldClaim))
+		newUser, err := newResolver.ResolveUser(ctx, provider, subject)
 		require.NoError(t, err)
 		assert.NotEqual(t, oldUser.ID, newUser.ID)
 	})
@@ -644,7 +647,7 @@ func TestUserResolver_IdentityBinding(t *testing.T) {
 			wrapped := nonSwappingUserStorage{UserStorage: base}
 			r := NewUserResolver(wrapped, WithIdentityBinding(provider, newIssuer, oldClaim))
 			got, err := r.ResolveUser(ctx, provider, subject)
-			require.Error(t, err)
+			require.ErrorIs(t, err, ErrIdentityBindingMismatch)
 			assert.Nil(t, got)
 			assert.Equal(t, 1, base.Stats().Users, "must not create an orphan user when swap is unsupported")
 		})
@@ -731,7 +734,9 @@ func TestUserResolver_IdentityBinding(t *testing.T) {
 		mockProv := &mockIDPProvider{}
 		require.Error(t, validateNamedUpstreams([]NamedUpstream{{Name: "a", Provider: mockProv, Issuer: oldIssuer}}))
 		require.Error(t, validateNamedUpstreams([]NamedUpstream{{Name: "a", Provider: mockProv, SubjectClaim: oldClaim}}))
-		require.NoError(t, validateNamedUpstreams([]NamedUpstream{{Name: "a", Provider: mockProv, Issuer: oldIssuer, SubjectClaim: oldClaim}}))
+		require.NoError(t, validateNamedUpstreams([]NamedUpstream{
+			{Name: "a", Provider: mockProv, Issuer: oldIssuer, SubjectClaim: oldClaim},
+		}))
 	})
 }
 

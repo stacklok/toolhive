@@ -867,6 +867,36 @@ func TestDeviceVerificationConfirmHandler_UpstreamAccountConflict(t *testing.T) 
 	}
 }
 
+func TestDeviceVerification_BindingMismatchWithoutSwapperIsForbidden(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	h, up := setupDeviceVerificationHandler(t)
+
+	now := time.Now()
+	require.NoError(t, h.storage.CreateUser(ctx, &storage.User{ID: "initial-user", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, h.storage.CreateProviderIdentity(ctx, &storage.ProviderIdentity{
+		UserID: "initial-user", ProviderID: "test-upstream", ProviderSubject: "upstream-subject-1",
+		Issuer: "https://old-idp.example.com", SubjectClaim: "sub", LinkedAt: now, LastUsedAt: now,
+	}))
+	h.userResolver = NewUserResolver(nonSwappingUserStorage{UserStorage: h.storage},
+		WithCreateOnlyFor("test-upstream"),
+		WithIdentityBinding("test-upstream", "https://new-idp.example.com", "sub"),
+	)
+
+	_, userCode := issueDeviceCode(t, h)
+	submitRec, state := submitDeviceUserCode(t, h, up, userCode)
+	cookie := bindingCookieFrom(t, submitRec, state)
+
+	rec := httptest.NewRecorder()
+	h.CallbackHandler(rec, newCallbackRequest("code=upstream-code&state="+state, cookie))
+
+	assert.Equal(t, http.StatusForbidden, rec.Code, "body: %s", rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "different issuer or subject claim")
+	row, err := h.storage.GetProviderIdentity(ctx, "test-upstream", "upstream-subject-1")
+	require.NoError(t, err)
+	assert.Equal(t, "initial-user", row.UserID, "the row must not be replaced")
+}
+
 func TestDeviceVerification_IdentityBinding(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

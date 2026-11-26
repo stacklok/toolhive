@@ -275,9 +275,13 @@ func (h *Handler) completeDeviceLogin(
 		user, resolveErr := h.userResolver.ResolveUser(ctx, pending.UpstreamProviderName, result.Subject)
 		if resolveErr != nil {
 			// A refused later upstream is a deliberate denial, not a server fault.
-			if errors.Is(resolveErr, ErrUpstreamCannotCreateUsers) {
+			switch {
+			case errors.Is(resolveErr, ErrUpstreamCannotCreateUsers):
 				slog.Warn("device verification: refused user creation through a later upstream", "error", resolveErr)
-			} else {
+			case errors.Is(resolveErr, ErrIdentityBindingMismatch):
+				slog.Warn("device verification: refused sign-in: identity link was created under a different issuer "+
+					"or subject claim", "provider_id", pending.UpstreamProviderName)
+			default:
 				slog.Error("device verification: failed to resolve user", "error", resolveErr)
 			}
 			status, msg := http.StatusInternalServerError, "Something went wrong. Please try again."
@@ -286,6 +290,9 @@ func (h *Handler) completeDeviceLogin(
 				status, msg = http.StatusForbidden, "Your account is not provisioned to use this application."
 			case errors.Is(resolveErr, ErrUpstreamCannotCreateUsers):
 				status, msg = http.StatusForbidden, "This sign-in provider cannot create accounts for this application."
+			case errors.Is(resolveErr, ErrIdentityBindingMismatch):
+				status, msg = http.StatusForbidden,
+					"Your account's identity link was created under a different issuer or subject claim."
 			}
 			renderError(w, status, msg)
 			return

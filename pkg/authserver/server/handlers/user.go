@@ -21,6 +21,20 @@ import (
 // WithCreateOnlyFor).
 var ErrUpstreamCannotCreateUsers = errors.New("upstream is not allowed to create users")
 
+// ErrIdentityBindingMismatch is returned by ResolveUser when the identity link
+// was created under a different issuer or subject claim than the upstream's
+// current ones and the resolver may not replace it: the storage has no
+// ProviderIdentitySwapper, or the upstream is not the one allowed to create
+// users.
+var ErrIdentityBindingMismatch = errors.New("identity link was created under a different issuer or subject claim")
+
+// ErrRememberedIdentityMismatch is returned by ResolveExpectedUser when the
+// provider identity does not resolve to the expected user under the upstream's
+// current binding, or has no link at all.
+var ErrRememberedIdentityMismatch = errors.New("provider identity does not resolve to the expected user")
+
+var errStampRaceLost = errors.New("provider identity changed again while it was being stamped")
+
 type identityBinding struct {
 	issuer       string
 	subjectClaim string
@@ -35,8 +49,8 @@ type UserResolver struct {
 	createOnlyFor string
 	// bindings maps providerID -> expected (issuer, subjectClaim) binding.
 	// Immutable after construction.
-	bindings          map[string]identityBinding
-	unstampedWarnOnce sync.Once
+	bindings         map[string]identityBinding
+	unstampedLogOnce sync.Once
 }
 
 // ResolverOption configures a UserResolver.
@@ -56,10 +70,15 @@ func WithCreateOnlyFor(providerID string) ResolverOption {
 }
 
 // WithIdentityBinding binds providerID's identity links to the given non-empty
-// issuer and subject claim. New links are stamped with both values, legacy
-// unstamped rows are stamped on first match, and rows stamped with a different
-// issuer or subject claim are treated as not found (replacing the link with a
-// new user when this provider may create users).
+// issuer and subject claim. New links are stamped with both values, and rows
+// created before binding existed (carrying neither) are stamped on the first
+// match, so an upgrade does not give existing users new accounts.
+//
+// A row stamped with a different issuer or subject claim is treated as not
+// found. When this provider may create users and the storage supports atomic
+// replacement (storage.ProviderIdentitySwapper), ResolveUser replaces the link
+// with a new user. Without a swapper, and for a provider that may not create
+// users, ResolveUser refuses with ErrIdentityBindingMismatch instead.
 //
 // Panics if providerID, issuer, or subjectClaim is empty.
 func WithIdentityBinding(providerID, issuer, subjectClaim string) ResolverOption {
@@ -92,10 +111,17 @@ func NewUserResolver(stor storage.UserStorage, opts ...ResolverOption) *UserReso
 // The resolution process:
 //  1. Look up existing identity by (providerID, providerSubject)
 //  2. If found and its binding matches (or no binding is configured), return the linked user
-//  3. If found and unstamped (pre-upgrade row), load the linked user, stamp the current
-//     binding atomically when supported, and return the user
-//  4. If not found, or found with a mismatching binding, create a new user and link/replace
-//     the identity (only for the provider named by WithCreateOnlyFor, when set)
+//  3. If found and unstamped (a row from before binding existed), load the linked user and
+//     stamp the current binding atomically when the storage supports it. If the stamp loses
+//     to a concurrent write, the row is read again and decided once more; a second loss is
+//     an error
+//  4. If not found, create a new user and link the identity (only for the provider named by
+//     WithCreateOnlyFor, when set)
+//  5. If found with a mismatching binding, create a new user and atomically replace the
+//     identity (same provider restriction). The old user is left untouched. When the storage
+//     has no ProviderIdentitySwapper, or the provider may not create users, it returns
+//     ErrIdentityBindingMismatch: adopting the old row's user would hand the old account to
+//     a different person.
 func (r *UserResolver) ResolveUser(
 	ctx context.Context,
 	providerID string,
@@ -107,7 +133,60 @@ func (r *UserResolver) ResolveUser(
 	if providerSubject == "" {
 		return nil, errors.New("provider subject cannot be empty")
 	}
+	return r.resolveUser(ctx, providerID, providerSubject, 0)
+}
 
+// ResolveExpectedUser looks up the user a remembered approval was granted to. It
+// never creates or replaces anything: it reads the provider identity once and
+// accepts it only when its binding matches (or the row is unstamped), the row
+// belongs to expectedUserID and that user still exists. An unstamped row is
+// stamped like ResolveUser does, including the one re-read after a lost stamp.
+//
+// A missing row, a mismatching binding, a different owner or a missing user
+// return ErrRememberedIdentityMismatch. Storage failures are returned as is.
+func (r *UserResolver) ResolveExpectedUser(
+	ctx context.Context,
+	providerID string,
+	providerSubject string,
+	expectedUserID string,
+) (*storage.User, error) {
+	if providerID == "" || providerSubject == "" || expectedUserID == "" {
+		return nil, errors.New("provider ID, provider subject and expected user ID cannot be empty")
+	}
+	binding, hasBinding := r.bindings[providerID]
+	for attempt := 0; ; attempt++ {
+		identity, err := r.storage.GetProviderIdentity(ctx, providerID, providerSubject)
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				return nil, ErrRememberedIdentityMismatch
+			}
+			return nil, fmt.Errorf("failed to lookup provider identity: %w", err)
+		}
+		if identity.UserID != expectedUserID || !identityAcceptable(identity, binding, hasBinding) {
+			return nil, ErrRememberedIdentityMismatch
+		}
+		user, lost, err := r.loadAndStamp(ctx, identity, binding, hasBinding)
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, ErrRememberedIdentityMismatch
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !lost {
+			return user, nil
+		}
+		if attempt > 0 {
+			return nil, errStampRaceLost
+		}
+	}
+}
+
+func (r *UserResolver) resolveUser(
+	ctx context.Context,
+	providerID string,
+	providerSubject string,
+	attempt int,
+) (*storage.User, error) {
 	binding, hasBinding := r.bindings[providerID]
 
 	// Try to find existing identity link
@@ -126,27 +205,29 @@ func (r *UserResolver) ResolveUser(
 
 	if hasBinding && !identity.MatchesBinding(binding.issuer, binding.subjectClaim) {
 		if identity.IsUnstamped() {
-			// Decision A1: load the user first (never stamp an orphaned link), then stamp on first match.
-			user, getErr := r.storage.GetUser(ctx, identity.UserID)
-			if getErr != nil {
-				return nil, fmt.Errorf("identity exists but user not found: %w", getErr)
+			// Load the user first so an orphaned link is never stamped.
+			user, lost, stampErr := r.loadAndStamp(ctx, identity, binding, hasBinding)
+			if stampErr != nil {
+				return nil, stampErr
 			}
-			r.stampUnstampedIdentity(ctx, identity, binding)
-			return user, nil
+			if !lost {
+				return user, nil
+			}
+			if attempt > 0 {
+				return nil, errStampRaceLost
+			}
+			return r.resolveUser(ctx, providerID, providerSubject, attempt+1)
 		}
 
-		// Decision B1: mismatching binding counts as not found — create a new user
-		// and atomically replace the row, leaving the old user untouched.
+		// A mismatching binding counts as not found: create a new user and
+		// atomically replace the row, leaving the old user untouched.
 		if r.createOnlyFor != "" && providerID != r.createOnlyFor {
-			return nil, fmt.Errorf("%w: %q (users are created through %q)",
-				ErrUpstreamCannotCreateUsers, providerID, r.createOnlyFor)
+			return nil, fmt.Errorf("%w: %q", ErrIdentityBindingMismatch, providerID)
 		}
 		if r.swapper == nil {
-			return nil, fmt.Errorf(
-				"provider identity for %q was created under a different issuer or subject claim "+
-					"and storage does not support atomic replacement",
-				providerID,
-			)
+			// Refuse instead of adopting the old row's user: adopting would
+			// hand the old account to a different person.
+			return nil, fmt.Errorf("%w: %q (storage cannot replace the link)", ErrIdentityBindingMismatch, providerID)
 		}
 		return r.replaceMismatchedIdentity(ctx, identity, binding)
 	}
@@ -172,36 +253,80 @@ func (r *UserResolver) UpdateLastAuthenticated(
 	}
 }
 
-// matchesIdentityBinding reports whether identity is acceptable for providerID's
-// configured binding: true when no binding is configured, when it matches the
-// binding, or when it is a legacy unstamped row (decision A1).
-func (r *UserResolver) matchesIdentityBinding(providerID string, identity *storage.ProviderIdentity) bool {
-	if identity == nil {
-		return false
-	}
-	binding, hasBinding := r.bindings[providerID]
-	if !hasBinding {
-		return true
-	}
-	return identity.MatchesBinding(binding.issuer, binding.subjectClaim) || identity.IsUnstamped()
+// identityAcceptable reports whether identity may be used under binding: true
+// when no binding is configured, when the binding matches, or when the row is
+// unstamped (it was written before binding existed and is stamped on first use).
+func identityAcceptable(identity *storage.ProviderIdentity, binding identityBinding, hasBinding bool) bool {
+	return !hasBinding || identity.MatchesBinding(binding.issuer, binding.subjectClaim) || identity.IsUnstamped()
 }
 
-// stampUnstampedIdentity stamps a pre-upgrade unstamped row with the current
-// upstream binding when the backend supports atomic CAS, logging once per resolver.
+// loadAndStamp loads the user an acceptable identity points at and, when the
+// row is unstamped, stamps the current binding. lost reports that the stamp
+// lost to a concurrent write: the caller must read the row again and decide
+// once more. The user is loaded first so an orphaned link is never stamped.
+func (r *UserResolver) loadAndStamp(
+	ctx context.Context,
+	identity *storage.ProviderIdentity,
+	binding identityBinding,
+	hasBinding bool,
+) (user *storage.User, lost bool, err error) {
+	user, err = r.storage.GetUser(ctx, identity.UserID)
+	if err != nil {
+		return nil, false, fmt.Errorf("identity exists but user not found: %w", err)
+	}
+	if hasBinding && identity.IsUnstamped() {
+		lost = r.stampUnstampedIdentity(ctx, identity, binding)
+	}
+	return user, lost, nil
+}
+
+// adoptLinkedUser returns the user a link points at when another request's
+// link won a race. An unstamped row is stamped; if that loses, the row is read
+// again and decided once more, and a second loss is an error. A row that then
+// carries a mismatching binding is refused with ErrIdentityBindingMismatch.
+func (r *UserResolver) adoptLinkedUser(
+	ctx context.Context,
+	identity *storage.ProviderIdentity,
+	binding identityBinding,
+	hasBinding bool,
+) (*storage.User, error) {
+	for attempt := 0; ; attempt++ {
+		if !identityAcceptable(identity, binding, hasBinding) {
+			return nil, fmt.Errorf("%w: %q", ErrIdentityBindingMismatch, identity.ProviderID)
+		}
+		user, lost, err := r.loadAndStamp(ctx, identity, binding, hasBinding)
+		if err != nil {
+			return nil, err
+		}
+		if !lost {
+			return user, nil
+		}
+		if attempt > 0 {
+			return nil, errStampRaceLost
+		}
+		identity, err = r.storage.GetProviderIdentity(ctx, identity.ProviderID, identity.ProviderSubject)
+		if err != nil {
+			return nil, fmt.Errorf("failed to re-read provider identity after a lost stamp: %w", err)
+		}
+	}
+}
+
+// stampUnstampedIdentity stamps a row written before binding existed with the
+// current upstream binding when the storage supports atomic compare-and-swap.
+// It reports lost when the stamp lost to a concurrent write (the row changed or
+// disappeared), in which case the caller reads the row again. Without a
+// swapper, and after any other failure, the row stays unstamped and the sign-in
+// continues: stamping is best effort.
 func (r *UserResolver) stampUnstampedIdentity(
 	ctx context.Context,
 	existing *storage.ProviderIdentity,
 	binding identityBinding,
-) {
+) (lost bool) {
 	if r.swapper == nil {
-		r.unstampedWarnOnce.Do(func() {
-			slog.Debug("matched unstamped provider identity on storage without swapper; skipping stamp",
-				"provider_id", existing.ProviderID,
-				"issuer", binding.issuer,
-				"subject_claim", binding.subjectClaim,
-			)
-		})
-		return
+		slog.Debug("matched unstamped provider identity on storage without swapper; leaving it unstamped",
+			"provider_id", existing.ProviderID,
+		)
+		return false
 	}
 
 	stamped := *existing
@@ -210,7 +335,7 @@ func (r *UserResolver) stampUnstampedIdentity(
 	err := r.swapper.CompareAndSwapProviderIdentity(ctx, existing, &stamped)
 	switch {
 	case err == nil:
-		r.unstampedWarnOnce.Do(func() {
+		r.unstampedLogOnce.Do(func() {
 			slog.Warn(
 				"stamped legacy provider identity without issuer and subject claim; "+
 					"existing rows are bound to current upstream configuration on first match",
@@ -219,15 +344,18 @@ func (r *UserResolver) stampUnstampedIdentity(
 				"subject_claim", binding.subjectClaim,
 			)
 		})
-	case errors.Is(err, storage.ErrProviderIdentityChanged):
-		slog.Debug("concurrent request already updated unstamped provider identity",
+		return false
+	case errors.Is(err, storage.ErrProviderIdentityChanged), errors.Is(err, storage.ErrNotFound):
+		slog.Debug("concurrent request changed unstamped provider identity; reading it again",
 			"provider_id", existing.ProviderID,
 		)
+		return true
 	default:
-		slog.Warn("failed to stamp legacy provider identity; will retry on next sign-in",
+		slog.Warn("failed to stamp provider identity; will retry on next sign-in",
 			"provider_id", existing.ProviderID,
 			"error", err,
 		)
+		return false
 	}
 }
 
@@ -332,12 +460,14 @@ func (r *UserResolver) replaceMismatchedIdentity(
 // If the link points at our own candidate, the write committed and the candidate
 // is the owner: it must not be rolled back, whatever error came back. If the link
 // points at another user whose binding matches ours (or is unstamped), a
-// concurrent login won and we adopt its user. If the link still belongs to a
-// mismatching issuer or subject claim, we never adopt it: we roll back our
-// candidate only when linkErr proves our write did not commit, and return an
-// error. No link or a failed read deletes nothing and returns the error: a write
-// whose reply timed out can still commit after the read. An unlinked candidate
-// row is harmless; deleting the owner is not.
+// concurrent login won and we adopt its user (adoptLinkedUser re-reads the row
+// once if stamping it loses a race). If the link still belongs to a mismatching
+// issuer or subject claim, we never adopt it. In both of those cases, and when
+// the link is gone, we roll back our candidate only when linkErr proves our write
+// did not commit (ErrAlreadyExists or ErrProviderIdentityChanged), and return an
+// error. A failed read deletes nothing and returns the error: a write whose
+// reply timed out can still commit after the read. An unlinked candidate row is
+// harmless; deleting the owner is not.
 func (r *UserResolver) resolveLinkFailure(
 	ctx context.Context,
 	candidate *storage.User,
@@ -351,14 +481,11 @@ func (r *UserResolver) resolveLinkFailure(
 	switch {
 	case err == nil && identity.UserID == candidate.ID:
 		return candidate, nil
-	case err == nil && (!hasBinding || identity.MatchesBinding(binding.issuer, binding.subjectClaim) || identity.IsUnstamped()):
+	case err == nil && identityAcceptable(identity, binding, hasBinding):
 		r.rollbackUser(ctx, candidate.ID)
-		user, getErr := r.storage.GetUser(ctx, identity.UserID)
-		if getErr != nil {
-			return nil, fmt.Errorf("failed to re-read winner of identity link race: %w", getErr)
-		}
-		if hasBinding && identity.IsUnstamped() {
-			r.stampUnstampedIdentity(ctx, identity, binding)
+		user, adoptErr := r.adoptLinkedUser(ctx, identity, binding, hasBinding)
+		if adoptErr != nil {
+			return nil, fmt.Errorf("failed to adopt the winner of the identity link race: %w", adoptErr)
 		}
 		return user, nil
 	case err == nil:
@@ -369,6 +496,12 @@ func (r *UserResolver) resolveLinkFailure(
 		}
 		return nil, fmt.Errorf("failed to link provider identity: %w", linkErr)
 	case errors.Is(err, storage.ErrNotFound):
+		// The row is gone. These two errors prove our own write did not land,
+		// so the candidate is unlinked. Any other error leaves that unknown, and
+		// the candidate is kept.
+		if errors.Is(linkErr, storage.ErrAlreadyExists) || errors.Is(linkErr, storage.ErrProviderIdentityChanged) {
+			r.rollbackUser(ctx, candidate.ID)
+		}
 		return nil, fmt.Errorf("failed to link provider identity: %w", linkErr)
 	default:
 		return nil, fmt.Errorf("failed to link provider identity: %w (re-reading the link also failed: %w)", linkErr, err)

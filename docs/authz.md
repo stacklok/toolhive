@@ -77,7 +77,7 @@ is empty or contains a space or control character. For `completion/complete` the
 is a JSON-RPC error, not an HTTP 403.
 
 One ordering differs from the direct `thv run` proxies, where authorization runs
-first: vMCP checks session ownership before the authorization gate. A request that
+first: Legacy vMCP checks session ownership before the authorization gate. A request that
 carries an `Mcp-Session-Id` the caller does not own, or that does not exist, gets
 **HTTP 404** before any Cedar 403. A denied call on the caller's own session still gets
 403. Two checks run before session ownership: the loopback `Host` guard, and call
@@ -119,6 +119,18 @@ the token's `exp` and the end of the call's request: an elicitation answer or
 cancellation sent after `exp` gets 401, even while the call is still open, and a fresh
 token does not help because it has no call of its own. See
 [Call-bound access tokens](arch/10-virtual-mcp-architecture.md#call-bound-access-tokens).
+
+For Legacy vMCP and stateful proxy requests, a delegated session is bound to the
+issuer and user, the delegated route, the OAuth client (`client_id`), and the
+immediate actor when present. Interactive and delegated tokens cannot reuse each
+other's sessions, even for the same user, when the validator identifies the
+delegated route. A token on that route with a missing or invalid `client_id`, a
+malformed or incomplete `act`, or an explicit `act: null` cannot open or reuse a session.
+On Legacy vMCP, a request that tries to reuse a session without a matching
+binding gets the same plain-text 404 `Session terminated` as an unknown session.
+See [vMCP session ownership](arch/10-virtual-mcp-architecture.md#session-ownership)
+and [proxy session ownership](arch/03-transport-architecture.md#session-ownership)
+for the binding rules and upgrade requirements.
 
 See the [Virtual MCP architecture](arch/10-virtual-mcp-architecture.md#authorization-enforcement-core-admission-seam--pre-dispatch-gate)
 for details.
@@ -203,7 +215,8 @@ cedar:
 The Cedar-specific configuration fields are:
 
 - `cedar`: The Cedar-specific configuration.
-  - `policies`: An array of Cedar policy strings.
+  - `policies`: An array of Cedar policy strings. Each entry must hold a single
+    policy statement.
   - `entities_json`: A JSON string representing Cedar entities.
 
 ### Writing Cedar policies
@@ -226,11 +239,16 @@ permit|forbid(principal, action, resource) when { conditions };
 - `conditions`: Optional conditions that must be satisfied for the policy to
   apply.
 
+Each entry in a `policies` list must hold exactly one `permit` or `forbid`
+statement. Entries that contain more than one statement are rejected; place
+each statement in its own list entry.
+
 #### Policy limits
 
 Inline policies on an `MCPRemoteProxy` are limited to 8 KiB (8192 bytes) each.
 The operator checks this limit together with the policy syntax. A policy over
-the limit is rejected the same way as one with a syntax error: the
+the limit, or an entry containing more than one statement, is rejected the same
+way as one with a syntax error: the
 `ConfigurationValid` condition is set to `False` with reason
 `AuthzPolicySyntaxInvalid`, the proxy phase is `Failed`, and the operator emits
 a Warning event that names the policy index and the limit, for example
@@ -859,8 +877,10 @@ A session-less token carries at most `sub`, `act`, `client_id` and `scope`, plus
 from the subject token; RFC 7523 JWT-bearer has no end user and carries neither).
 A token redeemed from an ID-JAG that carries `authorization_details` also
 carries the entries the authorization server granted: whole entries the
-ID-JAG's issuer signed, possibly fewer of them. An ID-JAG whose types are not
-registered is refused rather than redeemed (see
+ID-JAG's issuer signed, possibly fewer of them. When ToolHive's authorization
+server issues the ID-JAG, it signs the entries its client requested (see
+[On ID-JAG minting](arch/17-token-exchange-delegation.md#on-id-jag-minting)).
+An ID-JAG whose types are not registered is refused rather than redeemed (see
 [Authorization details](arch/17-token-exchange-delegation.md#on-id-jag-redemption)).
 Nothing else crosses. In particular **no upstream attribute is carried** — no
 `groups`, no `roles`, no `department`, nothing the pinned IdP asserted about the

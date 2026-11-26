@@ -18,6 +18,14 @@ import (
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
+func TestExtractBindingID_RejectsNilIdentity(t *testing.T) {
+	t.Parallel()
+
+	bindingID, err := extractBindingID(nil)
+	require.Error(t, err)
+	assert.Empty(t, bindingID)
+}
+
 // mockSession is a minimal implementation of MultiSession for testing.
 // It embeds the interface so only the methods exercised by tests need to be defined.
 type mockSession struct {
@@ -57,7 +65,9 @@ func (*mockSession) Close() error { return nil }
 func newDecoratedSession(t *testing.T, identity *auth.Identity) sessiontypes.MultiSession {
 	t.Helper()
 	base := newMockSession("test-session")
-	decorated, err := BindSession(base, identity)
+	bindingID, err := ResolveBinding(identity)
+	require.NoError(t, err)
+	decorated, err := BindSession(base, bindingID)
 	require.NoError(t, err)
 	require.NotNil(t, decorated)
 	return decorated
@@ -107,7 +117,7 @@ func TestBindSession_AcceptsRefreshedTokenWithSameIdentity(t *testing.T) {
 	require.NoError(t, err, "refreshed token with same identity must be accepted")
 }
 
-func TestBindSession_RejectsInvalidIdentityAtCreation(t *testing.T) {
+func TestResolveBinding_RejectsInvalidIdentity(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -127,12 +137,9 @@ func TestBindSession_RejectsInvalidIdentityAtCreation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			base := &metadataObservingSession{mockSession: newMockSession("test-session")}
-			decorated, err := BindSession(base, tt.identity)
-
+			bindingID, err := ResolveBinding(tt.identity)
 			require.Error(t, err)
-			assert.Nil(t, decorated)
-			assert.False(t, base.setMetadataCalled, "SetMetadata must not be called if binding extraction fails")
+			assert.Empty(t, bindingID)
 		})
 	}
 }
@@ -215,7 +222,9 @@ func TestBindSession_AnonymousSession(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			base := newMockSession("test-session")
-			decorated, err := BindSession(base, nil)
+			bindingID, err := ResolveBinding(nil)
+			require.NoError(t, err)
+			decorated, err := BindSession(base, bindingID)
 			require.NoError(t, err)
 			require.NotNil(t, decorated)
 			tt.assertFn(t, decorated)
@@ -226,8 +235,9 @@ func TestBindSession_AnonymousSession(t *testing.T) {
 func TestBindSession_NilSession(t *testing.T) {
 	t.Parallel()
 
-	identity := authedIdentity("tok", "https://idp.example", "alice")
-	decorated, err := BindSession(nil, identity)
+	bindingID, err := ResolveBinding(authedIdentity("tok", "https://idp.example", "alice"))
+	require.NoError(t, err)
+	decorated, err := BindSession(nil, bindingID)
 	require.Error(t, err)
 	assert.Nil(t, decorated)
 }
@@ -277,17 +287,4 @@ func TestBindSession_ConcurrentRefreshRace(t *testing.T) {
 	for i, err := range errs {
 		assert.NoError(t, err, "goroutine %d must succeed with same identity and different token", i)
 	}
-}
-
-// metadataObservingSession wraps mockSession and records whether SetMetadata
-// was ever called. Used in tests that assert SetMetadata is NOT called before
-// a binding is validated.
-type metadataObservingSession struct {
-	*mockSession
-	setMetadataCalled bool
-}
-
-func (m *metadataObservingSession) SetMetadata(key, value string) {
-	m.setMetadataCalled = true
-	m.mockSession.SetMetadata(key, value)
 }

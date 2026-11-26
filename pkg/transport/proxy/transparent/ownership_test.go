@@ -18,6 +18,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -148,4 +149,61 @@ func TestSessionOwnershipHTTP(t *testing.T) {
 			require.NoError(t, sessionbinding.Validate(stillOwner, owner))
 		})
 	}
+}
+
+func TestDelegatedSessionOwnershipThroughLoadIfOwner(t *testing.T) {
+	t.Parallel()
+
+	const sid = "delegated-backend-session"
+	const backend = "http://backend.example.com"
+	proxy := NewTransparentProxyWithOptions(
+		"127.0.0.1", 0, backend, nil, nil, nil, false, false, "streamable-http", nil, nil, nil, "", false, nil,
+	)
+	t.Cleanup(func() { require.NoError(t, proxy.Stop(context.Background())) })
+	var forwarded []string
+	transport := newTracingTransport(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		forwarded = append(forwarded, req.Header.Get("Mcp-Session-Id"))
+		resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}
+		if len(forwarded) == 1 {
+			resp.Header.Set("Mcp-Session-Id", sid)
+		}
+		return resp, nil
+	}), proxy)
+
+	send := func(clientID, sessionID, body string) *http.Response {
+		t.Helper()
+		identity := &auth.Identity{
+			AdmissionRoute: auth.AdmissionRouteDelegated,
+			Token:          "token-" + clientID,
+			PrincipalInfo: auth.PrincipalInfo{Claims: map[string]any{
+				"iss": "issuer", "sub": "owner", "client_id": clientID,
+				"act": map[string]any{"iss": "actor-issuer", "sub": "actor-subject"},
+			}},
+		}
+		ctx := auth.WithIdentity(t.Context(), identity)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, backend+"/mcp", strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+		resp, err := transport.RoundTrip(req)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, resp.Body.Close()) })
+		return resp
+	}
+
+	init := send("client", "", `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	require.Equal(t, http.StatusOK, init.StatusCode)
+	require.Equal(t, sid, init.Header.Get("Mcp-Session-Id"))
+	const list = `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`
+	foreign := send("other-client", sid, list)
+	require.Equal(t, http.StatusNotFound, foreign.StatusCode)
+	body, err := io.ReadAll(foreign.Body)
+	require.NoError(t, err)
+	require.JSONEq(t, string(session.NotFoundBody(2)), string(body))
+	require.Len(t, forwarded, 1, "the foreign request must not reach the backend")
+
+	require.Equal(t, http.StatusOK, send("client", sid, list).StatusCode)
+	require.Equal(t, []string{"", sid}, forwarded, "the owner must still reach the backend with the same session ID")
 }

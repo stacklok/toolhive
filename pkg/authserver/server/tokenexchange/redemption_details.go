@@ -23,8 +23,8 @@ import (
 )
 
 // Reasons sent in error_description with invalid_authorization_details when a
-// redemption is refused for its authorization_details. The log line of a
-// refusal names the same reason.
+// redemption, or a request that mints an ID-JAG, is refused for its
+// authorization_details. The log line of a refusal names the same reason.
 const (
 	reasonDetailsParameterNotAllowed = "parameter_not_allowed"
 	reasonDetailsUnknownType         = "unknown_type"

@@ -817,6 +817,121 @@ func TestMCPServerReconciler_InvalidCABundleDoesNotFlapLastTransitionTime(t *tes
 		"an unchanged terminal CA failure must not restamp LastTransitionTime")
 }
 
+// TestMCPServerReconciler_handleExternalAuthConfig_DoesNotFlapLastTransitionTime
+// guards against mirrorInvalidOnMCPServer's clear branch removing a condition
+// that it did not write. The referenced MCPExternalAuthConfig is healthy, so the
+// mirror takes its clear branch on every reconcile. If it removed the healthy
+// True condition (or another owner's failure), handleExternalAuthConfig would
+// re-add it a few lines later with a fresh LastTransitionTime, so every
+// reconcile would write status and that write would trigger the next reconcile.
+func TestMCPServerReconciler_handleExternalAuthConfig_DoesNotFlapLastTransitionTime(t *testing.T) {
+	t.Parallel()
+
+	const (
+		authName   = "auth"
+		namespace  = "default"
+		configHash = "config-hash"
+		generation = int64(3)
+	)
+
+	healthySource := func() *mcpv1beta1.MCPExternalAuthConfig {
+		return &mcpv1beta1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: authName, Namespace: namespace},
+			Spec:       mcpv1beta1.MCPExternalAuthConfigSpec{Type: mcpv1beta1.ExternalAuthTypeUnauthenticated},
+			Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+				ConfigHash: configHash,
+				Conditions: []metav1.Condition{{
+					Type:   mcpv1beta1.ConditionTypeValid,
+					Status: metav1.ConditionTrue,
+					Reason: "ValidationSucceeded",
+				}},
+			},
+		}
+	}
+	multiUpstreamSource := func() *mcpv1beta1.MCPExternalAuthConfig {
+		source := healthySource()
+		source.Spec = mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+				{Name: "first", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				{Name: "second", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+			}},
+		}
+		return source
+	}
+
+	tests := []struct {
+		name        string
+		source      *mcpv1beta1.MCPExternalAuthConfig
+		seeded      metav1.Condition
+		expectError bool
+	}{
+		{
+			name:   "healthy ExternalAuthConfigValid condition",
+			source: healthySource(),
+			seeded: metav1.Condition{
+				Status:  metav1.ConditionTrue,
+				Reason:  mcpv1beta1.ConditionReasonExternalAuthConfigValid,
+				Message: "MCPExternalAuthConfig 'auth' is valid",
+			},
+		},
+		{
+			name:   "multi-upstream failure owned by the single-upstream check",
+			source: multiUpstreamSource(),
+			seeded: metav1.Condition{
+				Status:  metav1.ConditionFalse,
+				Reason:  mcpv1beta1.ConditionReasonExternalAuthConfigMultiUpstream,
+				Message: "MCPServer supports only one upstream provider (found 2); use VirtualMCPServer for multi-upstream",
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Seeded well in the past: metav1.Time has second resolution, so a
+			// remove-then-re-add within one reconcile is only observable against a
+			// timestamp that predates the test run.
+			seeded := tt.seeded
+			seeded.Type = mcpv1beta1.ConditionTypeExternalAuthConfigValidated
+			seeded.ObservedGeneration = generation
+			seeded.LastTransitionTime = metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+
+			server := v1beta1test.NewMCPServer("server", namespace,
+				v1beta1test.WithImage("test"),
+				v1beta1test.WithExternalAuthConfigRef(authName),
+				v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+					ExternalAuthConfigHash: configHash,
+					Conditions:             []metav1.Condition{seeded},
+				}),
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Generation = generation
+				}),
+			)
+			scheme := testutil.NewScheme(t)
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+				WithObjects(server, tt.source).
+				WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+				Build()
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+			err := reconciler.handleExternalAuthConfig(t.Context(), server)
+			if tt.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			condition := meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+			require.NotNil(t, condition)
+			assert.Equal(t, seeded, *condition,
+				"an unchanged condition must not be removed and re-added with a fresh LastTransitionTime")
+		})
+	}
+}
+
 // guards against mirrorInvalidOnMCPServer's clear branch clobbering the
 // ExternalAuthConfigValidated condition that handleInvalidEmbeddedAuthServerConfig
 // owns for a different reason (delegate clients configured without OIDC).

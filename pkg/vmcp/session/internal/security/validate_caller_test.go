@@ -9,7 +9,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/binding"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/security"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
@@ -68,5 +70,76 @@ func TestValidateCaller(t *testing.T) {
 			}
 			assert.ErrorIs(t, err, tc.wantErr)
 		})
+	}
+}
+
+func TestValidateCaller_Delegated(t *testing.T) {
+	t.Parallel()
+
+	interactive := boundIdentity("token", "user-42")
+	interactive.AdmissionRoute = auth.AdmissionRouteInteractive
+	refreshed := func() *auth.Identity {
+		caller := delegatedCaller("client", nil)
+		caller.Token = "renewed-token"
+		caller.Claims["jti"] = "renewed-id"
+		caller.Claims["exp"] = 2000
+		caller.Claims["authorization_details"] = []any{map[string]any{"type": "changed"}}
+		caller.DelegationChain = audit.ParseDelegationChain(map[string]any{
+			"iss": "actor-issuer", "sub": "actor",
+			"act": map[string]any{"iss": "prior-issuer", "sub": "changed-prior-actor"},
+		}, auth.DefaultMaxDelegationDepth)
+		return caller
+	}
+
+	for _, tc := range []struct {
+		name, stored string
+		caller       *auth.Identity
+		wantErr      error
+	}{
+		{"refreshed with changed nested actor", delegatedActorBinding, refreshed(), nil},
+		{"wrong client with actor", delegatedActorBinding, delegatedCaller("other-client", testActor()), sessiontypes.ErrUnauthorizedCaller},
+		{"interactive caller on actorless session", delegatedBinding, interactive, sessiontypes.ErrUnauthorizedCaller},
+		{"delegated caller on interactive session", standardBinding, delegatedCaller("client", testActor()), sessiontypes.ErrUnauthorizedCaller},
+		{"missing client", delegatedBinding, delegatedCaller("", nil), sessiontypes.ErrUnauthorizedCaller},
+		{"malformed actor", delegatedActorBinding, delegatedCaller("client", "malformed"), sessiontypes.ErrUnauthorizedCaller},
+		{"tokenless delegated caller on anonymous session", sessionbinding.UnauthenticatedSentinel,
+			&auth.Identity{AdmissionRoute: auth.AdmissionRouteDelegated}, sessiontypes.ErrUnauthorizedCaller},
+		{"tokenless unknown-route caller on anonymous session", sessionbinding.UnauthenticatedSentinel,
+			&auth.Identity{AdmissionRoute: "custom"}, sessiontypes.ErrUnauthorizedCaller},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := security.ValidateCaller(tc.stored, tc.caller)
+			if tc.wantErr != nil {
+				assert.ErrorIs(t, err, tc.wantErr)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+const (
+	standardBinding       = testIssuer + "\x00user-42"
+	delegatedBinding      = standardBinding + "\x00delegated\x00client"
+	delegatedActorBinding = delegatedBinding + "\x00actor-issuer\x00actor"
+)
+
+func delegatedCaller(clientID string, actor any) *auth.Identity {
+	caller := boundIdentity("original-token", "user-42")
+	caller.AdmissionRoute = auth.AdmissionRouteDelegated
+	if clientID != "" {
+		caller.Claims["client_id"] = clientID
+	}
+	if actor != nil {
+		caller.Claims["act"] = actor
+	}
+	return caller
+}
+
+func testActor() map[string]any {
+	return map[string]any{
+		"iss": "actor-issuer", "sub": "actor",
+		"act": map[string]any{"iss": "prior-issuer", "sub": "original-prior-actor"},
 	}
 }

@@ -1003,8 +1003,9 @@ func (sm *Manager) loadSession(ctx context.Context, sessionID string) (vmcpsessi
 
 	// Don't restore placeholder sessions (Phase 2 never ran).
 	// BindSession always writes MetadataKeyIdentityBinding during Phase 2
-	// (the unauthenticated sentinel for anonymous sessions, a bound (iss, sub)
-	// binding for authenticated ones). Its absence means Generate() stored
+	// (the unauthenticated sentinel for anonymous sessions, a bound
+	// binding (issuer and subject, plus route, client_id and actor for
+	// delegated ones) for authenticated ones). Its absence means Generate() stored
 	// this record but CreateSession() never completed — treat it as "not
 	// found" rather than "corrupted".
 	//

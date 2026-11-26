@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package sessionbinding binds sessions to the validated issuer and subject, never
+// Package sessionbinding binds sessions to the validated issuer and subject, plus
+// the client and optional outermost actor for delegated identities. It never binds
 // to a bearer token. Authentication must run before ownership enforcement.
 package sessionbinding
 
@@ -9,13 +10,17 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 )
+
+const clientIDClaimKey = "client_id"
 
 // MetadataKey is shared with persisted vMCP sessions for compatibility.
 const MetadataKey = session.MetadataKeyIdentityBinding
@@ -24,7 +29,7 @@ const MetadataKey = session.MetadataKeyIdentityBinding
 const UnauthenticatedSentinel = "unauthenticated"
 
 var (
-	// ErrInvalidBinding denotes malformed issuer/subject claims.
+	// ErrInvalidBinding denotes an identity that cannot be bound to a session.
 	ErrInvalidBinding = errors.New("invalid identity binding")
 	// ErrNotFound deliberately conceals missing, unowned and foreign sessions.
 	ErrNotFound = session.ErrSessionNotFound
@@ -32,35 +37,67 @@ var (
 
 // Format encodes a nonempty issuer and subject separated by exactly one NUL.
 func Format(iss, sub string) (string, error) {
-	if iss == "" || sub == "" || strings.ContainsRune(iss, '\x00') || strings.ContainsRune(sub, '\x00') {
-		return "", ErrInvalidBinding
-	}
-	return iss + "\x00" + sub, nil
+	return formatBinding(parsedBinding{iss: iss, sub: sub})
 }
 
-// Parse rejects malformed bindings and the unauthenticated sentinel.
+// Parse rejects malformed bindings and the unauthenticated sentinel. For a
+// delegated binding it returns only the issuer and subject prefix. Use Validate
+// to compare full bindings; passing the parsed fields to Format loses ownership data.
 func Parse(value string) (iss, sub string, ok bool) {
-	iss, sub, ok = strings.Cut(value, "\x00")
-	if !ok || iss == "" || sub == "" || strings.ContainsRune(sub, '\x00') {
-		return "", "", false
-	}
-	return iss, sub, true
+	b, ok := parseBinding(value)
+	return b.iss, b.sub, ok
 }
 
 // FromIdentity accepts nil only for auth-disabled deployments. A synthetic
 // anonymous/local identity with valid claims binds normally; malformed non-nil
 // identities must never downgrade to the unauthenticated sentinel.
+//
+// The binding depends on the admission route. Interactive and unspecified
+// identities, including sessionless grants without the delegated-access marker,
+// bind two fields: issuer and subject. A delegated identity binds four fields
+// (issuer, subject, route, client_id), or six when it carries an actor (plus
+// the outermost act issuer and subject). A delegated identity with a missing or
+// invalid client_id, a malformed, incomplete or explicitly null act, or an
+// unknown route returns ErrInvalidBinding. An absent act is not an error.
 func FromIdentity(identity *auth.Identity) (string, error) {
 	if identity == nil {
 		return UnauthenticatedSentinel, nil
 	}
 	iss, _ := identity.Claims["iss"].(string)
 	sub, _ := identity.Claims["sub"].(string)
-	return Format(iss, sub)
+	b := parsedBinding{iss: iss, sub: sub}
+	switch identity.AdmissionRoute {
+	case auth.AdmissionRouteUnspecified, auth.AdmissionRouteInteractive:
+		return formatBinding(b)
+	case auth.AdmissionRouteDelegated:
+		b.route = string(auth.AdmissionRouteDelegated)
+		b.clientID, _ = identity.Claims[clientIDClaimKey].(string)
+		if rawAct, present := identity.Claims["act"]; present && rawAct == nil {
+			return "", fmt.Errorf("%w: null act claim", ErrInvalidBinding)
+		}
+		chain := func() *audit.DelegationChain {
+			if rawAct := identity.Claims["act"]; identity.DelegationChain.IsZero() && rawAct != nil {
+				return audit.ParseDelegationChain(rawAct, auth.DefaultMaxDelegationDepth)
+			}
+			return identity.DelegationChain
+		}()
+		if !chain.IsZero() {
+			// An empty actor issuer is invalid here because issuedAct fills an
+			// omitted act.iss and actor.Effective refuses a present-but-empty
+			// act.iss. Revisit this if issuance drops the fill or adds a SourceClient route.
+			if chain.Malformed || len(chain.Chain) == 0 || chain.Chain[0].Issuer == "" || chain.Chain[0].Subject == "" {
+				return "", fmt.Errorf("%w: malformed delegation chain", ErrInvalidBinding)
+			}
+			b.actIss, b.actSub = chain.Chain[0].Issuer, chain.Chain[0].Subject
+		}
+		return formatBinding(b)
+	default:
+		return "", fmt.Errorf("%w: unsupported admission route", ErrInvalidBinding)
+	}
 }
 
 // Validate fails closed for legacy records without an owner. Refreshed tokens
-// for the same issuer and subject are accepted. It never mutates session state.
+// are accepted when the full binding matches. It never mutates session state.
 func Validate(stored string, identity *auth.Identity) error {
 	if stored != UnauthenticatedSentinel {
 		if _, _, ok := Parse(stored); !ok {
@@ -146,4 +183,78 @@ func NewMiddleware(extract func(*http.Request) (string, error), lookup Lookup,
 			next.ServeHTTP(w, r)
 		})
 	}, nil
+}
+
+type parsedBinding struct {
+	iss, sub, route, clientID, actIss, actSub string
+}
+
+func parseBinding(value string) (parsedBinding, bool) {
+	iss, rest, ok := strings.Cut(value, "\x00")
+	if !ok || iss == "" {
+		return parsedBinding{}, false
+	}
+	sub, rest, extended := strings.Cut(rest, "\x00")
+	if sub == "" {
+		return parsedBinding{}, false
+	}
+	b := parsedBinding{iss: iss, sub: sub}
+	if !extended {
+		return b, true
+	}
+
+	route, rest, ok := strings.Cut(rest, "\x00")
+	if !ok {
+		return parsedBinding{}, false
+	}
+	b.route = route
+	switch route {
+	case string(auth.AdmissionRouteDelegated):
+		clientID, rest, hasActor := strings.Cut(rest, "\x00")
+		if clientID == "" {
+			return parsedBinding{}, false
+		}
+		b.clientID = clientID
+		if hasActor {
+			actIss, actSub, ok := strings.Cut(rest, "\x00")
+			if !ok || actIss == "" || actSub == "" || strings.ContainsRune(actSub, '\x00') {
+				return parsedBinding{}, false
+			}
+			b.actIss, b.actSub = actIss, actSub
+		}
+		return b, true
+	default:
+		return parsedBinding{}, false
+	}
+}
+
+func formatBinding(b parsedBinding) (string, error) {
+	if b.iss == "" || b.sub == "" {
+		return "", fmt.Errorf("%w: missing issuer or subject", ErrInvalidBinding)
+	}
+	for _, field := range [...]string{b.iss, b.sub, b.route, b.clientID, b.actIss, b.actSub} {
+		if strings.ContainsRune(field, '\x00') {
+			return "", fmt.Errorf("%w: NUL in binding field", ErrInvalidBinding)
+		}
+	}
+	switch b.route {
+	case "":
+		if b.clientID != "" || b.actIss != "" || b.actSub != "" {
+			return "", fmt.Errorf("%w: unexpected delegated fields", ErrInvalidBinding)
+		}
+		return b.iss + "\x00" + b.sub, nil
+	case string(auth.AdmissionRouteDelegated):
+		if b.clientID == "" {
+			return "", fmt.Errorf("%w: missing client ID", ErrInvalidBinding)
+		}
+		if (b.actIss == "") != (b.actSub == "") {
+			return "", fmt.Errorf("%w: incomplete actor", ErrInvalidBinding)
+		}
+		if b.actIss == "" {
+			return b.iss + "\x00" + b.sub + "\x00" + b.route + "\x00" + b.clientID, nil
+		}
+		return b.iss + "\x00" + b.sub + "\x00" + b.route + "\x00" + b.clientID + "\x00" + b.actIss + "\x00" + b.actSub, nil
+	default:
+		return "", fmt.Errorf("%w: unsupported binding route", ErrInvalidBinding)
+	}
 }

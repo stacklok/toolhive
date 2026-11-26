@@ -2060,11 +2060,14 @@ the plain path for it.
 
 ## Authorization details
 
-RFC 9396 `authorization_details` reaches this server in two places: as the
-request parameter of an RFC 8693 token exchange, and as the signed claim of an
-ID-JAG redeemed with the RFC 7523 JWT-bearer grant. Both read one type
-registry. Without a registry, token exchange ignores the parameter, and an
-ID-JAG that carries the claim is refused with `unknown_type`.
+RFC 9396 `authorization_details` reaches this server in three places: as the
+request parameter of an RFC 8693 token exchange for an access token, which
+echoes the granted entries; as the request parameter of a token exchange for an
+ID-JAG, which signs them into the ID-JAG; and as the signed claim of an ID-JAG
+redeemed with the RFC 7523 JWT-bearer grant. All three read one type registry.
+Without a registry, a token exchange for an access token ignores the
+parameter, while a request for an ID-JAG that sends it and an ID-JAG that
+carries the claim are both refused with `unknown_type`.
 
 **The registry.** The registry (`pkg/authserver/authorizationdetails`) is
 Go-only. It is not part of `RunConfig`, YAML, or CRDs. It maps exact,
@@ -2072,7 +2075,15 @@ case-sensitive `type` names to a `Type`, which lists the grant types it applies
 to (`GrantTypes`) and a `Grant` hook. A type applies to ID-JAG redemption when
 it lists `urn:ietf:params:oauth:grant-type:jwt-bearer`; that grant type means
 ID-JAG redemption only, because the plain RFC 7523 grant refuses an assertion
-that carries the claim. Nothing is advertised in discovery.
+that carries the claim. A type that lists
+`urn:ietf:params:oauth:grant-type:token-exchange` applies to a token exchange
+for an access token, which only echoes the entries. A type applies to a token
+exchange for an ID-JAG, which signs the entries into the ID-JAG, only when it
+lists `authorizationdetails.IDJAGIssuance`
+(`urn:ietf:params:oauth:token-type:id-jag`, the ID-JAG token-type URN, which no
+grant type can equal). The two are independent, so a type written for
+exchanged access tokens is never signed into an ID-JAG that another server
+trusts unless its author opts in. Nothing is advertised in discovery.
 
 A value must follow RFC 9396 section 2: one JSON array of objects, each with a
 non-empty string `type` registered for the grant type. On top of that, ToolHive
@@ -2081,7 +2092,8 @@ under JSON case folding (the folding `encoding/json` uses to match struct
 fields), values over 64 KiB, and nesting deeper than 64 containers.
 
 Each type's `Grant` hook runs once per request, with all of that type's entries
-and the request context. The `Request` holds what every grant has (`Entries`,
+and the request context (a request for an ID-JAG decides in both of fosite's
+handler phases, so there it runs twice). The `Request` holds what every grant has (`Entries`,
 `GrantType`, `ClientID`, `GrantedAudience`, `Subject`) at the top level. What
 only one grant has is in its own part, nil on the other grant: `Exchange`
 (`Actor`, `ActorTokenPresent`, `RequestedTokenType`, `RequestedScopes`) on
@@ -2095,6 +2107,9 @@ which keep every digit of a number; `Request.Subject.Claims` leaves the
 `authorization_details` claim out.
 
 ### On token exchange
+
+This subsection covers a token exchange for an access token. A request for an
+ID-JAG follows [On ID-JAG minting](#on-id-jag-minting) instead.
 
 An absent parameter or a single empty value (`authorization_details=`) is
 ignored and nothing is echoed, while `[]` is accepted and echoed as
@@ -2133,6 +2148,88 @@ logged at any level, and the submitted value is never logged.
 
 A subject or actor token that carries `authorization_details` is never
 exchanged (see [Terminal tokens](#terminal-tokens)).
+
+### On ID-JAG minting
+
+A client that requests an ID-JAG (see [Minting ID-JAGs from a
+grant](#minting-id-jags-from-a-grant)) may send the `authorization_details`
+parameter. AS-1 signs the entries it grants into the ID-JAG's
+`authorization_details` claim, which AS-2 must process (draft sections 4.3.3
+and 4.4.1; see [On ID-JAG redemption](#on-id-jag-redemption)). The steps:
+
+1. **The parameter's shape**, after the request parameters and the target and
+   before the grant is read. An absent parameter or a single empty value mints
+   an ID-JAG with no claim. A repeated parameter, empty values included, is
+   refused with `invalid_request`. A value that breaks the generic shape rules
+   above is `invalid_authorization_details` and `malformed_entry`, with or
+   without a registry (without one, a registry that knows no type parses it).
+   With no registry, or a type that does not list
+   `authorizationdetails.IDJAGIssuance` (listing only the token-exchange grant
+   type is not enough), the request is refused with `unknown_type`: an ID-JAG
+   carries what it is minted with, so a type that has not opted in is refused,
+   never ignored.
+2. **The hooks**, after every grant and subject-claim check and before the
+   actor validator, so a refused entry never reaches the validator. The hook
+   `Request` describes the grant behind the opaque refresh token:
+   `Subject.Issuer` is AS-1, `Subject.Subject` is the grant's user (the
+   ID-JAG's `sub`), `Subject.ClientID` is the client that holds the grant,
+   `Subject.IssuedAt` is the grant's creation, and `Subject.Expiry` is the
+   earlier of the grant's expiry and its `id_jag_max_lifetime` cap.
+   `GrantedAudience` is the target issuer (the ID-JAG's `aud`).
+   `Exchange.RequestedTokenType` is the ID-JAG type. For a client with an
+   actor profile, `Exchange.Actor` is empty and `Exchange.ActorTokenPresent` is
+   true, because the actor token is validated after the hooks; for any other
+   client `Exchange.Actor` is the client ID, or the verified SPIFFE ID for a
+   SPIFFE client, as on token exchange for an access token.
+3. **Whole entries only.** As on redemption, the hooks run through
+   `Pending.GrantSubset`: a hook returns the entries it keeps exactly as it
+   received them. A type whose hook keeps none of its entries is dropped. When
+   no entry is left, `[]` included, the request is refused with `empty_grant`,
+   because an ID-JAG without the claim would yield an unrestricted token. A
+   hook that changes or adds an entry is a `server_error`.
+4. **The signed size.** Kept entries over 32 KiB in the form they are signed
+   in are refused with `malformed_entry`, before the actor validator. The
+   escapes below can make that form several times the request's size, and the
+   redemption request carries the ID-JAG base64url-encoded in a body every token
+   endpoint caps at 64 KiB; 32 KiB leaves room there for the ID-JAG's other
+   claims and the rest of the form.
+
+**Token and response.** The ID-JAG's `authorization_details` claim holds each
+kept entry's request bytes in `encoding/json` form: compacted, with `<`, `>`,
+`&`, U+2028 and U+2029 escaped, and every digit of a number kept. Kept entries
+are grouped by type, types in the order they first appear, so a request that
+interleaves types comes back reordered. The response returns the same bytes in
+its `authorization_details` member (draft section 4.3.4). A ToolHive AS-2
+copies the signed bytes of the entries it keeps into its access token: when
+it keeps them all, the ID-JAG's claim, both responses and the access token's
+claim are the same bytes, and when its hooks drop some, the access token
+carries fewer.
+
+**Errors.** A refusal is sent in the first handler phase that reaches it, and
+nothing is minted.
+
+| Cause | Response |
+| --- | --- |
+| The parameter repeated | `invalid_request`, "The authorization_details parameter must not be repeated." |
+| No registry, or a type that does not list `authorizationdetails.IDJAGIssuance` | `invalid_authorization_details`, `unknown_type` |
+| A value that breaks the generic shape rules | `invalid_authorization_details`, `malformed_entry` |
+| A hook refuses with an `authorizationdetails.Error` | its code, its reason as `error_description` |
+| `[]`, or the hooks together keep none of the entries | `invalid_authorization_details`, `empty_grant` |
+| The kept entries are over 32 KiB in their signed form | `invalid_authorization_details`, `malformed_entry` |
+| A hook fails (any error but an `authorizationdetails.Error`, a fosite error included), returns invalid output, or changes or adds an entry | 500 `server_error`, "The authorization_details could not be processed." |
+
+Each refusal is logged as `Exchange grant refused` at WARN with a fixed reason:
+`repeated`, `unknown_type`, `malformed_entry`, `details_too_large`,
+`empty_grant` (with the dropped `types`), `hook_rejected` (with `code` and
+`hook_reason`) or `hook_failed`. The types of an `unknown_type` refusal are
+request text that matched no registration, so they are not logged, as on token
+exchange for an access token. The text of a failed hook's error and an entry's
+value are never logged.
+
+**Release order.** An AS-2 that predates claim processing ignores the claim and
+issues an access token the entry does not restrict. Send entries only to an
+AS-2 that processes the claim; a ToolHive AS-2 does from the release that
+signs them.
 
 ### On ID-JAG redemption
 
@@ -2247,7 +2344,8 @@ Pass `runner.WithAuthorizationDetailsRegistry` to `NewEmbeddedAuthServer` or
 `NewEmbeddedAuthServerWithStorage`, or set
 `authserver.Config.AuthorizationDetailsRegistry` before `authserver.New`. The
 registry goes to the token-exchange factory and to the ID-JAG factory
-(`tokenexchange.WithAuthorizationDetailsRegistry`). Setting a registry while
+(`tokenexchange.WithAuthorizationDetailsRegistry`), and to the refresh-token
+factory that mints ID-JAGs (`tokenexchange.WithIDJAGAuthorizationDetailsRegistry`). Setting a registry while
 neither token exchange nor ID-JAG redemption (a trusted issuer that accepts
 `id_jag` assertions) is enabled is a startup error
 (`authserver.ErrAuthorizationDetailsRegistryUnreachable`).
@@ -2263,11 +2361,12 @@ registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 })
 ```
 
-**Boundary.** Details a token exchange grants are not put in its token, not
-persisted, and not conveyed to resource servers. Details an ID-JAG redemption
-grants are in the issued token; enforcing them is the resource server's job.
-The vMCP enforces the `mcp_tool_call` type; see
-[Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
+**Boundary.** Details a token exchange for an access token grants are not put
+in its token, not persisted, and not conveyed to resource servers. Details a
+token exchange for an ID-JAG grants are signed into the ID-JAG, for AS-2 to
+process. Details an ID-JAG redemption grants are in the issued token; enforcing
+them is the resource server's job. The vMCP enforces the `mcp_tool_call` type;
+see [Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
 Register only types the deployment enforces. Conveying exchanged details to
 resource servers is tracked in
 [#6909](https://github.com/stacklok/toolhive/issues/6909), and grant storage in
@@ -2286,23 +2385,27 @@ yet. `arguments_sha256` is the lowercase hex
 SHA-256 of the RFC 8785 serialization of `params.arguments`, or of `{}` when
 the arguments are absent or `null`. Nothing registers it by default; an embedder
 adds it with `toolcalldetails.Register` to the types passed to
-`authorizationdetails.New`. It is registered for token exchange and JWT-bearer.
+`authorizationdetails.New`. It is registered for token exchange,
+`authorizationdetails.IDJAGIssuance` and JWT-bearer.
 On token exchange its hook refuses any request whose `requested_token_type` is
 not the ID-JAG type, with `invalid_request` and `id_jag_required`; it refuses
 the same way a request that carries neither the `Exchange` nor the
-`Redemption` part. Requests for
-an ID-JAG still refuse the parameter, so ToolHive does not yet sign the entry
-into an ID-JAG it issues. On ID-JAG redemption, an entry signed by a trusted
-issuer goes through the same hook and, once granted, is in the issued access
-token; see [On ID-JAG redemption](#on-id-jag-redemption). The hook
+`Redemption` part. On a request for an ID-JAG, a granted entry is signed into
+the ID-JAG; see [On ID-JAG minting](#on-id-jag-minting). On ID-JAG redemption,
+an entry signed by a trusted issuer goes through the same hook and, once
+granted, is in the issued access token; see [On ID-JAG
+redemption](#on-id-jag-redemption). For the end-to-end binding, register the
+type on both servers. The hook
 accepts exactly one entry of its type, with no other members, and grants it
 unchanged; it does not see entries of other registered types. Otherwise it
 refuses with `invalid_authorization_details` and one of
 `single_entry_required`, `malformed_entry`, `invalid_arguments_hash` or
-`invalid_method`. The authorization server checks only the entry's shape; the
-receiver of the token enforces the call, using `toolcalldetails.ParseEntry` for
-the same shape check. The vMCP enforces a tool-call entry and refuses a
-list-call entry for now; see
+`invalid_method`. On a request for an ID-JAG it also refuses a list-call entry,
+with `list_call_unsupported`, so no ID-JAG carries an entry the vMCP would
+refuse. The authorization server checks only the entry's shape; the receiver
+of the token enforces the call, using `toolcalldetails.ParseEntry` for the same
+shape check. The vMCP enforces a tool-call entry and refuses a list-call entry
+for now; see
 [Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
 
 ## Refresh tokens through token exchange
@@ -2725,11 +2828,13 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 ```
 
 `audience` must be exactly one target `issuer` and `resource` exactly one of
-that target's `resources`, both as written. `scope` and `authorization_details`
-are refused. `actor_token` and `actor_token_type` are refused too, unless the
-client has an actor profile, which must send both (see [Required actor
-parameters](#required-actor-parameters)). Unknown parameters, including `sub`,
-are ignored. The response is `200` with `Cache-Control: no-store`:
+that target's `resources`, both as written. `scope` is refused.
+`authorization_details` is optional: the entries AS-1 grants are signed into the
+ID-JAG (see [On ID-JAG minting](#on-id-jag-minting)). `actor_token` and
+`actor_token_type` are refused, unless the client has an actor profile, which
+must send both (see [Required actor parameters](#required-actor-parameters)).
+Unknown parameters, including `sub`, are ignored. The response is `200` with
+`Cache-Control: no-store`:
 
 ```json
 {
@@ -2740,7 +2845,9 @@ are ignored. The response is `200` with `Cache-Control: no-store`:
 }
 ```
 
-There is no `refresh_token` and no `scope`. The ID-JAG's header `typ` is
+There is no `refresh_token` and no `scope`. When the ID-JAG carries
+`authorization_details`, the response also has an `authorization_details`
+member with the same bytes as the claim. The ID-JAG's header `typ` is
 `oauth-id-jag+jwt`, and it is signed with AS-1's access-token key. Its claims
 are listed in "Claims and subject".
 
@@ -2750,12 +2857,13 @@ The server stops at the first check that fails:
 
 1. The client: confidential, with the token-exchange grant, and with both
    `exchange_refresh_tokens` and `id_jag.targets`.
-2. The request shape: `subject_token`, `audience`, `resource`, then `scope` and
-   `authorization_details` (refused). Then the actor parameters: a client
-   without an actor profile has `actor_token` and `actor_token_type` refused,
-   and a client with one must send them (see [Required actor
-   parameters](#required-actor-parameters)). Then a target of this client that
-   lists the `resource`. Nothing is read from the store yet.
+2. The request shape: `subject_token`, `audience`, `resource`, then `scope`
+   (refused). Then the actor parameters: a client without an actor profile has
+   `actor_token` and `actor_token_type` refused, and a client with one must
+   send them (see [Required actor parameters](#required-actor-parameters)).
+   Then a target of this client that lists the `resource`. Then the shape of
+   `authorization_details`, when sent (see [On ID-JAG
+   minting](#on-id-jag-minting)). Nothing is read from the store yet.
 3. The grant: an unknown, forged, foreign, login or expired token all get
    `grant_invalid`. Then revoked, parent revoked, and `not_issuable` when the
    grant does not list the ID-JAG output.
@@ -2764,7 +2872,9 @@ The server stops at the first check that fails:
    `upstream_subject` must both be complete, with `sub_id` in the `iss_sub`
    format and the same issuer in both, or both be absent. A broken pair is a
    `server_error`, and the validator is not called.
-6. For a client with an actor profile: the actor validator, called once, after
+6. When `authorization_details` was sent: the type hooks decide which entries
+   the ID-JAG carries. A refusal here never reaches the validator.
+7. For a client with an actor profile: the actor validator, called once, after
    every check above (see [Why the validator is last](#why-the-validator-is-last)).
    Its answer sets `act` and `iat` and caps `exp`. The bounds check and signing
    follow. Just before the call, an actor token this server signed that is
@@ -2774,7 +2884,9 @@ An `error_description` is either a *stable reason*, the whole text, which is
 safe to match on, or a *hint* that can change (match on `error`). Grant problems
 use `invalid_request`, as RFC 8693 section 2.2.2 requires. The stable reasons
 are `grant_invalid`, `revoked`, `parent_revoked`, `not_issuable`,
-`upstream_subject_missing`, `sub_id_missing` and `dpop_not_supported`. A client
+`upstream_subject_missing`, `sub_id_missing` and `dpop_not_supported`, and,
+under `invalid_authorization_details`, `unknown_type`, `malformed_entry`,
+`empty_grant` or a type hook's reason. A client
 with an actor profile can also get `actor_token_expired`, `approval_required` or
 `denied` from the actor check (see [Outcomes](#outcomes)). `bound_elapsed` is
 the one grant problem sent as `invalid_grant` (see [Grant reuse and
@@ -2854,8 +2966,9 @@ broker's `subject_token_audiences` is missing there, a target that requires
 | `sub_id` | object | Only if the target requires it: `{"format": "iss_sub", "iss", "sub"}` (RFC 9493) |
 | `https://toolhive.dev/upstream_subject` | object | Only if the target requires it: `{"iss", "claim", "value"}`. The config calls it `upstream_subject` |
 | `act` | object | Only for a client with an actor profile: `{"iss", "sub"}`, the issuer registered for the client's validator and the agent ID it returned |
+| `authorization_details` | array | Only if the request sent it: the entries the type hooks kept, their request bytes in `encoding/json` form (see [On ID-JAG minting](#on-id-jag-minting)) |
 
-There is no `nbf`, `scope`, `cnf` or `authorization_details` claim. A client without
+There is no `nbf`, `scope` or `cnf` claim. A client without
 an actor profile sends no actor token, so the ID-JAG has no `act` and the client in
 `client_id` acts for the user. A client with an actor profile must send an actor
 token (see [Required actor parameters](#required-actor-parameters)), and its ID-JAG
@@ -2913,7 +3026,9 @@ with an empty audience `pkg/auth` skips the audience check.
 See [Bound ID-JAG assertions](#bound-id-jag-assertions) for how AS-2 redeems
 the ID-JAG. A ToolHive AS-2 finds the user by an exact AS-1 `sub` in
 `subject_bindings`, and its `max_assertion_age` must be at least the target's
-`lifetime`. One gap remains: an AS-1 access token can redeem as a plain
+`lifetime`. It processes an `authorization_details` claim only for types
+registered for the JWT-bearer grant, and refuses the ID-JAG otherwise (see [On
+ID-JAG redemption](#on-id-jag-redemption)). One gap remains: an AS-1 access token can redeem as a plain
 JWT-bearer assertion (see "Keeping AS-2 ID-JAG-only").
 
 ### Logging
@@ -2932,7 +3047,9 @@ one Debug line, `ID-JAG minted`, with `client_id`, `sub`, `target`, `resource`,
 profile it also has `act_sub` (the AgentID) and, when the validator gives one,
 `actor_credential_subject`. ToolHive does not log the subject token,
 the actor token, the ID-JAG, any assertion, the form, the DPoP proof or
-`upstream_subject`. ToolHive redacts only the literal actor token, so a validator
+`upstream_subject`. Of `authorization_details` it logs only the entry `types`
+of a refusal, never an entry's value (see [On ID-JAG
+minting](#on-id-jag-minting)). ToolHive redacts only the literal actor token, so a validator
 must keep credentials and user identifiers out of its error text (see the
 `ActorTokenValidator` contract in
 `pkg/authserver/server/tokenexchange/actor_validator.go`). The Warn line carries
@@ -3290,7 +3407,7 @@ identity.
 | --- | --- |
 | `interactive` | The token came from an interactive login. It carries a non-empty token session ID (`tsid`), no delegated-access marker, and no proof of a session-less mint: no well-formed `act` chain and no `no_upstream_session` claim set to `true`. |
 | `delegated` | The token carries the delegated-access marker (any value) and has no usable `tsid`: the claim is absent, empty or not a string. |
-| (empty) | Every other token. This is the zero value, `AdmissionRouteUnspecified`. |
+| (empty) | An admitted token that fits neither route. This is the zero value, `AdmissionRouteUnspecified`. |
 
 The validator classifies a route only when all of these hold:
 
@@ -3309,19 +3426,42 @@ The validator classifies a route only when all of these hold:
 but claims from an introspection response never do, because they are the
 introspection endpoint's word, not a signature this validator checked.
 
-A token validated without an audience gets no route, whether it is interactive
-or delegated. It is still served exactly as before, including loading its upstream
-tokens.
-
-A token that fits neither route gets no route. This
-includes a token that carries both a `tsid` and the delegated-access marker:
-the authorization server never issues one, and it is neither interactive nor
-delegated, so it is treated like any other unclassified token.
+An unmarked token that fits neither route is still served as before, including
+loading its upstream tokens when applicable. For a validator bound to the
+embedded issuer, a marked token that cannot be classified as `delegated` is
+rejected instead. This includes a token with a usable `tsid`, validation without
+an audience, and validation through introspection or HTTP JWKS fallback rather
+than the in-process keys. The middleware returns HTTP 401 `invalid_token` before
+loading any upstream credentials.
 
 Consumers that grant anything must compare for one exact value, such as
 `delegated`. They must never test for a non-empty route or against the empty
-value, because new values may be added and an empty route is also what every
-unbound or introspected token gets.
+value, because new values may be added and `AdmissionRouteUnspecified` also
+covers tokens accepted by an unbound validator or through introspection.
+
+`pkg/auth/sessionbinding` consumes `AdmissionRouteDelegated` to isolate delegated
+MCP sessions from interactive sessions. This isolation requires a validator bound
+to the embedded authorization server, a configured `Audience`, and successful
+verification with the in-process signing keys supplied via `WithKeyProvider`.
+An unbound validator still leaves the route unspecified even if the token
+carries the delegated-access marker. An admitted token on that path retains the
+ordinary two-field session binding.
+
+Only delegated session bindings include the client and, if present, the actor.
+Other sessionless grants (RFC 8693 token exchange and unmarked JWT-bearer) keep
+the two-field binding. Self-issued RFC 8693 token exchanges are not marked
+delegated, so they keep the two-field binding: they can reuse the user's
+interactive session and share a binding across clients. Actor binding covers
+only the immediate actor (`act.iss`, `act.sub`); nested `act.act` is
+informational per RFC 8693 §4.1 and does not contribute to the binding. A
+malformed nested `act` prevents a delegated token from opening or reusing a
+session. Past the default maximum delegation depth, hops are counted but not
+inspected: a non-string `iss` or `sub` there does not prevent binding, but a
+nested `act` that is not an object prevents it at any depth. An explicit
+top-level `act: null` on a delegated token is refused, like a malformed `act`;
+a nested `act: null` just ends the chain. Without an actor, the binding isolates agents
+only if each uses its own `client_id`. See
+[vMCP Session Ownership](10-virtual-mcp-architecture.md#session-ownership).
 
 ## Implementation
 

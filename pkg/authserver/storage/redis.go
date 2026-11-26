@@ -3494,16 +3494,19 @@ type storedProviderIdentity struct {
 // deleteProviderIdentityIfOwnedScript deletes a provider identity key only when
 // its stored user_id still matches ARGV[1]. This protects a newly replaced row
 // from being deleted if an older user's reverse-index set still references it.
+// A row that cannot be decoded, or has no string user_id, is deleted: the keys
+// come from the deleting user's own reverse-index set, and before bindings
+// existed DeleteUser removed every such key unconditionally.
 var deleteProviderIdentityIfOwnedScript = redis.NewScript(`
 local data = redis.call('GET', KEYS[1])
 if not data then
     return 0
 end
 local ok, decoded = pcall(cjson.decode, data)
-if not ok or type(decoded) ~= 'table' then
-    return 0
+if not ok or type(decoded) ~= 'table' or type(decoded.user_id) ~= 'string' then
+    return redis.call('DEL', KEYS[1])
 end
-if type(decoded.user_id) ~= 'string' or decoded.user_id ~= ARGV[1] then
+if decoded.user_id ~= ARGV[1] then
     return 0
 end
 return redis.call('DEL', KEYS[1])

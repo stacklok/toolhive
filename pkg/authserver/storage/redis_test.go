@@ -6221,7 +6221,7 @@ func TestRedisStorage_ProviderIdentity_LegacyJSONDecodesUnstamped(t *testing.T) 
 	assert.Empty(t, got.SubjectClaim)
 }
 
-func TestRedisStorage_CompareAndSwapProviderIdentity_FailedSetWritePreservesExistingRow(t *testing.T) {
+func TestRedisStorage_CompareAndSwapProviderIdentity_WrongTypeSetFailsBeforeAnyWrite(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	s, mr := newTestRedisStorage(t)
@@ -6312,6 +6312,49 @@ func TestRedisStorage_StaleReverseIndexEntryDoesNotLeakOrDeleteNewOwner(t *testi
 	got, err := s.GetProviderIdentity(ctx, "provider-a", "subject-1")
 	require.NoError(t, err)
 	assert.Equal(t, "user-new", got.UserID)
+}
+
+func TestRedisStorage_CompareAndSwapProviderIdentity_MovesReverseIndexEntry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	now := time.Now()
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-old", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-new", CreatedAt: now, UpdatedAt: now}))
+	oldID := &ProviderIdentity{
+		UserID: "user-old", ProviderID: "provider-a", ProviderSubject: "subject-1",
+		Issuer: "https://old.example.com", SubjectClaim: "sub", LinkedAt: now, LastUsedAt: now,
+	}
+	require.NoError(t, s.CreateProviderIdentity(ctx, oldID))
+	newID := &ProviderIdentity{
+		UserID: "user-new", ProviderID: "provider-a", ProviderSubject: "subject-1",
+		Issuer: "https://new.example.com", SubjectClaim: "sub", LinkedAt: now, LastUsedAt: now,
+	}
+	require.NoError(t, s.CompareAndSwapProviderIdentity(ctx, oldID, newID))
+
+	providerKey := redisProviderKey(s.keyPrefix, "provider-a", "subject-1")
+	assert.False(t, setHas(mr, redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-old"), providerKey),
+		"the replaced user's reverse index must no longer list the link")
+	assert.True(t, setHas(mr, redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-new"), providerKey))
+}
+
+func TestRedisStorage_DeleteUser_DeletesUndecodableOwnRow(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	now := time.Now()
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-1", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, s.CreateProviderIdentity(ctx, &ProviderIdentity{
+		UserID: "user-1", ProviderID: "provider-a", ProviderSubject: "subject-1", LinkedAt: now, LastUsedAt: now,
+	}))
+	key := redisProviderKey(s.keyPrefix, "provider-a", "subject-1")
+	require.NoError(t, mr.Set(key, "{not-valid-json"))
+
+	require.NoError(t, s.DeleteUser(ctx, "user-1"))
+
+	assert.False(t, mr.Exists(key), "a row the deleting user's own index lists must not outlive it, even when corrupt")
 }
 
 func TestRedisStorage_MigrateLegacyUpstreamData_PreservesBindingFields(t *testing.T) {

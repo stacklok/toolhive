@@ -29,7 +29,7 @@ func startProxy(t *testing.T, targetURL string, options ...Option) (proxy *Trans
 		"127.0.0.1", 0, targetURL,
 		nil, nil, nil,
 		false, false, "streamable-http",
-		nil, nil, "", false,
+		nil, nil, nil, "", false,
 		nil,
 		options...,
 	)
@@ -316,7 +316,7 @@ func TestRoundTripReturns404ForUnknownSession(t *testing.T) {
 		"localhost", 0, backend.URL,
 		nil, nil, nil,
 		false, false, "sse",
-		nil, nil, "", false,
+		nil, nil, nil, "", false,
 		nil,
 	))
 
@@ -396,7 +396,7 @@ func TestRoundTrip404EchoesRequestID(t *testing.T) {
 				"localhost", 0, backend.URL,
 				nil, nil, nil,
 				false, false, "sse",
-				nil, nil, "", false,
+				nil, nil, nil, "", false,
 				nil,
 			))
 
@@ -449,7 +449,7 @@ func TestRoundTripAllowsInitializeWithUnknownSession(t *testing.T) {
 		"localhost", 0, backend.URL,
 		nil, nil, nil,
 		false, false, "streamable-http",
-		nil, nil, "", false,
+		nil, nil, nil, "", false,
 		nil,
 	))
 
@@ -509,7 +509,7 @@ func TestRoundTripRejectsBatch(t *testing.T) {
 				"localhost", 0, backend.URL,
 				nil, nil, nil,
 				false, false, "sse",
-				nil, nil, "", false,
+				nil, nil, nil, "", false,
 				nil,
 			))
 

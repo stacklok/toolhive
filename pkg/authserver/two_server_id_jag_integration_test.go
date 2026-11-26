@@ -160,21 +160,21 @@ func startTwoServerIDJAGFor(
 	opts ...authserverrunner.EmbeddedAuthServerOption,
 ) *twoServerIDJAG {
 	t.Helper()
-	return startTwoServerIDJAGConfigured(t, as2Resources, mutate, nil, opts...)
+	return startTwoServerIDJAGConfigured(t, as2Resources, mutate, nil, nil, opts...)
 }
 
 // startTwoServerIDJAGConfigured is startTwoServerIDJAGFor with mutateAS2
-// applied to AS-2's config.
+// applied to AS-2's config and as2Opts passed to AS-2's embedded server.
 func startTwoServerIDJAGConfigured(
 	t *testing.T, as2Resources []string, mutate func(cfg *authserver.RunConfig),
-	mutateAS2 func(cfg *authserver.RunConfig, issuer string),
+	mutateAS2 func(cfg *authserver.RunConfig, issuer string), as2Opts []authserverrunner.EmbeddedAuthServerOption,
 	opts ...authserverrunner.EmbeddedAuthServerOption,
 ) *twoServerIDJAG {
 	t.Helper()
 	l1, l2 := listenLoopback(t), listenLoopback(t)
 	as1Issuer := "http://" + l1.Addr().String()
 
-	as2 := startAS2With(t, l2, as1Issuer, "user-1", as2Resources, mutateAS2)
+	as2 := startAS2With(t, l2, as1Issuer, "user-1", as2Resources, mutateAS2, as2Opts...)
 
 	as1 := startXRTServerOn(t, "memory", l1, func(cfg *authserver.RunConfig, _ string) {
 		for _, delegate := range cfg.InboundGrants.TokenExchange.DelegateClients {
@@ -255,7 +255,7 @@ func TestIDJAGRedemptionUsesClientAccessTokenLifespan(t *testing.T) {
 					clients[i].AccessTokenLifespan = lifespan.String()
 				}
 			}
-		})
+		}, nil)
 
 	res := h.as2.redeem(t, h.as2.client, h.mintIDJAG(t))
 	require.Equal(t, http.StatusOK, res.status, res.body)
@@ -330,7 +330,7 @@ func TestIDJAGRedemptionFromResolveIssuerChecksActor(t *testing.T) {
 					policy.SubjectMode = tokenexchange.SubjectModeResolve
 					policy.ActorIssuers = tc.actorIssuers
 					policy.AcceptedAssertionTypes = []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG}
-				}, withActorTestValidator(validator))
+				}, nil, withActorTestValidator(validator))
 
 			idJAG := h.mintIDJAGWith(t, actorPairWith("actor-token"))
 			parsed, err := jwt.ParseSigned(idJAG, []jose.SignatureAlgorithm{jose.RS256, jose.ES256})

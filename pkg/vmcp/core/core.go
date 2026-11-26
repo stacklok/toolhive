@@ -65,19 +65,23 @@ type DiscoverCapabilities struct {
 //     cannot forward _meta (see the NOTE on [vmcp.ResourceReadResult].Meta).
 //     Do not rely on it.
 //
-// ctx is used only for cancellation, deadlines, and trace propagation — never to
-// carry identity or other domain data.
+// ctx carries cancellation, deadlines, and trace propagation, plus — for the
+// components below the core — the explicit identity (see below). It never
+// carries other domain data.
 //
 // Identity handed to components below the core: the composer, workflow auditor,
-// backend auth strategies, and backend telemetry read the caller from ctx
-// (auth.IdentityFromContext), not from a parameter. For a composite tool,
-// CallTool therefore runs the workflow on a context whose identity is the
-// explicit identity (nil stays anonymous), replacing any identity ctx carried.
-// Direct backend calls (a non-composite CallTool, ReadResource, GetPrompt,
-// Complete) and capability aggregation still pass ctx through unchanged, so
-// those components see whatever identity ctx carries; until #7143 aligns them,
-// callers must keep ctx's identity consistent with the parameter. The vmcp
-// server always passes the same identity in both.
+// backend auth strategies, backend telemetry, the backend client's fallback
+// identity, and the capability cache key read the caller from ctx
+// (auth.IdentityFromContext), not from a parameter. Every core method that
+// takes an identity therefore derives a context carrying the explicit identity
+// (nil stays anonymous) and uses it for capability aggregation and backend
+// calls, replacing any identity ctx carried. The core still never READS
+// identity from ctx for its own decisions — admission takes the explicit
+// parameter — it only hands that parameter to downstream readers that do.
+// This expands reliance on identity-in-ctx (vmcp anti-pattern #1); threading
+// the identity explicitly through those components is the larger follow-up
+// (issue #7143, option 2). The vmcp server passes the same identity in both
+// places, so its behavior is unchanged.
 type VMCP interface {
 	// ListTools returns the tools advertised to identity. The returned
 	// [vmcp.Tool] values carry their logical BackendID.

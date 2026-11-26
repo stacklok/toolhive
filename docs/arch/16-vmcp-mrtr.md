@@ -179,7 +179,7 @@ arms, no winner picked here:
 3. **Server-side handle over a verbatim backend round**: relay verbatim *to
    the backend*, but make the **downstream-visible** `requestState` an opaque
    handle into a server-side entry `{backend, capability,
-   owner=binding.Format(iss, sub), backend requestState, TTL}` — the same D5
+   owner=session binding, backend requestState, TTL}` — the same D5
    handle machinery the composite slice below already builds, and **no keys
    at all** (the state never leaves the server, so there is nothing to sign
    or seal). This closes cross-principal replay, cross-backend A→B
@@ -262,13 +262,14 @@ RFC-0083 D5 sequences the durable machinery on:
   client-visible `requestState` is a **handle**, not serialized state.
 - **Handle format** (RFC-0083 D5, followed verbatim): a server-minted,
   ≥128-bit opaque random token; an owner field on `WorkflowStatus` holding
-  the authenticated `(iss, sub)` pair encoded exactly as the existing
-  identity binding does — `pkg/vmcp/session/binding`'s
-  `Format(iss, sub)`, which returns `iss + "\x00" + sub` (and an error for
-  empty components), plaintext, not hashed — so the two owner-binding
-  mechanisms stay consistent.
+  the full session binding of the authenticated identity, produced by
+  `sessionbinding.FromIdentity` (`pkg/auth/sessionbinding`), plaintext, not
+  hashed. For an interactive caller this is `iss + "\x00" + sub`; for a
+  delegated caller it also carries the route, `client_id` and actor, so
+  delegated callers keep client and actor isolation. The handle owner and the
+  session owner use the same encoding and the same comparison.
 - **Owner check on resume**: the retry's authenticated identity must satisfy
-  `binding.Format(iss, sub) == status.Owner` before any state is loaded;
+  `sessionbinding.Validate(status.Owner, identity)` before any state is loaded;
   a mismatch is an audit-visible security signal (owner-mismatch resume),
   fails closed, and reveals nothing about the handle's existence.
 - **TTL at write** (bounding the replay window per MRTR server requirement 5)
@@ -278,10 +279,12 @@ RFC-0083 D5 sequences the durable machinery on:
   leaves the server, and the handle is an unguessable capability whose owner
   is checked server-side — stronger than client-side AEAD, with no
   key-management surface.
-- **Under `incomingAuth: anonymous`** the owner check is vacuous: every
-  anonymous session stores the same `binding.UnauthenticatedSentinel`, and
-  `validateCallerBinding` accepts any anonymous caller
-  (`pkg/vmcp/session/internal/security`), so "the original user" is not a
+- **Under `incomingAuth: anonymous`** the owner check is vacuous: the
+  anonymous auth middleware (`pkg/auth/anonymous.go`) gives every caller the
+  same issuer `toolhive-local` and subject `anonymous`, so every handle's owner
+  is the same two-field binding `toolhive-local\x00anonymous`, and
+  `sessionbinding.Validate` accepts any caller. (The unauthenticated sentinel
+  applies only to a nil identity.) "The original user" is not a
   concept the deployment has — the owner-mismatch audit signal can never
   fire, and protection reduces to handle unguessability plus TTL. Slice 5
   **accepts this as a documented single-tenant caveat rather than refusing to

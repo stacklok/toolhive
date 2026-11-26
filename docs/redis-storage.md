@@ -357,7 +357,7 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}client-idx` | Sorted set of DCR-issued client IDs counted against the DCR client cap, scored by expiry (Unix ms) | None; entries are trimmed as their score passes |
 | `{prefix}user:{user_id}` | User account | None |
 | `{prefix}provider:{len}:{provider_id}:{subject}` | Provider identity linkage | None |
-| `{prefix}upstream:{session_id}` | Upstream IDP tokens | Matches token lifetime |
+| `{prefix}upstream:{session_id}:{provider}` | Upstream IDP tokens, one key per provider | Access token expiry + 30 days; session expiry + 30 days if the token has no expiry; none if neither is set |
 | `{prefix}pending:{handle_or_state}` | Browser-bound consent handle or upstream callback state | Remaining time until the initial `CreatedAt` + 10 minutes; deadline checked before consent/callback consumption |
 | `{prefix}consent:session:{digest}` | SHA-256 digest of the browser session cookie secret (never the raw secret) | Remaining fixed lifetime, at most 7 days |
 | `{prefix}consent:approval:{pair_hash}` | One approval per user/client; `pair_hash` is SHA-256 of the JSON-encoded `[userID, clientID]` pair | Remaining fixed lifetime, at most 30 days |
@@ -396,7 +396,8 @@ Redis Sets are used as secondary indexes for efficient lookups:
 |---|---|
 | `{prefix}reqid:access:{request_id}` | Request ID → access token signatures |
 | `{prefix}reqid:refresh:{request_id}` | Request ID → refresh token signatures |
-| `{prefix}user:upstream:{user_id}` | User → upstream token session IDs |
+| `{prefix}upstream:idx:{session_id}` | Session → that session's upstream token row keys (full keys), one per provider. Its TTL is extended to outlive its longest-lived member; if any member never expires, the index has no TTL |
+| `{prefix}user:upstream:{user_id}` | User → upstream token row keys (full keys), one per session and provider (for example `{prefix}upstream:{session_id}:{provider}`) |
 | `{prefix}user:providers:{user_id}` | User → provider identity keys |
 
 These indexes enable grant-wide operations like token revocation (finding all tokens for a request ID) and user-scoped queries (finding all upstream tokens for a user).

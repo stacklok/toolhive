@@ -1951,6 +1951,9 @@ type Config struct {
 	// credential is dead; use the seam for checks of your own. When deciding
 	// from upstream.ErrGrantRejected, note its doc: under a cross-replica
 	// refresh race it can occasionally be reported for a live credential.
+	// The shared refresher remembers a rejection for up to 5 minutes, so a
+	// handler that decides on ErrGrantRejected may see a remembered one
+	// without an IdP call. Only the built-in guard skips that memory.
 	//
 	// The seam only validates. PopulateTokenEndpointResponse and
 	// CanSkipClientAuth are never called, so client authentication still
@@ -2112,9 +2115,10 @@ type Config struct {
 	TrustedIssuers []tokenexchange.TrustedIssuer
 
 	// AuthorizationDetailsRegistry validates RFC 9396 authorization_details on
-	// RFC 8693 token-exchange requests, and decides which entries of an
-	// ID-JAG's signed authorization_details claim a redemption grants into the
-	// issued token. It is Go-only and is not part of RunConfig.
+	// RFC 8693 token-exchange requests, decides which requested entries a
+	// token exchange for an ID-JAG signs into the ID-JAG, and decides which
+	// entries of an ID-JAG's signed authorization_details claim a redemption
+	// grants into the issued token. It is Go-only and is not part of RunConfig.
 	AuthorizationDetailsRegistry *authorizationdetails.Registry
 
 	// AllowConfidentialClientRegistration permits DCR of confidential clients

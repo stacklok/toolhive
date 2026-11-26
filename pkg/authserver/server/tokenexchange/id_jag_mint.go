@@ -121,6 +121,10 @@ type idJAGMint struct {
 	Act      *actClaim
 	// NotAfter caps exp; zero values are ignored.
 	NotAfter []time.Time
+	// AuthorizationDetails is the JSON array of granted entries, nil for none,
+	// already in encoding/json form (see grantIDJAGDetails). mintIDJAG signs
+	// that form as the authorization_details claim.
+	AuthorizationDetails json.RawMessage
 }
 
 // mintedIDJAG is a signed ID-JAG. IssuedAt and ExpiresAt are whole seconds and
@@ -130,6 +134,9 @@ type mintedIDJAG struct {
 	JTI       string
 	IssuedAt  time.Time
 	ExpiresAt time.Time
+	// AuthorizationDetails is the signed authorization_details claim, byte for
+	// byte as in the token, nil when the ID-JAG has none.
+	AuthorizationDetails json.RawMessage
 }
 
 // idJAGPolicyInput is what the policy decides on. ClientID is the client
@@ -165,6 +172,8 @@ func allowAllIDJAGPolicy(context.Context, idJAGPolicyInput) error { return nil }
 // absent. For audience, resource and the refused parameters every value is
 // checked: an empty value counts as absent, and a refused parameter is refused
 // if any of its values is non-empty, since fosite reads only the first.
+// authorization_details is not read here; decideIDJAG reads it after this
+// check (see parseIDJAGDetails).
 // audience and resource are read from the raw form, so a value with spaces is
 // one value. More than one audience is invalid_request, as section 4.3.3 of
 // draft-ietf-oauth-identity-assertion-authz-grant requires. The audience must
@@ -211,8 +220,8 @@ func checkIDJAGRequest(form url.Values, policy ConfiguredClientPolicy) (idJAGReq
 }
 
 // checkIDJAGExtraParameters checks the parameters beyond subject_token, audience
-// and resource, checking every value of each. scope and authorization_details
-// are refused for every client.
+// and resource, checking every value of each. scope is refused for every
+// client. authorization_details is not checked here: see parseIDJAGDetails.
 //
 // Without a profile, actor_token and actor_token_type are refused too, and the
 // returned actor token is empty. With a profile they are required instead, by
@@ -221,10 +230,6 @@ func checkIDJAGExtraParameters(form url.Values, profile *ActorProfile) (string, 
 	if len(nonEmptyValues(form["scope"])) > 0 {
 		return "", errorsx.WithStack(fosite.ErrInvalidScope.WithHint(
 			"The 'scope' parameter is not supported when requesting an ID-JAG."))
-	}
-	if len(nonEmptyValues(form["authorization_details"])) > 0 {
-		return "", errorsx.WithStack(invalidAuthorizationDetailsError().WithHint(
-			"The 'authorization_details' parameter is not supported when requesting an ID-JAG."))
 	}
 	if profile != nil {
 		return checkActorParameters(form, profile)
@@ -367,8 +372,10 @@ func checkIDJAGBoundsOpen(m idJAGMint, now time.Time) (string, error) {
 // configured, as a JSON string; resource is a JSON string; iat and exp are
 // integers; exp is the floor of the earliest of now plus the target lifetime
 // and every non-zero NotAfter. There is no nbf, and act is present only when
-// set. Every error is a server_error with no detail for the client; the cause
-// is its debug field, which the token endpoint logs.
+// set. authorization_details is present only when m.AuthorizationDetails is
+// set, as its encoding/json form: compacted, with <, >, &, U+2028 and U+2029
+// escaped, and every digit of a number kept. Every error is a server_error with no detail for
+// the client; the cause is its debug field, which the token endpoint logs.
 // It signs only the selected subject claims, never m.Subject.Claims. It checks
 // each claim's name against the allowlist and the reserved names, and its value
 // shape, but not that the claims match the target's RequiredSubjectClaims:
@@ -406,25 +413,45 @@ func mintIDJAG(
 	if m.Act != nil {
 		claims["act"] = map[string]string{"iss": m.Act.Issuer, "sub": m.Act.Subject}
 	}
+	var details json.RawMessage
+	if m.AuthorizationDetails != nil {
+		// The signer encodes the claims with encoding/json, which compacts a
+		// json.RawMessage and escapes <, >, &, U+2028 and U+2029. Encoding it
+		// here first gives the exact bytes the token carries, for the response
+		// to echo; numbers keep every digit.
+		if details, err = json.Marshal(m.AuthorizationDetails); err != nil {
+			return mintedIDJAG{}, serverFailure(hintMintFailed, fmt.Errorf("authorization_details: %w", err))
+		}
+		claims[claimnames.AuthorizationDetailsKey] = details
+	}
 
 	token, err := signer.SignIDJAG(ctx, claims)
 	if err != nil {
 		return mintedIDJAG{}, serverFailure(hintMintFailed, fmt.Errorf("signing: %w", err))
 	}
-	return mintedIDJAG{Token: token, JTI: jti, IssuedAt: time.Unix(issuedAt, 0), ExpiresAt: time.Unix(exp, 0)}, nil
+	return mintedIDJAG{
+		Token: token, JTI: jti, IssuedAt: time.Unix(issuedAt, 0), ExpiresAt: time.Unix(exp, 0),
+		AuthorizationDetails: details,
+	}, nil
 }
 
 // setIDJAGResponse writes the RFC 8693 response for a minted ID-JAG. It sets
-// no refresh_token and no scope.
+// no refresh_token and no scope. When the ID-JAG carries an
+// authorization_details claim, the response returns the same entries in its
+// authorization_details member (draft section 4.3.4).
 func setIDJAGResponse(r fosite.AccessResponder, t mintedIDJAG) {
 	r.SetAccessToken(t.Token)
 	r.SetTokenType(oauthproto.TokenTypeNotApplicable)
 	r.SetExpiresIn(t.ExpiresAt.Sub(t.IssuedAt))
 	r.SetExtra(oauthproto.ParamIssuedTokenType, oauthproto.TokenTypeIDJAG)
+	if t.AuthorizationDetails != nil {
+		r.SetExtra(authorizationDetailsParam, t.AuthorizationDetails)
+	}
 }
 
 // checkIDJAGMint refuses a mint that would give a token without a user, an
-// issuer, an audience, a client or a resource, or with a partial act claim.
+// issuer, an audience, a client or a resource, with a partial act claim, or
+// with authorization_details that is not a non-empty JSON array of objects.
 func checkIDJAGMint(m idJAGMint) error {
 	switch {
 	case m.Issuer == "":
@@ -439,6 +466,11 @@ func checkIDJAGMint(m idJAGMint) error {
 		return errors.New("empty resource")
 	case m.Act != nil && (m.Act.Issuer == "" || m.Act.Subject == ""):
 		return errors.New("incomplete act claim")
+	}
+	if m.AuthorizationDetails != nil {
+		if _, ok := signedEntries(m.AuthorizationDetails); !ok {
+			return errors.New("authorization_details is not a non-empty array of objects")
+		}
 	}
 	return nil
 }
@@ -473,13 +505,8 @@ func idJAGSubjectClaimSet(subjectClaims map[string]json.RawMessage) (map[string]
 // idJAGExpiry is exp in whole seconds: the floor of the earliest of now plus
 // lifetime and every non-zero cap.
 func idJAGExpiry(now time.Time, lifetime time.Duration, notAfter []time.Time) int64 {
-	expiresAt := now.Add(lifetime)
-	for _, limit := range notAfter {
-		if !limit.IsZero() && limit.Before(expiresAt) {
-			expiresAt = limit
-		}
-	}
-	return expiresAt.Unix()
+	// A fresh slice, so the caller's NotAfter is never written to.
+	return earliest(append([]time.Time{now.Add(lifetime)}, notAfter...)).Unix()
 }
 
 // hintMintFailed is the client-visible hint when an ID-JAG could not be minted.

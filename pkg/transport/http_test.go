@@ -361,6 +361,7 @@ func TestHTTPTransport_IsRunning(t *testing.T) {
 	})
 }
 
+//nolint:paralleltest // t.Setenv is incompatible with t.Parallel
 func TestShouldEnableHealthCheck(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -368,65 +369,20 @@ func TestShouldEnableHealthCheck(t *testing.T) {
 		envValue string
 		want     bool
 	}{
-		{
-			name:     "local workload - always enabled",
-			isRemote: false,
-			envValue: "",
-			want:     true,
-		},
-		{
-			name:     "local workload - enabled even if env var is set to false",
-			isRemote: false,
-			envValue: "false",
-			want:     true,
-		},
-		{
-			name:     "remote workload - disabled by default",
-			isRemote: true,
-			envValue: "",
-			want:     false,
-		},
-		{
-			name:     "remote workload - enabled with env var set to 'true'",
-			isRemote: true,
-			envValue: "true",
-			want:     true,
-		},
-		{
-			name:     "remote workload - enabled with env var set to '1'",
-			isRemote: true,
-			envValue: "1",
-			want:     true,
-		},
-		{
-			name:     "remote workload - disabled with env var set to 'false'",
-			isRemote: true,
-			envValue: "false",
-			want:     false,
-		},
-		{
-			name:     "remote workload - disabled with env var set to '0'",
-			isRemote: true,
-			envValue: "0",
-			want:     false,
-		},
-		{
-			name:     "remote workload - disabled with invalid env var",
-			isRemote: true,
-			envValue: "yes",
-			want:     false,
-		},
+		{name: "local workload, env unset", isRemote: false, want: true},
+		{name: "local workload ignores opt-out", isRemote: false, envValue: "false", want: true},
+		{name: "remote workload, env unset", isRemote: true, want: true},
+		{name: "remote workload, env true", isRemote: true, envValue: "true", want: true},
+		{name: "remote workload, unrecognized value", isRemote: true, envValue: "yes", want: true},
+		{name: "remote workload, opted out with false", isRemote: true, envValue: "false", want: false},
+		{name: "remote workload, opted out with FALSE", isRemote: true, envValue: "FALSE", want: false},
+		{name: "remote workload, opted out with 0", isRemote: true, envValue: "0", want: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Set the environment variable
-			if tt.envValue != "" {
-				t.Setenv("TOOLHIVE_REMOTE_HEALTHCHECKS", tt.envValue)
-			}
-
-			result := shouldEnableHealthCheck(tt.isRemote)
-			assert.Equal(t, tt.want, result)
+			t.Setenv(remoteHealthChecksEnvVar, tt.envValue)
+			assert.Equal(t, tt.want, shouldEnableHealthCheck(tt.isRemote))
 		})
 	}
 }

@@ -363,8 +363,12 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		callBinding:        callBinding,
 	}
 
+	sessMgrCfg, err := withSharedEmbeddings(serveCfg.SessionStorage, cfg.SessionManagerConfig)
+	if err != nil {
+		return nil, err
+	}
 	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(
-		sessionDataStorage, cfg.SessionManagerConfig, cfg.BackendRegistry,
+		sessionDataStorage, sessMgrCfg, cfg.BackendRegistry,
 		sessionmanager.WithSweptSessionHook(srv.healthResync.remove),
 	)
 	if err != nil {

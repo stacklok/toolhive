@@ -51,6 +51,30 @@ func TestShouldAllowAnonymous(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "interactive with empty token and claims",
+			identity: &auth.Identity{
+				AdmissionRoute: auth.AdmissionRouteInteractive,
+				PrincipalInfo:  auth.PrincipalInfo{Claims: map[string]any{}},
+			},
+			want: true,
+		},
+		{
+			name: "tokenless delegated identity with empty claims",
+			identity: &auth.Identity{
+				AdmissionRoute: auth.AdmissionRouteDelegated,
+				PrincipalInfo:  auth.PrincipalInfo{Claims: map[string]any{}},
+			},
+			want: false,
+		},
+		{
+			name: "tokenless unknown route with empty claims",
+			identity: &auth.Identity{
+				AdmissionRoute: "custom",
+				PrincipalInfo:  auth.PrincipalInfo{Claims: map[string]any{}},
+			},
+			want: false,
+		},
+		{
 			name: "empty token and missing iss",
 			identity: &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{Claims: map[string]any{"sub": "x"}},

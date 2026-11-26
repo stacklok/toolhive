@@ -28,6 +28,12 @@ func TestFactoryStripConsentCookieChangesLiveProxyBehavior(t *testing.T) {
 
 				backendCookies := make(chan string, 1)
 				backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					// The proxy's health checks reach the backend too, without cookies;
+					// only the proxied request carries the cookies under test.
+					if r.Header.Get("Cookie") == "" {
+						_, _ = w.Write([]byte("{}"))
+						return
+					}
 					select {
 					case backendCookies <- r.Header.Get("Cookie"):
 					case <-r.Context().Done():

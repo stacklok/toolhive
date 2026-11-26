@@ -310,7 +310,7 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 		return &mcp.CallToolResult{
 			Result:            mcp.Result{Meta: conversion.ToMCPMeta(result.Meta)},
 			Content:           conversion.ToMCPContents(result.Content),
-			StructuredContent: result.StructuredContent,
+			StructuredContent: conversion.ToMCPStructuredContent(result.StructuredContent),
 			IsError:           result.IsError,
 		}, nil
 	}

@@ -158,6 +158,7 @@ type fakeCore struct {
 	completeValues  []string     // returned by Complete when completeErr is nil
 
 	callErr           error          // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
+	callStructured    map[string]any // when set, CallTool returns it as StructuredContent on success
 	readErr           error          // when set, ReadResource returns it
 	readMeta          map[string]any // when set, ReadResource sets it as result.Meta on success
 	promptErr         error          // when set, GetPrompt returns it (e.g. vmcp.ErrAuthorizationFailed)
@@ -251,7 +252,10 @@ func (f *fakeCore) CallTool(
 	if f.callErr != nil {
 		return nil, f.callErr
 	}
-	return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "ok"}}}, nil
+	return &vmcp.ToolCallResult{
+		Content:           []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "ok"}},
+		StructuredContent: f.callStructured,
+	}, nil
 }
 
 // enableCallIdentityRecording turns on per-call identity recording (see
@@ -1416,6 +1420,46 @@ func TestServeCoreToolHandler(t *testing.T) {
 	}
 }
 
+// TestServeCoreToolHandlerStructuredContentOnTheWire pins the Legacy tools/call
+// wire result: structuredContent is present exactly when the core result carries
+// one. A nil map must omit the member, not encode it as "structuredContent": null
+// (the mcp-go result field is `any`, so a typed nil map would be a non-nil value).
+func TestServeCoreToolHandlerStructuredContentOnTheWire(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		structured map[string]any
+		wantMember bool
+	}{
+		{name: "no structuredContent omits the member", structured: nil, wantMember: false},
+		{name: "structuredContent object is forwarded", structured: map[string]any{"k": "v"}, wantMember: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}, callStructured: tc.structured}
+			srv, sessionID, _ := registerServeSession(t, fc)
+
+			req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
+			res, err := srv.coreToolHandler(sessionID, "t", "")(context.Background(), req)
+			require.NoError(t, err)
+			require.NotNil(t, res)
+
+			body, err := json.Marshal(res)
+			require.NoError(t, err)
+			var wire map[string]any
+			require.NoError(t, json.Unmarshal(body, &wire))
+
+			got, present := wire["structuredContent"]
+			assert.Equal(t, tc.wantMember, present, "wire result: %s", body)
+			if tc.wantMember {
+				assert.Equal(t, map[string]any{"k": "v"}, got)
+			}
+		})
+	}
+}
+
 func TestServeCoreToolHandlerCodedErrorReturnsStructuredToolResult(t *testing.T) {
 	t.Parallel()
 
@@ -1463,6 +1507,55 @@ func TestServeToolCallTerminatesOnBindingFailure(t *testing.T) {
 
 	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return !ok },
 		2*time.Second, 10*time.Millisecond, "a binding failure must terminate the session (fail-closed)")
+}
+
+func TestServeEnforceSessionBinding_Delegated(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, owner, caller string }{
+		{"wrong client", delegatedOwnerToken, "other-client"},
+		{"wrong actor issuer", delegatedOwnerToken, "other-actor-issuer"},
+		{"delegated caller", "interactive", delegatedOwnerToken},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv, sessionID := newDelegatedBindingSession(t, tc.owner)
+			caller := delegatedOwnershipIdentities()[tc.caller]
+			err := srv.enforceSessionBinding(auth.WithIdentity(t.Context(), caller), sessionID, caller)
+			require.ErrorIs(t, err, sessiontypes.ErrUnauthorizedCaller)
+		})
+	}
+}
+
+func TestServeEnforceSessionBinding_DelegatedRenewedToken(t *testing.T) {
+	t.Parallel()
+
+	srv, sessionID := newDelegatedBindingSession(t, delegatedOwnerToken)
+	caller := delegatedOwnershipIdentities()["renewed"]
+	ctx := auth.WithIdentity(t.Context(), caller)
+	require.NoError(t, srv.enforceSessionBinding(ctx, sessionID, caller))
+	_, exists := srv.vmcpSessionMgr.GetMultiSession(ctx, sessionID)
+	require.True(t, exists, "a renewed token must not terminate the session")
+}
+
+// newDelegatedBindingSession creates a session owned by the named ownership
+// test identity on a Serve-built server.
+func newDelegatedBindingSession(t *testing.T, owner string) (*Server, string) {
+	t.Helper()
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: ownershipTestTool}}}
+	srv, err := Serve(t.Context(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
+		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: vmcpsession.NewSessionFactory(nil)},
+		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, srv.Stop(context.Background())) })
+
+	sessionID := srv.vmcpSessionMgr.Generate()
+	ownerCtx := auth.WithIdentity(t.Context(), delegatedOwnershipIdentities()[owner])
+	_, err = srv.vmcpSessionMgr.CreateSession(ownerCtx, sessionID, nil)
+	require.NoError(t, err)
+	return srv, sessionID
 }
 
 // TestServeCoreResourceHandler covers the Serve resource path: the core's resource is

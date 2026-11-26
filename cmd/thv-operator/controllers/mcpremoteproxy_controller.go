@@ -33,6 +33,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
@@ -1093,7 +1094,8 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 			proxy.Namespace, proxy.Name, len(embeddedCfg.UpstreamProviders))
 	}
 
-	setMCPRemoteProxyExternalAuthConfigValidCondition(proxy, externalAuthConfig.Name, externalAuthConfig.Status.ConfigHash)
+	setMCPRemoteProxyExternalAuthConfigValidCondition(
+		proxy, externalAuthConfig.Name, externalAuthConfig.Status.ConfigHash, externalAuthConfig.Spec.Type)
 
 	if proxy.Status.ExternalAuthConfigHash != externalAuthConfig.Status.ConfigHash {
 		ctxLogger.Info("MCPExternalAuthConfig has changed, updating MCPRemoteProxy",
@@ -1120,9 +1122,14 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 // earlier in handleExternalAuthConfig and returns before the stored hash
 // advances, so a source that reverts from obo to its earlier spec matches the
 // stored hash, and holding it would keep a stale False.
+//
+// The True condition names a type the MCPRemoteProxy accepts without applying
+// it (see externalAuthValidCondition), so a standalone proxy does not read as
+// protected by a config that only a VirtualMCPServer applies.
 func setMCPRemoteProxyExternalAuthConfigValidCondition(
 	proxy *mcpv1beta1.MCPRemoteProxy,
 	configName, configHash string,
+	authType mcpv1beta1.ExternalAuthType,
 ) {
 	previousCondition := meta.FindStatusCondition(
 		proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
@@ -1135,11 +1142,16 @@ func setMCPRemoteProxyExternalAuthConfigValidCondition(
 		return
 	}
 
+	reason, message := externalAuthValidCondition(
+		externalauthsupport.ConsumerMCPRemoteProxy,
+		mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
+		configName, authType,
+	)
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
-		Message:            fmt.Sprintf("MCPExternalAuthConfig '%s' is valid", configName),
+		Reason:             reason,
+		Message:            message,
 		ObservedGeneration: proxy.Generation,
 	})
 }

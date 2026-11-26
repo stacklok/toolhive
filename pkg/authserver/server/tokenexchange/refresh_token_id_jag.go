@@ -35,24 +35,22 @@ type idJAGDecision struct {
 	// log carries what a refusal may log; nothing above Debug carries sub_id or
 	// the upstream identity.
 	log *slog.Logger
-	// now is the instant that checked the grant. For a client without an actor
-	// profile the mint reuses it, so exp and expires_in agree with that check.
-	// For a client with a profile the mint is at the later instant at which the
-	// validator's answer was checked (see issueIDJAG).
-	now time.Time
 }
 
 // decideIDJAG decides a request that exchanges an exchange grant's refresh
 // token for an ID-JAG. The order is fixed. The request parameters and the
-// target come first and read nothing from the store. presentedGrant then
+// target come first, then the authorization_details parameter's shape
+// (parseIDJAGDetails); neither reads the store. presentedGrant then
 // applies the grant checks in the order that reveals nothing before the client
 // check. Then the grant must list the ID-JAG output. Then every subject claim
 // the grant recorded is decoded, including ones the target does not require, so
 // a stored value that is not JSON is an internal error for every target. Then
-// the claims the target requires must have been recorded on the grant. Last,
+// the claims the target requires must have been recorded on the grant. Then,
 // for a client with an actor profile, the grant's upstream identity must be
-// complete or absent (grantUpstreamIdentity). It writes nothing and never calls
-// the actor validator, because it runs in both handler phases.
+// complete or absent (grantUpstreamIdentity). Last, the authorization_details
+// hooks decide which requested entries the ID-JAG carries (grantIDJAGDetails),
+// so a refused entry never reaches the actor validator. It writes nothing and
+// never calls the actor validator, because it runs in both handler phases.
 func (h *RefreshTokenHandler) decideIDJAG(
 	ctx context.Context, requester fosite.AccessRequester, policy ConfiguredClientPolicy,
 	log *slog.Logger, now time.Time,
@@ -64,6 +62,10 @@ func (h *RefreshTokenHandler) decideIDJAG(
 		return nil, refuse(ctx, log, refuseRequestParam, err)
 	}
 	log = log.With("target", shape.Target.Issuer, "resource", shape.Resource)
+	pending, err := h.parseIDJAGDetails(ctx, form, log)
+	if err != nil {
+		return nil, err
+	}
 
 	grant, log, err := h.presentedGrant(ctx, clientID, form.Get("subject_token"), now, log)
 	if err != nil {
@@ -105,7 +107,7 @@ func (h *RefreshTokenHandler) decideIDJAG(
 		return nil, refuse(ctx, log, refuseInternal, serverFailure(hintMintFailed, err))
 	}
 
-	return &idJAGDecision{
+	decided := &idJAGDecision{
 		mint: idJAGMint{
 			Issuer:             h.issuer,
 			RequestingClientID: clientID,
@@ -118,8 +120,12 @@ func (h *RefreshTokenHandler) decideIDJAG(
 		actor:      policy.ActorProfile,
 		actorToken: shape.ActorToken,
 		log:        log,
-		now:        now,
-	}, nil
+	}
+	if decided.mint.AuthorizationDetails, err = grantIDJAGDetails(
+		ctx, pending, decided, requester.GetClient(), grant); err != nil {
+		return nil, err
+	}
+	return decided, nil
 }
 
 // issueIDJAG signs the ID-JAG of a decision made in PopulateTokenEndpointResponse
@@ -130,14 +136,15 @@ func (h *RefreshTokenHandler) decideIDJAG(
 // request and never in HandleTokenEndpointRequest, as the last check before the
 // mint. The ID-JAG then names the agent in act, is minted at the instant the
 // validator's answer was checked (iat), and ends no later than the credential
-// does. For other clients it is minted at d.now. The grant is not read again
-// after the validator: a revoke that commits while the validator runs does not
-// stop this ID-JAG, which ends at its own short expiry, but a grant that
-// expires meanwhile is refused as invalid_grant by the mint's bounds check.
+// does. For other clients the clock is read again here, after the decision's
+// hooks ran, and the ID-JAG is minted at that instant. The grant is not read
+// again: a revoke that commits after the decision does not stop this ID-JAG,
+// which ends at its own short expiry, but a grant that expires meanwhile is
+// refused as invalid_grant by the mint's bounds check, on either path.
 func (h *RefreshTokenHandler) issueIDJAG(
 	ctx context.Context, d *idJAGDecision, responder fosite.AccessResponder,
 ) error {
-	mint, now := d.mint, d.now
+	mint, now := d.mint, h.clock()
 	var res ActorResult
 	if d.actor != nil {
 		if err := h.refuseTerminalActor(ctx, d); err != nil {

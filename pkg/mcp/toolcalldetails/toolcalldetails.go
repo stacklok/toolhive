@@ -19,8 +19,9 @@
 // prefix strategy that includes the backend prefix, as in the example. A
 // tool call matches only when params.name equals tool and the vMCP routes it
 // to the backend named by server. For a list call, server names the one
-// backend whose items the call may list; the vMCP answers it with that
-// backend's items only, not the aggregated list.
+// backend whose items the call may list. The vMCP does not accept list calls
+// yet, so a token exchange for an ID-JAG refuses a list call with
+// ReasonListCallUnsupported rather than sign a token nothing would accept.
 //
 // arguments_sha256 is the lowercase hex SHA-256 of the RFC 8785 (JSON
 // Canonicalization Scheme) serialization of params.arguments, or of {} when
@@ -30,21 +31,22 @@
 // sent alongside.
 //
 // The intended use is the ID-JAG flow. The authorization server that issues
-// an ID-JAG (AS-1) is meant to accept the entry on the RFC 8693
-// token-exchange request for an ID-JAG and sign it into the ID-JAG's
-// authorization_details claim. The authorization server that redeems the
-// ID-JAG with the RFC 7523 JWT-bearer grant (AS-2) is meant to take the entry
-// only from that signed claim, never from a redemption parameter or from a
-// JWT-bearer assertion that is not an ID-JAG, and copy it unchanged into the
-// access token.
+// an ID-JAG (AS-1) accepts the entry on the RFC 8693 token-exchange request
+// for an ID-JAG and signs it into the ID-JAG's authorization_details claim.
+// The authorization server that redeems the ID-JAG with the RFC 7523
+// JWT-bearer grant (AS-2) takes the entry only from that signed claim, never
+// from a redemption parameter or from a JWT-bearer assertion that is not an
+// ID-JAG, and copies the signed bytes into the access token.
 //
 // Registering the type only makes it known to a server's registry; each
 // handler decides whether and where it reads the entry. In pkg/authserver,
-// ID-JAG redemption processes the signed claim and copies a granted entry into
-// the access token, while the token-exchange request for an ID-JAG refuses the
-// authorization_details parameter, so AS-1 does not sign the entry yet. A
-// token exchange that reaches the hook without requesting an ID-JAG is
-// refused with ReasonIDJAGRequired.
+// both sides are implemented: a token exchange for an ID-JAG signs the
+// granted entry into the ID-JAG in encoding/json form (the request bytes
+// compacted, with <, >, &, U+2028 and U+2029 escaped), and ID-JAG redemption
+// processes the signed claim and copies a granted entry's signed bytes into
+// the access token. Register the type on both servers. A token exchange that
+// reaches the hook without requesting an ID-JAG is refused with
+// ReasonIDJAGRequired.
 //
 // No authorization server computes the arguments hash or compares it with
 // real arguments: the receiver of the access token enforces the call.
@@ -86,6 +88,10 @@ const (
 	ReasonInvalidArgs = "invalid_arguments_hash"
 	// ReasonInvalidMethod: method is not one of the list methods.
 	ReasonInvalidMethod = "invalid_method"
+	// ReasonListCallUnsupported: a list-call entry was sent on a token exchange
+	// for an ID-JAG. The vMCP refuses list calls with the same reason, so the
+	// entry is refused before it is signed into a token nothing accepts.
+	ReasonListCallUnsupported = "list_call_unsupported"
 	// ReasonIDJAGRequired: the entry was sent on a token exchange whose
 	// requested_token_type is not the ID-JAG type, or on a request that is
 	// neither token exchange nor ID-JAG redemption.
@@ -112,13 +118,17 @@ func (e Entry) IsList() bool {
 }
 
 // Register adds the MCP call type to types, registered for RFC 8693 token
-// exchange (where the hook accepts it only when an ID-JAG is requested) and
-// for the RFC 7523 JWT-bearer grant, which processes it on ID-JAG redemption;
-// see the package doc. It overwrites an existing entry of the same name.
+// exchange (where the hook accepts it only when an ID-JAG is requested), for
+// authorizationdetails.IDJAGIssuance, which opts it into being signed into an
+// ID-JAG that this server mints, and for the RFC 7523 JWT-bearer grant, which
+// processes it on ID-JAG redemption; see the package doc. It overwrites an
+// existing entry of the same name.
 func Register(types map[string]authorizationdetails.Type) {
 	types[Type] = authorizationdetails.Type{
-		GrantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
-		Grant:      grant,
+		GrantTypes: []string{
+			oauthproto.GrantTypeTokenExchange, authorizationdetails.IDJAGIssuance, oauthproto.GrantTypeJWTBearer,
+		},
+		Grant: grant,
 	}
 }
 
@@ -195,14 +205,14 @@ var (
 )
 
 // grant checks that exactly one well-formed entry was sent and returns it
-// unchanged. The result is never used to pick a resource, scope or audience.
+// unchanged, except that a token exchange for an ID-JAG refuses a list call.
+// The result is never used to pick a resource, scope or audience.
 func grant(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
-	// Token exchange only echoes the granted entries and never puts them in
-	// the token it issues. Minting an ID-JAG is meant to sign them into it,
-	// but that path does not read the parameter yet. Accepting the entry on
-	// any other exchange would return a token the entry does not restrict, so
-	// only ID-JAG redemption and a token exchange for an ID-JAG are accepted,
-	// and a request with neither part is refused.
+	// Only minting an ID-JAG signs the granted entries into the token it
+	// issues; any other token exchange only echoes them. Accepting the entry
+	// on such an exchange would return a token the entry does not restrict,
+	// so only ID-JAG redemption and a token exchange for an ID-JAG are
+	// accepted, and a request with neither part is refused.
 	idJAGExchange := req.Exchange != nil && req.Exchange.RequestedTokenType == oauthproto.TokenTypeIDJAG
 	if req.Redemption == nil && !idJAGExchange {
 		return authorizationdetails.Result{}, authorizationdetails.Error{
@@ -213,8 +223,14 @@ func grant(_ context.Context, req authorizationdetails.Request) (authorizationde
 	if len(req.Entries) != 1 {
 		return authorizationdetails.Result{}, invalid(ReasonSingleEntry)
 	}
-	if _, err := ParseEntry(req.Entries[0]); err != nil {
+	entry, err := ParseEntry(req.Entries[0])
+	if err != nil {
 		return authorizationdetails.Result{}, err
+	}
+	// Redemption is left as it is: an ID-JAG signed elsewhere with a list
+	// call yields a token the vMCP refuses, which fails closed.
+	if entry.IsList() && idJAGExchange {
+		return authorizationdetails.Result{}, invalid(ReasonListCallUnsupported)
 	}
 	return authorizationdetails.Result{Entries: req.Entries}, nil
 }

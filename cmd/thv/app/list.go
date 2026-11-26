@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -52,7 +53,8 @@ var (
 )
 
 func init() {
-	AddAllFlag(listCmd, &listAll, true, "Show all workloads (default shows running and auth_retrying)")
+	AddAllFlag(listCmd, &listAll, true,
+		"Show all workloads (default shows running and auth_retrying, plus unhealthy remote workloads)")
 	AddFormatFlag(listCmd, &listFormat, FormatJSON, FormatText, "mcpservers")
 	listCmd.Flags().StringArrayVarP(&listLabelFilter, "label", "l", []string{}, "Filter workloads by labels (format: key=value)")
 	AddGroupFlag(listCmd, &listGroupFilter, false)
@@ -249,6 +251,11 @@ func printTextOutput(workloadList []core.Workload, upgrades map[string]*upgrade.
 	// Print workload information
 	for _, c := range workloadList {
 		status := workloadStatusIndicator(c.Status)
+		// Show why a remote workload is unhealthy. Local workloads are left out:
+		// their contexts are long internal diagnostics that would widen the column.
+		if c.Remote && c.Status == rt.WorkloadStatusUnhealthy && c.StatusContext != "" {
+			status = status + " (" + c.StatusContext + ")"
+		}
 
 		// Print workload information
 		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s",

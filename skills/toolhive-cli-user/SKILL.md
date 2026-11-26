@@ -270,7 +270,7 @@ For tool invocation patterns (file args, stdin, JSON output, error handling), se
 | Container can't reach localhost | Bridge network isolation | Use `host.docker.internal` (Docker Desktop), `host.containers.internal` (Podman), `172.17.0.1` (Linux) |
 | Port already in use | Another server on same port | Use `--proxy-port <different-port>` |
 | Permission denied on volume | Mount path or profile issue | Check volume mount paths and permission profiles (`--permission-profile`) |
-| Container runtime not found | No runtime or socket issue | Run `thv runtime check`; override socket with `TOOLHIVE_PODMAN_SOCKET`, `TOOLHIVE_COLIMA_SOCKET`, or `TOOLHIVE_DOCKER_SOCKET` |
+| Container runtime not found | No runtime or socket issue | Run `thv runtime check`; override socket with `TOOLHIVE_PODMAN_SOCKET`, `TOOLHIVE_COLIMA_SOCKET`, or `TOOLHIVE_DOCKER_SOCKET`, or persist it under `container_runtime` in `~/.config/toolhive/config.yaml` |
 | Secret operation fails | Provider not configured | Run `thv secret setup` first |
 | Image pull fails | Network or auth issue | Check network connectivity; for private registries, ensure credentials are configured |
 | Remote auth token expired | OAuth token lifetime exceeded | Restart the server (`thv restart`) to trigger fresh authentication |

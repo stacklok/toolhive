@@ -148,17 +148,20 @@ type selfIssuedValidator interface {
 // The exchange grant is the only profile this handler issues today; a later
 // profile would be chosen where decide checks the client's exchange_refresh_tokens.
 type RefreshTokenHandler struct {
-	strategy       oauth2.RefreshTokenStrategy
-	store          storage.ExchangeGrantStorage // nil when no client enables the feature
-	selfValidator  selfIssuedValidator          // validates self-issued login tokens at grant opening; refuses marked actor tokens
-	registry       *authorizationdetails.Registry
-	clientPolicies map[string]ConfiguredClientPolicy
-	refreshScopes  fosite.RefreshTokenScopesProvider
-	signer         idJAGSigner   // signs ID-JAGs with typ oauth-id-jag+jwt; *server.Signer in production
-	issuer         string        // the access-token issuer
-	actorLimiter   *actorLimiter // one per server, shared by every actor validation
-	actorTimeout   time.Duration // the budget of one actor validation
-	clock          func() time.Time
+	strategy      oauth2.RefreshTokenStrategy
+	store         storage.ExchangeGrantStorage   // nil when no client enables the feature
+	selfValidator selfIssuedValidator            // validates self-issued login tokens at grant opening; refuses marked actor tokens
+	registry      *authorizationdetails.Registry // the private exchange-grant registry
+	// detailsRegistry is the embedder's registry, which decides the
+	// authorization_details an ID-JAG is minted with. nil when none was given.
+	detailsRegistry *authorizationdetails.Registry
+	clientPolicies  map[string]ConfiguredClientPolicy
+	refreshScopes   fosite.RefreshTokenScopesProvider
+	signer          idJAGSigner   // signs ID-JAGs with typ oauth-id-jag+jwt; *server.Signer in production
+	issuer          string        // the access-token issuer
+	actorLimiter    *actorLimiter // one per server, shared by every actor validation
+	actorTimeout    time.Duration // the budget of one actor validation
+	clock           func() time.Time
 }
 
 // RefreshTokenOption configures RefreshTokenFactory. Factory takes FactoryOption
@@ -167,6 +170,7 @@ type RefreshTokenOption func(*refreshTokenOptions)
 
 type refreshTokenOptions struct {
 	exchangeGrantStore storage.ExchangeGrantStorage
+	detailsRegistry    *authorizationdetails.Registry
 	actorCapacity      int
 	actorTimeout       time.Duration
 	clock              func() time.Time
@@ -178,6 +182,18 @@ type refreshTokenOptions struct {
 // token before it needs the store.
 func WithExchangeGrantStorage(store storage.ExchangeGrantStorage) RefreshTokenOption {
 	return func(o *refreshTokenOptions) { o.exchangeGrantStore = store }
+}
+
+// WithIDJAGAuthorizationDetailsRegistry gives RefreshTokenFactory the
+// embedder's authorization_details registry. A request for an ID-JAG may then
+// send authorization_details: each entry's type must list
+// authorizationdetails.IDJAGIssuance, its hook keeps or drops whole entries,
+// and the kept entries are signed into the ID-JAG's authorization_details
+// claim. With no registry (or a
+// nil one), such a request is refused with unknown_type. Exchange grants keep
+// their own registry, which this option does not touch.
+func WithIDJAGAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) RefreshTokenOption {
+	return func(o *refreshTokenOptions) { o.detailsRegistry = registry }
 }
 
 // withActorValidationTimeout replaces the budget of one actor validation, which
@@ -264,17 +280,18 @@ func RefreshTokenFactory(
 			return nil, fmt.Errorf("tokenexchange: failed to create subject token validator: %w", err)
 		}
 		return &RefreshTokenHandler{
-			strategy:       refreshStrategy,
-			store:          resolved.exchangeGrantStore,
-			selfValidator:  selfValidator,
-			registry:       registry,
-			clientPolicies: clientPolicies,
-			refreshScopes:  config,
-			signer:         signer,
-			issuer:         config.GetAccessTokenIssuer(),
-			actorLimiter:   limiter,
-			actorTimeout:   resolved.actorTimeout,
-			clock:          resolved.clock,
+			strategy:        refreshStrategy,
+			store:           resolved.exchangeGrantStore,
+			selfValidator:   selfValidator,
+			registry:        registry,
+			detailsRegistry: resolved.detailsRegistry,
+			clientPolicies:  clientPolicies,
+			refreshScopes:   config,
+			signer:          signer,
+			issuer:          config.GetAccessTokenIssuer(),
+			actorLimiter:    limiter,
+			actorTimeout:    resolved.actorTimeout,
+			clock:           resolved.clock,
 		}, nil
 	}, nil
 }
@@ -367,8 +384,9 @@ type decision struct {
 // entry, and returns what to issue. It writes nothing to the store and consumes
 // nothing; its only effect is the refusal log line. It runs twice per request
 // (in HandleTokenEndpointRequest and again in PopulateTokenEndpointResponse), so
-// the authorization_details shape hook (pending.Grant) must be idempotent and
-// free of side effects. A request logs at most one refusal, because a refusal in
+// the authorization_details hooks it calls must be idempotent and free of side
+// effects: the exchange-grant shape hook (pending.Grant) and, on a request for
+// an ID-JAG, the embedder's type hooks (pending.GrantSubset). A request logs at most one refusal, because a refusal in
 // HandleTokenEndpointRequest ends the request. Each kind of subject has its own
 // branch (decideTopLevel for a login access token, decideChild for a refresh
 // token) that builds the same exchangeGrantDecision, which issue then writes.

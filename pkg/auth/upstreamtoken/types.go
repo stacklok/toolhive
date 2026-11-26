@@ -109,3 +109,22 @@ type Service interface {
 	// UpstreamCredential for details.
 	GetValidTokens(ctx context.Context, sessionID, providerName string) (*UpstreamCredential, error)
 }
+
+// UserCredentialReader retrieves one user's upstream credential for one
+// provider, independent of any login session.
+type UserCredentialReader interface {
+	// GetValidTokensForUser returns a valid upstream credential for userID and
+	// providerName, refreshing an expired access token. It returns
+	// ErrNeedsAuthorization when the user must connect the provider again,
+	// ErrInvalidBinding for a row owned by another user, ErrSessionNotFound for
+	// an empty userID, ErrNoCanonicalUser (passed through from storage, not a
+	// missing connection) when the storage cannot resolve a user, and any other
+	// error for an infrastructure failure.
+	//
+	// When only the ID token needed refreshing and the access token is still
+	// live, a failed refresh, including invalid_grant, returns the stored
+	// credential and is logged at WARN; needs-authorization follows once the
+	// access token expires. See InProcessService.GetValidTokensForUser for the
+	// full contract.
+	GetValidTokensForUser(ctx context.Context, userID, providerName string) (*UpstreamCredential, error)
+}

@@ -634,6 +634,33 @@ The four Modern list verbs (`tools/list`, `resources/list`, `resources/templates
 
 The completion handler is a single global handler installed via `WithCompletionHandler`, so it recovers the session from the SDK request context rather than a per-session closure. Setting it makes the shim auto-advertise the `completions` capability at initialize.
 
+### Tool call results: `structuredContent` passthrough
+
+A backend tool call result reaches the client with the backend's `content`
+array and, only when the backend sent one, its `structuredContent` object, on
+both the Legacy and the Modern edge. vMCP does not synthesize
+`structuredContent` from `content`: a result without it is returned without
+it, and the member is omitted rather than sent as `null`. A `structuredContent`
+that is not a JSON object (the spec requires one) is dropped. The Modern edge
+also omits an empty object (`{}`); the Legacy edge forwards it. Clients therefore
+never see a shape the backend did not produce, such as `{"text": "<string>"}`
+for a text result or a second copy of a file's base64 payload. In code mode, an
+inner tool call that returns JSON text without `structuredContent` gives the
+script the parsed JSON, and one that returns no text content item (for example
+only an image or a blob resource) gives the script `None`; binary payloads are
+not passed into scripts.
+
+Composite tool workflows are unchanged. When a step's backend result has no
+`structuredContent`, the workflow engine builds the step output from `content`
+itself (`conversion.ContentArrayToMap`), so `{{.steps.<id>.output.text}}` and
+`{{.steps.<id>.content.text}}` keep working; that map stays internal to the
+workflow.
+
+**Implementation**: `pkg/vmcp/client/client.go` (`toolResultFromMCP`),
+`pkg/vmcp/session/internal/backend/mcp_session.go` (`CallTool`),
+`pkg/vmcp/conversion/content.go` (`ToMCPStructuredContent`),
+`pkg/vmcp/composer/workflow_engine.go` (step output fallback)
+
 ### Served MCP revisions: the Modern capability gate
 
 vMCP serves two client-facing MCP revisions: **Legacy** (2025-11-25, the SDK
@@ -1247,14 +1274,32 @@ Legacy SDK may still reject otherwise valid non-JSON media types with HTTP 415.
 
 ### Session Ownership
 
-Every vMCP session is bound at creation to the issuer and subject of the
-identity that initialized it (`vmcp.identity.binding`, the format shared with
-`pkg/auth/sessionbinding`). `sessionOwnershipMiddleware`
-(`pkg/vmcp/server/session_ownership.go`) checks that binding on **every**
-request that carries `Mcp-Session-Id`, after authentication and before the
-Streamable HTTP transport routes the request: the standalone GET stream, DELETE,
-list methods, calls, client responses and notifications, and cross-replica
-rehydration. Sessionless requests (initialize) pass through; Modern (2026-07-28)
+vMCP stores the session owner's binding at creation under
+`vmcp.identity.binding`, using the format shared with `pkg/auth/sessionbinding`.
+Interactive and unspecified routes, including sessionless grants without the
+delegated-access marker (RFC 8693 token exchange and unmarked JWT-bearer), keep the
+two-field `iss + "\x00" + sub` binding. Delegated sessions
+(`AdmissionRouteDelegated`) bind to the issuer (`iss`), user (`sub`), `delegated`
+route tag, `client_id`, and the current actor (`act.iss`, `act.sub`) when present.
+The binding excludes `jti`, `exp`, and `authorization_details`, so a renewed token
+can reuse the session if its full binding matches. Delegated callers cannot use
+interactive or unspecified sessions, and those callers cannot use delegated
+sessions, even for the same user. See the [admission route rules](17-token-exchange-delegation.md#delegated-access-marker)
+for the validator configuration this isolation requires.
+
+A token on an unrecognised route cannot create or use a session. Delegated tokens
+must have a nonempty string `client_id` without NUL bytes. An absent `act` is
+allowed; a present `act` must have nonempty `iss` and `sub` strings without NUL
+bytes. A malformed `act`, including a malformed nested actor, or an explicit
+`act: null` prevents session creation and reuse.
+`makeSession` rejects an invalid binding before dialing any backends.
+
+`sessionOwnershipMiddleware` (`pkg/vmcp/server/session_ownership.go`) checks the
+binding on **every Legacy request** that carries `Mcp-Session-Id`, after
+authentication and before the Streamable HTTP transport routes the request: the
+standalone GET stream, DELETE, list methods, calls, client responses and
+notifications. The check also precedes cross-replica rehydration. Legacy
+initialize requests without a session ID pass through; Modern (2026-07-28)
 requests are dispatched by `classifyingHandler` before this middleware and never
 reach it.
 
@@ -1262,11 +1307,11 @@ reach it.
   restoring the session or refreshing its TTL, so with Redis-backed storage the
   check holds on a replica that did not create the session, before it is
   rehydrated there, and a rejected caller cannot keep the session alive.
-- The caller is compared with `sessionbinding.Validate`, the check shared with
-  the other proxies: the same issuer and subject (refreshed tokens work), or, for
-  a session created with no identity at all (authentication disabled), no
-  identity. A non-nil identity without valid `iss` and `sub` claims never
-  matches, even a session bound to the unauthenticated sentinel.
+- The caller must match the full stored binding via `sessionbinding.Validate`,
+  the check shared with the other proxies. A session created without an identity
+  (authentication disabled) matches only a caller without an identity. A non-nil
+  identity without valid `iss` and `sub` claims never matches, even a session
+  bound to the unauthenticated sentinel.
 - The owner is persisted before the client learns the session ID: the SDK shim
   runs `OnRegisterSession` (and so `CreateSession`) synchronously inside the
   initialize dispatch. A record without an owner is a session still being
@@ -1294,6 +1339,34 @@ reach it.
   the stored record is still valid and answered 404 if not.
 - `enforceSessionBinding` still re-checks the binding inside the call handlers,
   for embedders that mount the MCP server without this middleware.
+
+**Rolling upgrades.** Older replicas do not understand a delegated binding, and
+how they react depends on the version:
+
+- Ordinary proxies (streamable, transparent and HTTP+SSE) check session owners
+  only from v0.51.0. Before that they did not read the binding at all, so a
+  streamable `DELETE` removed a session without checking who owned it.
+- vMCP rejects an unparsable binding when it restores a session, and on each
+  per-operation check, since v0.29.0. It answers 404 to every session request
+  with such a binding only since v0.57.0.
+
+A proxy replica older than v0.51.0, or a vMCP replica older than v0.57.0, that
+shares the session store may serve, change or delete a delegated session. Do
+not serve delegated sessions from a store that such replicas share.
+
+In the other direction, an older replica that creates a session for a delegated
+token writes the two-field binding, the same one the user's interactive session
+has. Plan the rollout by case:
+
+1. First-time enablement: upgrade every replica before enabling delegated
+   subject resolution (`SubjectMode` set to `resolve`, a Go-only setting; see
+   [Subject mode](17-token-exchange-delegation.md#subject-mode-go-only)).
+2. Delegated subject resolution was already enabled while older replicas ran:
+   the sessions those replicas created for delegated tokens carry the two-field
+   binding, and an interactive token of the same user still matches it after the
+   upgrade. Invalidate those sessions, or wait for them to expire, before
+   relying on cross-route isolation. Do not rewrite two-field records as
+   delegated ones: the original route cannot be recovered.
 
 ### Discovery Middleware
 

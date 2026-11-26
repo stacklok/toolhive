@@ -152,6 +152,9 @@ func New(
 		return nil, nil, fmt.Errorf("sessionmanager.New: the optimizer requires " +
 			"FactoryConfig.AdvertiseFromCore (the Serve layer builds it over the core's tools)")
 	}
+	if err := checkOptimizerOptions(cfg); err != nil {
+		return nil, nil, err
+	}
 	capacity := cfg.CacheCapacity
 	if capacity == 0 {
 		capacity = defaultCacheCapacity
@@ -545,9 +548,12 @@ func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 // never restores the live MultiSession or contacts a backend, so a foreign
 // caller is rejected before any per-session state is built on this replica.
 //
-// An absent or terminated session yields transportsession.ErrSessionNotFound. A
-// Phase 1 placeholder has no owner yet and yields an empty binding, which the
-// caller must treat as unowned. Any other error is a storage failure.
+// An absent or terminated session yields transportsession.ErrSessionNotFound, and
+// so does an ID that names a key holding something other than session metadata,
+// such as a shared optimizer embedding under the same prefix: answering it as a
+// storage failure would let a caller probe those keys. A Phase 1 placeholder has
+// no owner yet and yields an empty binding, which the caller must treat as
+// unowned. Any other error is a storage failure.
 //
 // With Redis-backed storage the binding is shared across replicas, so the check
 // holds on a replica that did not create the session; this does not provide
@@ -558,6 +564,10 @@ func (sm *Manager) LookupOwner(ctx context.Context, sessionID string) (string, e
 	defer cancel()
 
 	metadata, err := sm.storage.LoadMetadata(ctx, sessionID)
+	if errors.Is(err, transportsession.ErrUndecodableSessionData) {
+		slog.Debug("Manager.LookupOwner: the session ID names a key that holds no session metadata")
+		return "", transportsession.ErrSessionNotFound
+	}
 	if err != nil {
 		return "", err
 	}
@@ -993,8 +1003,9 @@ func (sm *Manager) loadSession(ctx context.Context, sessionID string) (vmcpsessi
 
 	// Don't restore placeholder sessions (Phase 2 never ran).
 	// BindSession always writes MetadataKeyIdentityBinding during Phase 2
-	// (the unauthenticated sentinel for anonymous sessions, a bound (iss, sub)
-	// binding for authenticated ones). Its absence means Generate() stored
+	// (the unauthenticated sentinel for anonymous sessions, a bound
+	// binding (issuer and subject, plus route, client_id and actor for
+	// delegated ones) for authenticated ones). Its absence means Generate() stored
 	// this record but CreateSession() never completed — treat it as "not
 	// found" rather than "corrupted".
 	//

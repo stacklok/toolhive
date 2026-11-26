@@ -779,6 +779,35 @@ func TestUserResolver_UnstampedRowStampsAndWarnsOnce(t *testing.T) {
 	assert.NotContains(t, buf.String(), u1.ID, "warning must not log user ID")
 }
 
+//nolint:paralleltest // captures the process-global slog default
+func TestUserResolver_ReplacedRowWarnsWithoutIdentifiers(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { require.NoError(t, stor.Close()) })
+	ctx := context.Background()
+
+	old, err := NewUserResolver(stor, WithIdentityBinding("default", "https://old-idp.example.com", "sub")).
+		ResolveUser(ctx, "default", "sub-1")
+	require.NoError(t, err)
+
+	replaced, err := NewUserResolver(stor, WithIdentityBinding("default", "https://new-idp.example.com", "sub")).
+		ResolveUser(ctx, "default", "sub-1")
+	require.NoError(t, err)
+	require.NotEqual(t, old.ID, replaced.ID)
+
+	out := buf.String()
+	assert.Contains(t, out, "level=WARN")
+	assert.Equal(t, 1, strings.Count(out, "replaced mismatched provider identity with new user"))
+	assert.Contains(t, out, "provider_id=default")
+	assert.NotContains(t, out, "sub-1", "warning must not log provider subject")
+	assert.NotContains(t, out, old.ID, "warning must not log the old user ID")
+	assert.NotContains(t, out, replaced.ID, "warning must not log the new user ID")
+}
+
 func TestWithIdentityBinding_PanicsOnEmptyArg(t *testing.T) {
 	t.Parallel()
 	assert.Panics(t, func() { WithIdentityBinding("", "https://idp.example.com", "sub") })

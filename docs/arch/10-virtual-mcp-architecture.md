@@ -630,7 +630,7 @@ Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities
 | Resource subscriptions (`resources/subscribe`, `resources/unsubscribe`) | Ack-level only | Legacy edge. vMCP accepts and records the subscription (after session-binding and resource-admission checks) but does **not** yet forward backend `notifications/resources/updated`. A URI over 2048 bytes that does not exactly match a concrete resource or template string is rejected with not found; exact matches still pass — see the limitation below |
 | Subscriptions (`subscriptions/listen`) | Ack-level only | Modern (2026-07-28) edge, the revision's only server→client push channel. Answered with an SSE stream carrying the mandatory `notifications/subscriptions/acknowledged` and then a terminating result, both tagged `io.modelcontextprotocol/subscriptionId` and keyed by the listen request's JSON-RPC id (Modern has no sessions). The honored set is intersected against the advertised capabilities, all of whose push flags are false, so it is always **empty** and the stream closes immediately rather than idling — see below |
 
-The four Modern list verbs (`tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`) **paginate**, emitting `nextCursor` while items remain and capping a page at 1000 items to match the page size the SDK applies on the Legacy path. See [Client-facing list pagination](#client-facing-list-pagination).
+The four Modern list verbs (`tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`) **paginate**, emitting `nextCursor` while items remain and capping a page at 1000 items to match the page size the SDK applies on the Legacy path. See [Client-facing list pagination](#client-facing-list-pagination). A list answered for a list-call token is the exception: it comes whole, without `nextCursor` (see [Call-bound access tokens](#call-bound-access-tokens)).
 
 The completion handler is a single global handler installed via `WithCompletionHandler`, so it recovers the session from the SDK request context rather than a per-session closure. Setting it makes the shim auto-advertise the `completions` capability at initialize.
 
@@ -1470,8 +1470,9 @@ authentication and parsing and before classification, so it covers Legacy and Mo
 requests and runs before session ownership, the pre-dispatch gate and Cedar. It runs
 whether or not Authorization is configured, and it can only refuse a request or
 narrow a list-call answer. A request it
-refuses gets its 401 or 403 whatever session it names; a request it passes still gets
-the ownership 404 on a foreign session. The core repeats the backend check at dispatch
+refuses gets its 401 or 403 whatever session it names, or a 503 when it cannot check
+the request, or, for a list call, a 500 when the handler's answer holds no list; a
+request it passes still gets the ownership 404 on a foreign session. The core repeats the backend check at dispatch
 (see below).
 
 Which tokens it checks:
@@ -1524,23 +1525,32 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   filter hook, and both revisions cut pages whose cursor names the last unfiltered
   item, so neither the handler's items nor its cursor reach the client. An item
   without a single backend, such as a composite tool, or any tool on an
-  optimizer-enabled instance, is never listed. The `server` must be a backend
-  (`server_not_found` otherwise) in the view the items come from (503 otherwise):
-  a backend that is unreachable, fails discovery, or is marked unhealthy, unknown or
-  unauthenticated, even while it still answers, is left out of the core's lists; a
-  degraded backend stays in them and is listed. A list call that carries a cursor is refused with
+  optimizer-enabled instance, is never listed. A Legacy session the SDK rehydrated
+  answers in `text/event-stream`; the list call is answered in JSON all the same. The
+  `server` must be a backend in the caller's view: one the caller is admitted to at
+  least one tool, resource, resource template or prompt of. A server that is unknown,
+  hidden by authorization, offers the caller nothing, or contributes nothing to the
+  view (its discovery fails) gets the same 403 `server_not_found`, as an unknown tool
+  gets `tool_not_found`: AS-1 signs any `server` name, so the answer must not tell
+  whether a backend the caller cannot see exists. A backend in the caller's view that
+  the core's lists leave out for its health status (unhealthy, unknown or
+  unauthenticated, even while it still answers) gets 503; a degraded one stays in the
+  lists and is listed. The check and the items come from separate aggregations, so a
+  backend that drops out of the view between the two is answered with an empty list
+  and the token is used. A list call that carries a cursor is refused with
   `invalid_params`. A `tools/call` or another list method is refused with
   `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
-  a tool-call entry: it uses up the token.
+  a tool-call entry: it uses up the token. It is recorded only once its answer is
+  ready, and ended at once: of concurrent duplicates, each runs the handler, but only
+  the first to record is answered, and the others get `token_reused`.
 - GET and DELETE. The session-ownership check then limits them to sessions the
   token's principal owns. Once the token has started its call, they are limited to
   that call's session (`session_mismatch`); a Modern call has none. Neither uses up
   the token.
-- On the Legacy session of its call (a tool call or a list call), while the call's
-  request is open and younger
-  than the maximum call duration: a `notifications/cancelled` for the call's JSON-RPC
-  ID, and, for a tool call, any JSON-RPC response (for example an in-band elicitation
-  reply); a list call asks the client nothing, so no response is admitted for it. The vMCP
+- On the Legacy session of its tool call, while the call's request is open and
+  younger than the maximum call duration: a `notifications/cancelled` for the call's
+  JSON-RPC ID, and any JSON-RPC response (for example an in-band elicitation reply).
+  A list call is never open, so it admits neither (`no_open_call`). The vMCP
   does not see which server-to-client requests the SDK is waiting on, so any response
   on that session is accepted. A Modern call has no session, whatever
   `Mcp-Session-Id` it sends, so it admits neither: a Modern client cancels by closing
@@ -1570,9 +1580,9 @@ method is refused with `token_reused`, whatever it names, so the client learns i
 needs a new token; a tool-call token's `tools/list` stays allowed (see above). A refusal by this middleware does not use
 up the token; a later refusal of a `tools/call`, such as the session-ownership 404 or
 a Cedar 403, does. A list call that gives the client no list (a JSON-RPC error, a
-later refusal, a response that cannot be read, or a client that went away before the
-answer reached it, even when the handler had answered) releases the token, since
-nothing of the call reached the client; a call cancelled that way is answered, and
+later refusal, a response that cannot be read, a handler that panics, or a client that
+went away before the answer reached it, even when the handler had answered) is not
+recorded, so the token stays unused; a call cancelled that way is answered, and
 audited, as a 503. The default record is in memory, so it
 covers one replica: a replay to another replica is accepted, and the vMCP warns at
 startup when sessions are stored in Redis without a shared `Record`. An embedder may

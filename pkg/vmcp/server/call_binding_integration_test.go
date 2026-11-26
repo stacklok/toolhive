@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
@@ -163,16 +166,67 @@ func cbToolCall(id int, tool, args string) string {
 // listToken registers a token bound to listing method on the real backend,
 // and returns it.
 func (s *cbRealServer) listToken(jti, method string) string {
+	return s.listTokenFor(jti, "real-backend", method)
+}
+
+// listTokenFor registers a token bound to listing method on server, and
+// returns it.
+func (s *cbRealServer) listTokenFor(jti, server, method string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.claims[jti] = map[string]any{
 		"iss": "https://issuer.example.com", "sub": cbRealPrincipal, "jti": jti,
 		"exp": float64(time.Now().Add(time.Hour).Unix()),
 		"authorization_details": []any{map[string]any{
-			"type": toolcalldetails.Type, "server": "real-backend", "method": method,
+			"type": toolcalldetails.Type, "server": server, "method": method,
 		}},
 	}
 	return jti
+}
+
+// startTemplateOnlyBackend starts an MCP backend that offers one resource
+// template and nothing else.
+func startTemplateOnlyBackend(t *testing.T) string {
+	t.Helper()
+	srv := mcpserver.NewMCPServer("template-only", "1.0.0")
+	srv.AddResourceTemplate(mcpmcp.ResourceTemplate{URITemplate: "file:///docs/{path}", Name: "docs"},
+		func(context.Context, mcpmcp.ReadResourceRequest) ([]mcpmcp.ResourceContents, error) {
+			return nil, nil
+		})
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", mcpserver.NewStreamableHTTPServer(srv))
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts.URL + "/mcp"
+}
+
+// TestCallBindingReal_ListCallServerInView checks the list call's server
+// check against the real core. A backend that offers only resource templates
+// is in the caller's view, so its templates are listed. A backend whose items
+// Cedar hides from the caller gets the same 403 server_not_found as a server
+// that does not exist, so a token holder cannot tell the two apart.
+func TestCallBindingReal_ListCallServerInView(t *testing.T) {
+	t.Parallel()
+
+	templates := &cbRealServer{calls: &atomic.Int32{}, claims: map[string]map[string]any{}}
+	templates.serve(t, startTemplateOnlyBackend(t))
+	token := templates.listToken("templates", "resources/templates/list")
+	status, body := templates.post(t, token, templates.session(t),
+		`{"jsonrpc":"2.0","id":2,"method":"resources/templates/list"}`)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	assert.Contains(t, body, "file:///docs/{path}")
+
+	hidden := newCallBindingRealServer(t, 0,
+		`permit(principal, action == Action::"call_tool", resource == Tool::"unrelated");`)
+	session := hidden.session(t)
+	list := `{"jsonrpc":"2.0","id":3,"method":"tools/list"}`
+	hiddenStatus, hiddenBody := hidden.post(t, hidden.listToken("hidden", "tools/list"), session, list)
+	unknownStatus, unknownBody := hidden.post(t, hidden.listTokenFor("unknown", "no-such-backend", "tools/list"), session, list)
+	assert.Equal(t, http.StatusForbidden, hiddenStatus, "body: %s", hiddenBody)
+	assert.Contains(t, hiddenBody, "(server_not_found)")
+	assert.Equal(t, unknownStatus, hiddenStatus)
+	assert.Equal(t, unknownBody, hiddenBody, "a hidden backend is answered as an unknown one")
+	assert.Zero(t, hidden.calls.Load())
 }
 
 // TestCallBindingReal_ListCallKeepsAdmission checks that a list-call token's

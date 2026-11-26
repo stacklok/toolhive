@@ -90,8 +90,13 @@ access token that carries an `authorization_details` entry of type
 names, once. A retried call, such as the retry after a URL elicitation, is a second
 call and needs a fresh token. An entry that names a list call (a backend and a list
 method) instead lets the token send that list method once, answered
-with only that backend's items; it cannot start a `tools/call`. Before its `exp`, such
-a token may also send, to the MCP endpoint:
+with only that backend's items, all in one response without `nextCursor`; it cannot
+start a `tools/call`. Before that list call, a `tools/call` or another list method gets
+**HTTP 403** `method_mismatch`, and a list request that carries a `cursor` gets 403
+`invalid_params`. A backend the caller is not admitted to anything of, including one
+that does not exist, gets 403 `server_not_found`; one the caller can see but that is
+not served now for its health status gets **HTTP 503**. None of these uses up the
+token. Before its `exp`, such a token may also send, to the MCP endpoint:
 
 - the handshake (`initialize`, `notifications/initialized`), the Modern
   `server/discover` probe and `ping`; `initialize` only until the token has started
@@ -100,9 +105,9 @@ a token may also send, to the MCP endpoint:
   up the token;
 - GET and DELETE on sessions its principal owns, and once the token has started its
   call, only on that call's session;
-- on the Legacy session of its call, while the call's request is open: a
-  `notifications/cancelled` for the call and, for a tool call, any JSON-RPC
-  response, such as an elicitation answer.
+- on the Legacy session of its tool call, while the call's request is open: a
+  `notifications/cancelled` for the call and any JSON-RPC response, such as an
+  elicitation answer.
 
 Call binding refuses everything else on the MCP endpoint. A refusal that describes the
 token gets **HTTP 401** with `WWW-Authenticate: Bearer error="invalid_token"` (with the

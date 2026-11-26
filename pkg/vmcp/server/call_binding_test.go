@@ -33,6 +33,7 @@ import (
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -179,6 +180,9 @@ type cbServerOptions struct {
 	wrap      func(*fakeCore) core.VMCP
 	// clock, when set, is the call binding's clock.
 	clock *cbClock
+	// redisAddr, when set, stores sessions in that Redis, so servers built
+	// on one address share them, as replicas do.
+	redisAddr string
 }
 
 type cbTestServer struct {
@@ -206,6 +210,11 @@ func newCallBindingTestServer(t *testing.T, opts cbServerOptions) *cbTestServer 
 	}
 	if opts.auditFile != "" {
 		cfg.AuditConfig = &audit.Config{LogFile: opts.auditFile}
+	}
+	if opts.redisAddr != "" {
+		cfg.SessionStorage = &vmcpconfig.SessionStorageConfig{
+			Provider: "redis", Address: opts.redisAddr, KeyPrefix: "test:vmcp:callbinding:",
+		}
 	}
 	fc := &fakeCore{
 		tools: []vmcp.Tool{

@@ -109,6 +109,17 @@ func TestReadListResponseRefusals(t *testing.T) {
 			"ambiguous items"},
 		"items not an array": {"tools/list", `{"jsonrpc":"2.0","id":1,"result":{"tools":{"name":"a"}}}`,
 			"items member is not an array"},
+		"result and error": {"tools/list", `{"jsonrpc":"2.0","id":1,"result":{"tools":[]},"error":{"code":1}}`,
+			"both a result and an error"},
+		"error twice": {"tools/list", `{"jsonrpc":"2.0","id":1,"error":{"code":1},"Error":{"code":2}}`,
+			"ambiguous error"},
+		"nextCursor in other case": {"tools/list", `{"jsonrpc":"2.0","id":1,"result":{"tools":[],"NextCursor":"x"}}`,
+			"ambiguous nextCursor"},
+		"cacheScope twice": {"tools/list",
+			`{"jsonrpc":"2.0","id":1,"result":{"tools":[],"cacheScope":"private","cacheScope":"public"}}`,
+			"ambiguous cacheScope"},
+		"ttlMs in other case": {"tools/list", `{"jsonrpc":"2.0","id":1,"result":{"tools":[],"ttlMs":0,"TTLMs":60000}}`,
+			"ambiguous ttlMs"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -147,6 +158,46 @@ func TestListParamsCarryCursor(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestSSEResponse(t *testing.T) {
+	t.Parallel()
+	const response = `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`
+	const note = `{"jsonrpc":"2.0","method":"notifications/message","params":{}}`
+	tests := []struct {
+		name    string
+		stream  string
+		want    string
+		refused string
+	}{
+		{name: "one event", stream: "event: message\nid: 7\ndata: " + response + "\n\n", want: response},
+		{name: "no space after the colon", stream: "data:" + response + "\n\n", want: response},
+		{name: "CRLF lines", stream: "data: " + response + "\r\n\r\n", want: response},
+		{name: "no closing blank line", stream: "data: " + response, want: response},
+		{name: "leading BOM", stream: "\uFEFFdata: " + response + "\n\n", want: response},
+		{name: "data split over lines", stream: "data: {\"jsonrpc\":\"2.0\",\ndata: \"id\":1,\"error\":{}}\n\n",
+			want: "{\"jsonrpc\":\"2.0\",\n\"id\":1,\"error\":{}}"},
+		{name: "notification first", stream: "data: " + note + "\n\ndata: " + response + "\n\n", want: response},
+		{name: "comment and priming event", stream: ": keepalive\n\nid: 0\ndata:\n\ndata: " + response + "\n\n",
+			want: response},
+		{name: "two responses", stream: "data: " + response + "\n\ndata: " + response + "\n\n",
+			refused: "more than one response"},
+		{name: "no response", stream: "data: " + note + "\n\n", refused: "no response"},
+		{name: "empty stream", stream: "", refused: "no response"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := SSEResponse([]byte(tc.stream))
+			if tc.refused != "" {
+				require.ErrorIs(t, err, ErrListResult)
+				assert.Contains(t, err.Error(), tc.refused)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(got))
 		})
 	}
 }

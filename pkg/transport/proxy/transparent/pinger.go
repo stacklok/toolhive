@@ -186,13 +186,13 @@ func (p *StatelessMCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 // redactedTargetPlaceholder stands in for a target URL that does not parse to
 // a scheme and host. The raw string is never used in its place, since a URL
 // that fails to parse can still carry a secret.
-const redactedTargetPlaceholder = "<unparseable target URL>"
+const redactedTargetPlaceholder = "<unparsable target URL>"
 
-// errUnparseableRedirectLocation replaces net/http's error for a redirect whose
+// errUnparsableRedirectLocation replaces net/http's error for a redirect whose
 // Location header does not parse. That error's text quotes the raw Location,
 // which on a same-host canonicalization redirect commonly repeats the target's
 // path and query.
-var errUnparseableRedirectLocation = errors.New("failed to parse redirect Location header")
+var errUnparsableRedirectLocation = errors.New("failed to parse redirect Location header")
 
 // redactTargetURL reduces a pinger target to its scheme and host (including
 // any port), e.g. "https://host:8443".
@@ -232,7 +232,7 @@ func redactURLError(err error, redactedTarget string) error {
 	// header %q: %v", ...), so it has no chain to preserve and can only be
 	// recognized by its text.
 	if inner != nil && strings.HasPrefix(inner.Error(), "failed to parse Location header") {
-		inner = errUnparseableRedirectLocation
+		inner = errUnparsableRedirectLocation
 	}
 	return &url.Error{Op: urlErr.Op, URL: redactedTarget, Err: inner}
 }

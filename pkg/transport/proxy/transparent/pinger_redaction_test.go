@@ -92,8 +92,8 @@ func TestPinger_Ping_RedactsTargetInErrors(t *testing.T) {
 			wantErrIs: networking.ErrRedirectRefused,
 		},
 		{
-			// net/http quotes an unparseable Location verbatim in its error.
-			name: "redirect with an unparseable secret-bearing Location",
+			// net/http quotes an unparsable Location verbatim in its error.
+			name: "redirect with an unparsable secret-bearing Location",
 			setup: func(t *testing.T) (string, string) {
 				t.Helper()
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -104,7 +104,7 @@ func TestPinger_Ping_RedactsTargetInErrors(t *testing.T) {
 				return srv.URL + secretPathQuery, srv.Listener.Addr().String()
 			},
 			timeout:   2 * time.Second,
-			wantErrIs: errUnparseableRedirectLocation,
+			wantErrIs: errUnparsableRedirectLocation,
 		},
 		{
 			// http.NewRequest's parse error quotes the raw target.

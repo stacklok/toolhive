@@ -3423,7 +3423,15 @@ but claims from an introspection response never do, because they are the
 introspection endpoint's word, not a signature this validator checked.
 
 An unmarked token that fits neither route is still served as before, including
-loading its upstream tokens when applicable. For a validator bound to the
+loading its upstream tokens when applicable, except with user-keyed storage on a
+validator bound to the embedded issuer, where it loads nothing: this covers a
+validator without an audience, without an in-process key provider, a token
+verified through the JWKS fallback, and a token with a `tsid` plus proof of a
+session-less mint. `auth.NewTokenValidator` refuses to start a bound validator
+without an audience or key provider when its upstream token reader reports
+user-keyed storage. See
+[Validator rule for embedded-issuer tokens](11-auth-server-storage.md#validator-rule-for-embedded-issuer-tokens).
+For a validator bound to the
 embedded issuer, a marked token that cannot be classified as `delegated` is
 rejected instead. This includes a token with a usable `tsid`, validation without
 an audience, and validation through introspection or HTTP JWKS fallback rather
@@ -3433,6 +3441,13 @@ loading any upstream credentials.
 When the validator has an upstream token reader, a token that carries a
 non-empty `tsid` is never `SessionlessGrant`, even if it also carries a proof of
 a session-less mint. The authorization server never issues that combination.
+
+An unmarked token validated without an audience gets no route, even one that
+would otherwise be interactive. With session-keyed storage it is
+still served exactly as before, including loading its upstream tokens. With
+user-keyed storage such a token loads no upstream tokens and the request is
+served without them; see
+[Validator rule for embedded-issuer tokens](11-auth-server-storage.md#validator-rule-for-embedded-issuer-tokens).
 
 Consumers that grant anything must compare for one exact value, such as
 `delegated`. They must never test for a non-empty route or against the empty

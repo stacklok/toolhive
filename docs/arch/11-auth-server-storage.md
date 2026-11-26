@@ -272,6 +272,17 @@ The server owns the credential-free canonical-user context contract in `pkg/auth
 
 ToolHive bridges its host API to this contract: `auth.PlatformUserContextKey` aliases the server key, `auth.WithPlatformUser` and `auth.PlatformUserFromContext` wrap the server helpers, and `auth.CanonicalUserFromContext` checks the explicit key first, then falls back to the host `Identity.PlatformUserID`, typically attached on authenticated request paths. Context lookup alone is not proof of authentication. A direct explicit value, including an empty string, takes precedence. Host storage decorators that require this identity fallback must use the host getter or provide an explicit adapter; using the server getter alone on an identity-only host context will not resolve a user.
 
+The device flow sets the canonical user to the resolved user of the confirmed
+device code before it stores upstream tokens, with the option on or off. The
+refresher refuses a re-read row owned by another user whenever the context
+carries a non-empty canonical user, again with the option on or off. This covers
+the row it re-reads before redeeming, the winner it reads after losing a
+concurrent refresh, and the row it re-reads when the IdP rejected a token that
+another process had already rotated (that last case does not use the foreign row
+and goes on as a rejection). A context with no canonical user is not checked.
+
+On the token validator's upstream load path for tokens of the embedded issuer, the explicit key is always set and the identity fallback is not used; see [Validator rule for embedded-issuer tokens](#validator-rule-for-embedded-issuer-tokens).
+
 The group-based implementation in `pkg/authserver/upstreamfilter` strictly decodes claims with `pkg/oauthproto/claims.DecodeStringArray`; absent, malformed, or mixed-type group claims fail closed. The decoder belongs to the OAuth protocol claims package, not ToolHive's general `pkg/auth` package.
 
 ## Identity resolution for pure OAuth2 providers
@@ -449,6 +460,14 @@ Secondary indexes use Redis Sets to enable reverse lookups:
 thv:auth:{default:my-server}:reqid:access:{request-id}  → {sig1, sig2}
 thv:auth:{default:my-server}:user:upstream:{user-id}     → {thv:auth:{default:my-server}:upstream:session1:github, ...}
 ```
+
+With user-keyed storage, upstream rows are keyed `{prefix}upstream:user:{escaped user ID}:{provider}`
+and the per-user index key is `{prefix}upstream:idx:user:{escaped user ID}`.
+The set `{prefix}user:upstream:{user ID}` holds the full row keys, one per
+provider, such as `{prefix}upstream:user:{escaped user ID}:{provider}`, instead
+of one key per session and provider. `DeleteUser` deletes each key in the set,
+then the wrapper deletes the per-user index, so an index left without a TTL by a
+token that never expires does not outlive the user.
 
 ### Exchange grant storage
 
@@ -644,6 +663,10 @@ handler of the same concrete type.
 
 #### Upstream refresh guard
 
+This section describes the default session-keyed storage. With user-keyed
+storage the guard works differently; see
+[Upstream refresh guard under user-keyed storage](#upstream-refresh-guard-under-user-keyed-storage).
+
 The guard is registered whenever at least one upstream is configured, ahead
 of the embedder's handlers, which therefore see only grants it accepted. It
 refuses the grant with `invalid_grant` when the token session's upstream
@@ -657,7 +680,7 @@ other docs link here.
 | A row's access token is expired and its provider is no longer configured, so nothing can refresh it | No |
 | A row's access token is expired and the row has no refresh token | Yes |
 | The row was deleted while the guard refreshed it, including by the refresher itself when the IdP rotated the refresh token and the new one could not be saved | No |
-| The IdP rejects the row's refresh with `invalid_grant` (`upstream.ErrGrantRejected`) | No (the session's upstream rows are deleted) |
+| The IdP rejects the row's refresh with `invalid_grant` (`upstream.ErrGrantRejected`) | No (the session's upstream rows are deleted; session-keyed storage) |
 
 A revoking refusal also revokes the grant's access tokens, as an RFC 7009
 revocation of the refresh token would. It applies only when the stored rows
@@ -979,6 +1002,355 @@ A pending request for a removed client is refused too. Consent and the upstream 
 With the memory backend, a restarted server starts empty and registers only the configured delegates (`pkg/authserver/server_impl.go`). See [Token Exchange and Delegation](17-token-exchange-delegation.md).
 
 **Implementation:** `ClientAdmissionStorage` in `pkg/authserver/storage/client_admission.go`, installed by `newClientAdmissionStorage` in `pkg/authserver/server_impl.go`.
+
+## User-keyed upstream storage
+
+By default the auth server stores upstream tokens per login session (`tsid`).
+A user who signs in from a second client gets a second set of upstream tokens
+and has to connect every provider again. User-keyed storage keys the rows by
+user and provider instead. All of a user's clients then share one connection
+per provider, and a second client does not repeat the upstream sign-in for a
+provider that is already connected.
+
+### Turning it on
+
+It is an option for Go embedders only:
+
+- `authserver.Config.UserKeyedUpstreamStorage`, or
+- `runner.WithUserKeyedUpstreamStorage()` on `NewEmbeddedAuthServerWithStorage`.
+  `NewEmbeddedAuthServer` builds its own storage and refuses the option.
+
+It is not part of RunConfig. `thv`, vMCP's runner-built storage and operator
+deployments are unchanged and keep session-keyed rows. The server wraps the
+storage it is given as the outermost layer, so every consumer sees user-keyed
+rows. `Unwrap` and `ConsumeAssertionJWT` pass through to the layers below.
+
+`GetLatestUpstreamTokensForUser` passes through unchanged. It is keyed by its
+`userID` argument, and the wrapper adds no check against the context user; the
+backends compare each row's `UserID` with the argument. It can still return
+session-keyed rows written before the option was on.
+
+Startup refuses three combinations:
+
+- `UpstreamFilter` together with user-keyed storage. The read side does not
+  apply the filter per user yet.
+- Storage that already contains the in-tree user-keyed layer, whether the
+  option is on or off. The check runs on the storage passed at construction.
+  It follows `Unwrap() storage.Storage` and
+  `Unwrap() storage.UpstreamTokenStorage`. It cannot see another decorator that
+  keys rows by user. An `InProcessService` uses the same walk to report
+  user-keyed storage, so a decorator the embedder puts over `IDPTokenStorage()`
+  should expose one of them; otherwise the validator's startup check is
+  skipped.
+- `NewEmbeddedAuthServer` with the option, because it builds its own storage.
+
+Two warnings:
+
+- Do not enable it over another decorator that keys rows by user. Rows would be
+  keyed twice and deletes would find nothing.
+- Read upstream tokens through the server's `IDPTokenStorage()`. A token
+  service built over the raw storage handle skips the wrapper and reads
+  session-keyed rows.
+
+Turning it on ignores existing session-keyed rows, so users connect again once.
+Turning it off later does the same in reverse. Revoking a token does not remove
+the shared row. The refresher removes the user's row when it cannot store a
+rotated refresh token. It re-reads the row first: it keeps the row when the
+re-read finds a different refresh token (a sign-in replaced it), and deletes it
+otherwise, including when the re-read fails. A small window between the re-read
+and the delete remains. When the row is removed, every client of the user
+connects again.
+
+### Behaviour
+
+- **Key.** The row is found by user and provider. The `tsid` argument is
+  ignored. The user is read only from the auth server's canonical-user context
+  key (`identity.CanonicalUserFromContext`), never from the authenticated
+  `Identity`. Sign-in sets it to the login subject, the bearer validator to the
+  token's `sub`, the refresh guard to the session subject, the refresher to the
+  row's `UserID` when the context has none, and `GetValidTokensForUser` to its
+  argument. With no user, or an empty one, a read or write fails with
+  `ErrNoCanonicalUser`. A direct caller of `Server.UpstreamTokenRefresher()`
+  that puts no user in the context gets the row's own `UserID`, so such a
+  caller must only pass rows it has already checked belong to the user in
+  question. The user ID is escaped in the Redis key, so no user ID can address
+  another user's row.
+- **Owner check.** Every read compares the row's `UserID` with the context user
+  before it reports anything, including expiry. A row owned by someone else, or
+  by no one, returns `ErrInvalidBinding` and is never handed back, even when it
+  is expired (an expired row would otherwise come back with its refresh token).
+  When a bulk read meets such a row it skips it, so that provider counts as not
+  connected, and logs one ERROR with the row's user and the provider. It does
+  not log the expected user. Walking the sign-in chain again then repeats that leg.
+- **Writes.** A write is refused when the tokens are nil, carry no `UserID`, or
+  name a different user than the context. The row is keyed by `tokens.UserID`.
+  `DeleteUpstreamTokens` (delete by session) always returns an error, because it
+  cannot be answered by user and silently succeeding would let a logout look
+  complete. `DeleteUpstreamTokensForProvider` removes the context user's row.
+- **Row ID.** Two sessions of one user resolve to the same row ID, so they
+  share one refresh within a process. Across replicas only the
+  compare-and-swap applies.
+- **Lifetime.** A row lives until its access token's `ExpiresAt` plus 30 days.
+  A token that never expires gets no storage lifetime. The exception is a user
+  with a synthesized subject (an OAuth2 upstream with no identity lookup): that
+  subject changes on every login, so its rows keep the session lifetime bound.
+- **Reader.** `InProcessService.GetValidTokensForUser(ctx, userID, provider)`
+  returns a valid credential for one user and provider, refreshing an expired
+  row. It checks the owner itself, so it is safe over storage that is not
+  user-keyed. A user with no usable connection (no row, a placeholder row, an
+  expired row that cannot be refreshed, or a refresh rejected with
+  `invalid_grant`) gets `ErrNeedsAuthorization`, with the cause still
+  reachable through `errors.Is`. A foreign row gets `ErrInvalidBinding`. A
+  storage failure or a temporary refresh failure is returned as it came.
+
+The refresh grant guard and the sign-in carry-forward also change under this
+option; see
+[Upstream refresh guard under user-keyed storage](#upstream-refresh-guard-under-user-keyed-storage).
+
+**Implementation:** `pkg/authserver/storage/user_keyed_upstream.go`,
+`pkg/auth/upstreamtoken/service.go`, `pkg/auth/token.go`
+
+### Validator rule for embedded-issuer tokens
+
+This rule applies to every token validator bound to the embedded issuer,
+whether or not user-keyed storage is on. When it loads upstream tokens, the
+load context always carries an explicit canonical user: the token's `sub` when
+the token's admission route is `interactive`, and an empty user for any other
+token. The admission route is described under "Admission route" in
+[Token Exchange and Delegation](17-token-exchange-delegation.md). A token is
+interactive only when the validator is bound to the embedded issuer, has an
+audience configured and verified the JWT with the embedded server's in-process
+keys, and the token has a `tsid` and neither a delegated-access marker nor
+proof of a session-less mint. Four effects:
+
+- On that load path, `auth.CanonicalUserFromContext` no longer falls back to
+  `Identity.PlatformUserID`.
+- A host storage decorator that keys by user sees an empty user for any token
+  that is not interactive. It should return `storage.ErrNoCanonicalUser` for
+  the empty user; the validator then loads nothing and does not fail the
+  request. An empty but non-nil result is not the same: for a token with a
+  `tsid` the validator answers 401, because the session then holds no upstream
+  access token. Any other error from the load fails the request with 503. With user-keyed storage, such a token loads nothing and
+  the request is not failed.
+- A validator bound to the embedded issuer that has no audience, or no
+  in-process key provider, gives every token the empty route. With user-keyed
+  storage an interactive token then loads no upstream tokens, so embedders
+  that turn the option on must configure all three requirements: the
+  validator is bound to the embedded issuer (`WithEmbeddedAuthServerIssuer`
+  equal to its issuer), it verifies with the in-process key provider
+  (`WithKeyProvider`), and it has an audience. With session-keyed storage the
+  load is unchanged.
+- `auth.NewTokenValidator` refuses to start without those three requirements
+  when its upstream token reader reports user-keyed storage
+  (`upstreamtoken.UserKeyedReader`). An `InProcessService` built over
+  `IDPTokenStorage()` reports it, and a reader that wraps another must forward
+  the wrapped reader's answer. The request-time behaviour described here and
+  below applies only behind a reader that does not report it. A validator for
+  another issuer must not be given the embedded server's upstream token
+  reader: it is refused at startup for lacking the three requirements.
+
+A validator not bound to the embedded issuer does not touch the canonical
+user. With session-keyed storage it loads as before. With user-keyed storage
+the load fails with `storage.ErrNoCanonicalUser`, because the user-keyed layer
+reads only the user the embedded server put in the context, and the request
+gets a 503. This is a configuration error, so it is reported instead of
+serving the request without upstream tokens.
+
+### Upstream refresh guard under user-keyed storage
+
+With [user-keyed upstream storage](#user-keyed-upstream-storage), all of a
+user's clients share one row per provider. The guard changes to fit:
+
+- It checks only the identity provider's row (the first configured upstream),
+  looked up by the session's user. Other upstreams are connectors a user can
+  add or lose without ending the login, so they no longer decide a refresh.
+- It refuses when that row is missing (or was deleted during the refresh), has
+  a placeholder or empty access token, belongs to another user, is expired with
+  no refresh token, or its refresh was rejected with `invalid_grant` and the
+  rejection is confirmed by the recheck described under
+  [Upstream refresh guard](#upstream-refresh-guard). It also refuses when the
+  session has no user, or when the identity provider is not configured on this
+  server. This recheck compares against the refresh token the guard read before
+  the refresh. If that read failed, no rejection can be confirmed and the grant
+  goes through. The
+  snapshot is not the token the refresh redeemed: if another sign-in installs a
+  new refresh token in between and the identity provider rejects that token,
+  the recheck takes it for a successor and grants once, and the next refresh
+  is refused and revoked. When the identity provider's row belongs to
+  the user and holds an access token that has not expired, the guard grants
+  without asking the identity provider, since the row needs no refresh. If that
+  row's refresh token is dead, the next refresh grant after the access token
+  expires is refused and the token revoked.
+- A refusal revokes the presented refresh token (and its access tokens) when
+  the row is missing, was deleted during the refresh, has a placeholder or
+  empty access token, is expired with no refresh token, or its refresh was
+  rejected with a confirmed `invalid_grant`. A client that follows the OAuth
+  rules discards a refresh token that was refused with `invalid_grant`. If the
+  refused token were not revoked, no legitimate party would hold it, yet it
+  would work again as soon as the user signs in on any client and the shared
+  row becomes live. Rotation's reuse detection could no longer catch a stolen
+  copy. Revoking keeps a refused token refused.
+- A refusal keeps the token when the row belongs to another user, when the
+  session has no user, and when the identity provider is not configured on
+  this server. These are data or configuration faults that a new sign-in does
+  not fix, and the token should work again once the fault is fixed.
+- Migration trade-off: right after the option is turned on no user has a row
+  yet. A client that refreshes before its user signs in again is refused and
+  its token is revoked. That user has to sign in again anyway, because the
+  missing row requires it.
+- It deletes no row. The row belongs to every client of the user, so one
+  client's refresh must not remove another client's connection. After a
+  confirmed rejection it does clear the rejected refresh token from the row,
+  with a compare-and-swap that expects that token: a refresh token a later
+  sign-in stored is left alone, and a failure to clear is logged at DEBUG and
+  does not change the refusal. Clearing keeps a later sign-in from carrying the
+  dead token forward. The other clients of the user then find a row without a
+  refresh token, so once its access token has expired they are refused and
+  revoked.
+- It skips the [remembered rejections](#remembered-rejections) and asks the
+  identity provider, as the session-keyed guard does. It refreshes once more
+  when it joined a refresh that answered from the memory, and grants at DEBUG
+  if that answer is remembered too. It refuses and revokes only after a
+  rejection the identity provider just gave, so a client whose block an
+  administrator has since cleared is not refused on a stale answer.
+- A failure it cannot judge (a network error, a 5xx, a storage error, or the
+  check running past its time budget) grants the refresh and logs one WARN per refresh grant. The session-keyed
+  guard logs that case at DEBUG; the user-keyed guard keeps the WARN on purpose,
+  because it is the only signal that a credential could not be checked. A
+  recheck that cannot finish, or a cancelled request, grants quietly at DEBUG.
+
+Three cases are accepted: the refresh grant succeeds, but the bearer validator
+still answers 401, so the client refreshes again in a loop.
+
+- A dead connector (not the identity provider): the guard does not look at it,
+  and the validator answers 401 for any provider that fails to load. This lasts
+  until "Re-authorization walks the full upstream chain instead of evaluating
+  existing credentials" (#6831) is fixed.
+- A removed or renamed upstream: its rows stay in storage. Once a row's access
+  token has expired the refresher cannot refresh it, because the server no
+  longer has that provider, so the validator answers 401 for it. The guard does
+  not look at it and grants. Delete the rows with
+  `DeleteUpstreamTokensForProvider`. If the renamed upstream is the identity
+  provider, the first refresh is refused and revoked instead; after the user
+  signs in again, the old row makes clients loop as above.
+- A Redis row that cannot be parsed: the guard grants with a WARN on every
+  refresh, where the session-keyed guard skips such a row and refuses. The loop
+  ends when the row's storage lifetime ends. A row whose tokens never expire
+  has none, so the user must connect the provider again, which replaces the row,
+  or the row must be removed.
+
+On sign-in, when the IdP returns no refresh token, the callback keeps the
+refresh token already stored for the user and provider, as it does without
+user keying. With user keying the row is shared, so every write that could
+replace a refresh token is a compare-and-swap on the token the callback read:
+
+- A prior row of the same upstream account: the login's tokens are written with
+  the prior refresh token, swapping on that token. If a refresh rotated the row
+  in the meantime, the swap loses and the rotated row is kept; the older token
+  is never put back.
+- A prior row of a different upstream account: the login replaces it, swapping
+  on the prior row's refresh token.
+- No prior row, a prior row without a refresh token, or a prior row that cannot
+  be read: the login writes its tokens only over a row that has no refresh
+  token, so a refresh token a concurrent client stored in the meantime is never
+  erased.
+- Synthetic providers (a synthesized subject) have no account to compare. They
+  carry the prior refresh token without an account check. That is a limitation
+  and it is the same with the option off. For them a lost swap always counts
+  as a same-account winner and merges.
+
+When a swap loses, the callback reads the winning row again:
+
+- Winner of the same account: the login's access token, ID token and expiry are
+  merged with the winner's refresh token in one more compare-and-swap on that
+  token. If that swap also loses, the newer winner is kept and the login
+  succeeds. There is no further retry.
+- Winner of a different account: the winner is kept and the login fails with a
+  server error. The user can sign in again, and that second login replaces the
+  row.
+- Winner that cannot be read: the login fails, because the stored account is
+  unknown.
+- Row deleted between the lost write and the re-read: the login's tokens are
+  written again over the empty slot, with a swap that expects no refresh
+  token. If the slot is gone again on the next re-read, that swap is repeated
+  once more; after that the rules above apply.
+
+A row owned by another user is replaced and logged at ERROR; the wrapper writes
+the row under the context user, so this is not expected to happen.
+
+### Adopting user-keyed storage in an embedder
+
+Most mistakes in adopting the option do not fail. They show up as users who
+look disconnected, refreshes that fail, or a guard that never refuses. Check
+each item before turning the option on.
+
+1. **Validator.** The bearer validator must be bound to the embedded issuer
+   (`auth.WithEmbeddedAuthServerIssuer` equal to its issuer), verify with the
+   in-process key provider (`auth.WithKeyProvider`), and have an audience.
+   `auth.NewTokenValidator` refuses to start without them when its reader
+   reports user-keyed storage (see the next item). A validator for another
+   issuer must not be given the embedded server's upstream token reader.
+2. **Reader wrappers.** A `TokenReader` that wraps another must implement
+   `upstreamtoken.UserKeyedReader` and return the wrapped reader's answer.
+   Otherwise the validator cannot see the user-keyed storage, the startup
+   check is skipped, and a wrong validator setup shows up only at request time.
+3. **One storage handle for upstream tokens.** Read, write, refresh and delete
+   upstream tokens only through the server's `IDPTokenStorage()`, or a reader
+   built over it. A storage handle kept from before the server was built sits
+   below the user-keyed layer: through it, users look disconnected, refresh
+   checks find no row, and deletes remove nothing. This also applies to code
+   that wraps the refresher and re-reads the row.
+4. **The user on the context.** Code of the embedder that touches upstream rows
+   must put the user on the context with `identity.WithCanonicalUser` (or
+   `auth.WithPlatformUser`). The user-keyed layer does not read the
+   authenticated `Identity`, so a context with only an `Identity` fails with
+   `ErrNoCanonicalUser`. A check that treats that error as temporary turns
+   into a check that always passes.
+5. **No second user-keyed layer.** Remove any decorator of the embedder that
+   already keys rows by user. Two such layers key every row twice, and deletes
+   find nothing. The server refuses storage that contains its own user-keyed
+   layer, but cannot detect a layer of the embedder. A decorator the embedder
+   puts over `IDPTokenStorage()` should expose `Unwrap() storage.Storage` or
+   `Unwrap() storage.UpstreamTokenStorage`, so a reader built over it still
+   reports user-keyed storage (see item 2).
+6. **One key prefix per auth server.** Under session keying, rows of different
+   auth servers never meet, because every `tsid` is unique. Under user keying,
+   two auth servers that share a Redis key prefix share the row of a user and
+   provider name. Give each server its own prefix.
+7. **Existing rows.** Rows written before the option was on are not read.
+   Users without a user-keyed row must sign in again, and until they do their
+   refresh grants are refused. Users connect their providers again, or the
+   embedder moves the rows itself.
+   The layers below see a new session ID for each row (`user:` and the escaped
+   user ID). A layer that binds data to the session ID, such as encryption with
+   the session ID as associated data, cannot read old rows under the new ID.
+8. **Lifetimes.** A row for a token that never expires has no storage lifetime
+   and a zero `SessionExpiresAt` (users with a synthesized subject excepted).
+   Code that treats `SessionExpiresAt` as the end of a connection, or compares
+   rows by their expiry fields, must handle zero.
+9. **Disconnect and user deletion.** The server deletes a user's row on its own
+   in one case only: the refresher drops a row when it cannot save a rotated
+   refresh token. It re-reads the row first: it keeps the row when the re-read
+   finds a different refresh token (a sign-in replaced it), and deletes it
+   otherwise, including when the re-read fails. A small window between the
+   re-read and the delete remains. Otherwise the embedder offers disconnect
+   (`DeleteUpstreamTokensForProvider` on `IDPTokenStorage()`, with the user on
+   the context) and user deletion
+   (`DeleteUser` on `IDPTokenStorage()`, asserted to `storage.UserStorage`).
+   Only the user-keyed layer removes the user's row index on Redis, so
+   `DeleteUser` on a storage handle below it leaves that index behind.
+   Disconnecting the identity provider (the first upstream) ends the user's
+   login on every client at its next refresh grant: the guard finds no row,
+   refuses and revokes. Disconnecting a connector does not. Removing or renaming an upstream leaves its rows in
+   place; once their access tokens expire every client gets 401 from the
+   validator while the guard still grants, so clients loop. Delete those rows
+   with `DeleteUpstreamTokensForProvider`. If the renamed upstream is the
+   identity provider, the first refresh is refused and revoked instead; after
+   the user signs in again, the old row makes clients loop as above.
+10. **Refresh guard.** The built-in guard checks only the identity provider's
+    row. It runs before the embedder's `RefreshGrantHandlers`, so those see only
+    grants it accepted. Set `DisableUpstreamRefreshGuard` to keep only the
+    embedder's own check.
 
 ## Configuration
 

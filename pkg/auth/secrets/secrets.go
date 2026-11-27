@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/stacklok/toolhive-core/env"
@@ -163,6 +164,30 @@ func GenerateUniqueSecretNameWithPrefix(workloadName, prefix string, secretManag
 	}
 	uniqueName := fmt.Sprintf("%s_%d_%x", baseName, timestamp, randomSuffix)
 	return uniqueName, nil
+}
+
+// IsWorkloadOwnedSecretName reports whether name has one of the two shapes
+// GenerateUniqueSecretNameWithPrefix can emit for workloadName with the given
+// prefix: the exact base "<prefix><workloadName>" or the suffixed
+// "<prefix><workloadName>_<digits>_<8 lowercase hex>" form.
+//
+// This is a name-shape check, not provenance. It is unambiguous only when no
+// other workload name ends in "_<digits>_<8 hex>": workload names allow '_', so
+// a secret owned by workload "foo_1_ab12cd34" also matches the suffixed shape
+// for workload "foo". Anchoring only rules out the plain-prefix collision
+// ("foo" vs "foo_1"); it cannot distinguish a generated suffix from a base
+// name that happens to look like one. Callers deleting another workload's ref
+// from imported config need provenance recorded alongside the ref, which this
+// predicate does not provide. An empty workload name never proves ownership.
+func IsWorkloadOwnedSecretName(workloadName, prefix, name string) bool {
+	if workloadName == "" {
+		return false
+	}
+
+	base := regexp.QuoteMeta(prefix + workloadName)
+	// QuoteMeta escapes the variable part, so this pattern is always valid.
+	ownedName := regexp.MustCompile(`^` + base + `(?:_[0-9]+_[0-9a-f]{8})?$`)
+	return ownedName.MatchString(name)
 }
 
 // StoreSecretInManagerWithProvider stores a secret using the provided secret manager

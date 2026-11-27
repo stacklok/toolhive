@@ -994,6 +994,10 @@ func (r *Runner) persistRefreshToken(
 	if err != nil {
 		return err
 	}
+	previousSecretName := ""
+	if updatedConfig.RemoteAuthConfig != nil {
+		previousSecretName = updatedConfig.RemoteAuthConfig.CachedRefreshTokenRef
+	}
 	secretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
 		r.Config.Name,
 		"OAUTH_REFRESH_TOKEN_",
@@ -1013,12 +1017,38 @@ func (r *Runner) persistRefreshToken(
 	updatedRemoteAuthConfig.CachedTokenExpiry = expiry
 
 	if err := updatedConfig.SaveState(ctx); err != nil {
+		// The new secret is already stored but nothing references it, so it
+		// would otherwise be orphaned just like the OAUTH_REFRESH_TOKEN_*
+		// leaks this path is meant to prevent. Best-effort cleanup only: the
+		// storage error is what we report, and the provider may be read-only.
+		if secretName != previousSecretName {
+			if deleteErr := secretManager.DeleteSecret(ctx, secretName); deleteErr != nil {
+				slog.Warn("Failed to delete uncommitted OAuth refresh token secret",
+					"secret_name", secretName, "error", deleteErr)
+			}
+		}
 		return fmt.Errorf("failed to save config with token reference: %w", err)
 	}
 
 	// Preserve pointer identity so the auth handler and runner observe the same
 	// complete config only after the durable write succeeds.
 	*r.Config.RemoteAuthConfig = updatedRemoteAuthConfig
+
+	// The new reference is durable. Remove the previous generation so restarts
+	// do not leave orphaned OAUTH_REFRESH_TOKEN_* secrets behind (#3886). Only
+	// delete a name this workload actually created: a config exported from
+	// another workload can carry that workload's CachedRefreshTokenRef, and a
+	// plain prefix check would let us delete its live secret. This is best
+	// effort: the provider may be read-only, and the new token must not fail to
+	// persist merely because stale cleanup failed.
+	if previousSecretName != "" &&
+		previousSecretName != secretName &&
+		authsecrets.IsWorkloadOwnedSecretName(r.Config.Name, "OAUTH_REFRESH_TOKEN_", previousSecretName) {
+		if err := secretManager.DeleteSecret(ctx, previousSecretName); err != nil {
+			slog.Warn("Failed to delete previous OAuth refresh token secret",
+				"secret_name", previousSecretName, "error", err)
+		}
+	}
 
 	slog.Debug("Stored OAuth refresh token in secret manager", "secret_name", secretName)
 	return nil

@@ -7,10 +7,9 @@ import (
 	"context"
 	"testing"
 
+	cedar "github.com/cedar-policy/cedar-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	cedar "github.com/cedar-policy/cedar-go"
 
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )

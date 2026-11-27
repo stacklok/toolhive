@@ -38,12 +38,20 @@ type Server interface {
 	Handler() http.Handler
 
 	// IDPTokenStorage returns storage for upstream IDP tokens.
-	// Returns nil if no upstream IDP is configured.
+	// Returns nil if no upstream IDP is configured. With
+	// Config.UserKeyedUpstreamStorage set it returns the user-keyed layer, and
+	// every call needs the canonical user on the context
+	// (identity.WithCanonicalUser).
 	IDPTokenStorage() storage.UpstreamTokenStorage
 
 	// UpstreamTokenRefresher returns a refresher that can refresh expired upstream
 	// tokens using the upstream provider's refresh token grant.
 	// Returns nil if no upstream IDP is configured.
+	//
+	// With Config.UserKeyedUpstreamStorage set, every call needs the canonical
+	// user on the context (identity.WithCanonicalUser). With no canonical user in the
+	// context, the refresher acts for the user named by the row it is given,
+	// so callers must pass only rows they read for that user.
 	UpstreamTokenRefresher() storage.UpstreamTokenRefresher
 
 	// DCRStore returns the persistent DCR credential store the server is wired

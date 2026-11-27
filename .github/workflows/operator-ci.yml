@@ -227,6 +227,9 @@ jobs:
       with:
         cluster_name: toolhive
         version: v0.33.0 # kind
+        # Enables OwnerReferencesPermissionEnforcement (as OpenShift does) so
+        # missing <owner>/finalizers RBAC fails Chainsaw.
+        config: test/e2e/thv-operator/kind-config.yaml
         cloud_provider: true
         node_image: ${{ matrix.version }}
 

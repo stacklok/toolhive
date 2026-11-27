@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -198,6 +199,21 @@ func TestWriteK8sManifest(t *testing.T) {
 				t.Helper()
 				require.NotNil(t, mcpServer.Spec.Audit)
 				assert.True(t, mcpServer.Spec.Audit.Enabled)
+			},
+		},
+		{
+			name: "config with instructions",
+			config: &runner.RunConfig{
+				Image:        "ghcr.io/stacklok/mcp-server:latest",
+				Name:         "test",
+				BaseName:     "test",
+				Transport:    types.TransportTypeStdio,
+				Instructions: &instructions.Config{Mode: instructions.ModeReplace, Value: "policy"},
+			},
+			validateFn: func(t *testing.T, mcpServer *v1beta1.MCPServer) {
+				t.Helper()
+				assert.Equal(t, &instructions.Config{Mode: instructions.ModeReplace, Value: "policy"},
+					mcpServer.Spec.Instructions)
 			},
 		},
 		{

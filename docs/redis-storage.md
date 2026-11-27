@@ -366,6 +366,8 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}xgrant:{signature}` | HASH holding one exchange grant, the record behind a refresh token issued through token exchange. Field `data` is the immutable JSON record; field `rev_ms` (Unix ms) appears only after revocation | Grant `ExpiresAt`; revoke does not change it |
 | `{prefix}assertion-jwt:{digest}` | Replay marker. For JWT-bearer assertions it is kept until the assertion's `exp`. For an exchange grant it records the subject access token's `(issuer, jti)`, holds the grant signature, and is written only for a top-level grant | JWT-bearer: assertion `exp`. Exchange grant: access token `exp` plus 1 minute |
 
+With the embedder option `UserKeyedUpstreamStorage`, `{session_id}` is `user:{URL-escaped user ID}`, so one user's logins from several clients share the same keys. See [User-keyed upstream storage](arch/11-auth-server-storage.md#user-keyed-upstream-storage).
+
 Exchange grant keys need AOF persistence to survive a restart. Without AOF, or after a failover to a replica that had not received the latest writes, replay markers and revocations can be lost: a lost marker allows a second exchange of the same access token, and a lost revocation makes a grant usable again until it expires. See [Auth Server Storage](arch/11-auth-server-storage.md#exchange-grant-storage).
 
 For how configured (delegate and SPIFFE) client rows behave across restarts and rollbacks, see [Configured clients across restarts](arch/11-auth-server-storage.md#configured-clients-across-restarts).
@@ -397,7 +399,7 @@ Redis Sets are used as secondary indexes for efficient lookups:
 | `{prefix}reqid:access:{request_id}` | Request ID → access token signatures |
 | `{prefix}reqid:refresh:{request_id}` | Request ID → refresh token signatures |
 | `{prefix}upstream:idx:{session_id}` | Session → that session's upstream token row keys (full keys), one per provider. Its TTL is extended to outlive its longest-lived member; if any member never expires, the index has no TTL |
-| `{prefix}user:upstream:{user_id}` | User → upstream token row keys (full keys), one per session and provider (for example `{prefix}upstream:{session_id}:{provider}`) |
+| `{prefix}user:upstream:{user_id}` | User → upstream token row keys (full keys), one per session and provider (for example `{prefix}upstream:{session_id}:{provider}`). With user-keyed upstream storage the keys look like `{prefix}upstream:user:{URL-escaped user ID}:{provider}` |
 | `{prefix}user:providers:{user_id}` | User → provider identity keys |
 
 These indexes enable grant-wide operations like token revocation (finding all tokens for a request ID) and user-scoped queries (finding all upstream tokens for a user).

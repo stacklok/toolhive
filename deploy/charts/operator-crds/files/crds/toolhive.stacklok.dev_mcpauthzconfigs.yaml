@@ -67,6 +67,7 @@ spec:
                   The structure depends on the Type field:
                     - cedarv1: policies ([]string), entities_json (string), primary_upstream_provider (string), group_claim_name (string)
                     - httpv1: http ({url, timeout, insecure_skip_verify}), context ({include_args, include_operation}), claim_mapping (string)
+                    - httpv1 forward_tool_read (bool): ask mcp:tool:read for tools/list visibility
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               type:
@@ -206,6 +207,7 @@ spec:
                   The structure depends on the Type field:
                     - cedarv1: policies ([]string), entities_json (string), primary_upstream_provider (string), group_claim_name (string)
                     - httpv1: http ({url, timeout, insecure_skip_verify}), context ({include_args, include_operation}), claim_mapping (string)
+                    - httpv1 forward_tool_read (bool): ask mcp:tool:read for tools/list visibility
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               type:

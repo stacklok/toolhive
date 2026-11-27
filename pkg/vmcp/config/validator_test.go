@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
@@ -1756,6 +1757,43 @@ func TestValidator_ValidatePassthroughHeaders(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestValidator_ValidateInstructions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		instructions *instructions.Config
+		errMsg       string
+	}{
+		{name: "unset is valid"},
+		{name: "valid", instructions: &instructions.Config{Mode: instructions.ModePrepend, Value: "policy"}},
+		{name: "unknown mode", instructions: &instructions.Config{Mode: "after", Value: "policy"}, errMsg: "instructions: invalid instructions mode"},
+		{name: "empty value", instructions: &instructions.Config{}, errMsg: "instructions: instructions value must not be empty"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := &Config{
+				Name:         "test-vmcp",
+				Group:        "test-group",
+				IncomingAuth: &IncomingAuthConfig{Type: "anonymous"},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+				Aggregation: &AggregationConfig{
+					ConflictResolution:       vmcp.ConflictStrategyPrefix,
+					ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
+				},
+				Instructions: tt.instructions,
+			}
+			err := NewValidator().Validate(cfg)
+			if tt.errMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.errMsg)
 		})
 	}
 }

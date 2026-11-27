@@ -221,6 +221,25 @@ func TestIDJAGRedemptionAcrossTwoServers(t *testing.T) {
 	assert.NotContains(t, access, "act")
 }
 
+// TestIDJAGRedemptionIssuesNoRefreshToken proves a redemption that asks for
+// offline_access still gets no refresh_token member. A redemption has no login
+// session (no tsid), so the refresh-grant guard has nothing to check and the
+// token it issues cannot be refreshed.
+func TestIDJAGRedemptionIssuesNoRefreshToken(t *testing.T) {
+	t.Parallel()
+	h := startTwoServerIDJAG(t)
+
+	res := postToken(t, h.as2.srv.URL, h.as2.client, url.Values{
+		"grant_type": {oauthproto.GrantTypeJWTBearer},
+		"assertion":  {h.mintIDJAG(t)},
+		"resource":   {xrtIDJAGResource},
+		"scope":      {"openid offline_access"},
+	})
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	assert.NotEmpty(t, res.str(t, "access_token"))
+	assert.NotContains(t, res.body, "refresh_token")
+}
+
 // TestIDJAGRedemptionCarriesActorAcrossTwoServers proves the act claim AS-1
 // puts in an ID-JAG for a client with an actor profile survives redemption at
 // AS-2 into AS-2's signed access token.

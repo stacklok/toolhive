@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/diagnostics"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
@@ -426,6 +427,7 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		AuthMiddleware:          func(h http.Handler) http.Handler { return h },
 		AuthInfoHandler:         http.NewServeMux(),
 		PassthroughHeaders:      []string{"x-test"},
+		Instructions:            &instructions.Config{Value: "policy"},
 		AuthServer:              &asrunner.EmbeddedAuthServer{},
 		StatusReportingInterval: time.Second,
 		StatusReporter:          stubServeReporter{},

@@ -17,6 +17,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
+
+	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // fakeStdioBackend stands in for the single stdio MCP session behind the
@@ -120,12 +124,12 @@ func strictInitializeResponder() func(*jsonrpc2.Request) jsonrpc2.Message {
 	}
 }
 
-// startInitTestProxy starts a proxy on a free port and returns it with its
-// /mcp endpoint URL.
-func startInitTestProxy(t *testing.T) (*HTTPProxy, string) {
+// startInitTestProxy starts a proxy with middlewares on a free port and
+// returns it with its /mcp endpoint URL.
+func startInitTestProxy(t *testing.T, middlewares ...types.NamedMiddleware) (*HTTPProxy, string) {
 	t.Helper()
 	port := getFreePort(t)
-	proxy := NewHTTPProxy("localhost", port, nil, nil)
+	proxy := NewHTTPProxy("localhost", port, nil, middlewares)
 	require.NoError(t, proxy.Start(t.Context()))
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -180,6 +184,40 @@ func TestEveryClientHandshakeSucceedsAgainstStrictBackend(t *testing.T) {
 		"only the first handshake may reach the single stdio session")
 	assert.Equal(t, results[0], results[1], "cached result must match the original")
 	assert.Equal(t, results[0], results[2], "cached result must match the original")
+}
+
+// TestInitializeCacheKeepsTheBackendResultUnderInstructions verifies that the
+// instructions middleware sets the instructions of every handshake, including
+// those the cache answers, and that the cache keeps the backend's own result:
+// the configured text is applied once per response, never compounded.
+func TestInitializeCacheKeepsTheBackendResultUnderInstructions(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := mcp.NewInstructionsMiddleware(mcp.InstructionsMiddlewareParams{
+		Instructions: instructions.Config{Value: "policy"},
+	})
+	require.NoError(t, err)
+	proxy, url := startInitTestProxy(t,
+		types.NamedMiddleware{Name: mcp.ParserMiddlewareType, Function: mcp.ParsingMiddleware},
+		types.NamedMiddleware{Name: mcp.InstructionsMiddlewareType, Function: middleware},
+	)
+	backend := startFakeStdioBackend(t.Context(), proxy, func(req *jsonrpc2.Request) jsonrpc2.Message {
+		resp, _ := jsonrpc2.NewResponse(req.ID, map[string]any{
+			"protocolVersion": testProtocolVersion,
+			"capabilities":    map[string]any{},
+			"serverInfo":      map[string]any{"name": "fake-stdio-server", "version": "1.0.0"},
+			"instructions":    "server text",
+		}, nil)
+		return resp
+	})
+
+	for i := range 3 {
+		decoded := postInitialize(t, url, fmt.Sprintf("client-%d", i))
+		result, ok := decoded["result"].(map[string]any)
+		require.True(t, ok, "handshake should succeed: %+v", decoded)
+		assert.Equal(t, "server text\n\npolicy", result["instructions"])
+	}
+	assert.Equal(t, 1, backend.count("initialize"), "later handshakes are answered from the cache")
 }
 
 // TestConcurrentInitializeReachesBackendOnce verifies that simultaneous

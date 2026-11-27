@@ -452,6 +452,7 @@ func TestGetValidTokensForUser_WarnsOnceForIDTokenFallback(t *testing.T) {
 	row.IDToken = signedIDToken(t, time.Now().Add(-10*time.Minute))
 	ctrl := gomock.NewController(t)
 	stor := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+	allowRowIDResolution(stor)
 	stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).Return(row, nil).Times(2)
 	refresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
 	refresher.EXPECT().RefreshAndStore(gomock.Any(), rowKey, gomock.Any()).
@@ -508,6 +509,7 @@ func TestGetValidTokensForUser_ExpiryPaths(t *testing.T) {
 		row := readerRow(readerUser, time.Now().Add(time.Hour))
 		row.IDToken = signedIDToken(t, time.Now().Add(-10*time.Minute))
 		stor := storagemocks.NewMockUpstreamTokenStorage(gomock.NewController(t))
+		allowRowIDResolution(stor)
 		stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).Return(row, nil)
 		refreshed := readerRow(readerUser, time.Now().Add(time.Hour))
 		refreshed.AccessToken = "new-access"
@@ -526,6 +528,7 @@ func TestGetValidTokensForUser_ExpiryPaths(t *testing.T) {
 		row := readerRow(readerUser, time.Now().Add(time.Hour))
 		row.IDToken = signedIDToken(t, time.Now().Add(-10*time.Minute))
 		stor := storagemocks.NewMockUpstreamTokenStorage(gomock.NewController(t))
+		allowRowIDResolution(stor)
 		stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).Return(row, nil).Times(2)
 		refresher := storagemocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
 		refresher.EXPECT().RefreshAndStore(gomock.Any(), rowKey, gomock.Any()).
@@ -563,6 +566,7 @@ func TestGetValidTokensForUser_ExpiryPaths(t *testing.T) {
 			row.IDToken = signedIDToken(t, time.Now().Add(-10*time.Minute))
 			ctrl := gomock.NewController(t)
 			stor := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+			allowRowIDResolution(stor)
 			gomock.InOrder(
 				stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).Return(row, nil),
 				stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).Return(nil, tt.readErr),
@@ -586,6 +590,7 @@ func TestGetValidTokensForUser_ExpiryPaths(t *testing.T) {
 		row := readerRow(readerUser, time.Now().Add(time.Hour))
 		row.IDToken = signedIDToken(t, time.Now().Add(-10*time.Minute))
 		stor := storagemocks.NewMockUpstreamTokenStorage(gomock.NewController(t))
+		allowRowIDResolution(stor)
 		stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).Return(row, nil).Times(2)
 		refresher := storagemocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
 		refresher.EXPECT().RefreshAndStore(gomock.Any(), rowKey, gomock.Any()).
@@ -602,6 +607,7 @@ func TestGetValidTokensForUser_ExpiryPaths(t *testing.T) {
 		row := readerRow(readerUser, time.Now().Add(time.Hour))
 		row.IDToken = signedIDToken(t, time.Now().Add(-10*time.Minute))
 		stor := storagemocks.NewMockUpstreamTokenStorage(gomock.NewController(t))
+		allowRowIDResolution(stor)
 		stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).Return(row, nil).AnyTimes()
 		refresher := storagemocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
 		refresher.EXPECT().RefreshAndStore(gomock.Any(), rowKey, gomock.Any()).
@@ -616,6 +622,7 @@ func TestGetValidTokensForUser_ExpiryPaths(t *testing.T) {
 	t.Run("expired read without a row needs authorization", func(t *testing.T) {
 		t.Parallel()
 		stor := storagemocks.NewMockUpstreamTokenStorage(gomock.NewController(t))
+		allowRowIDResolution(stor)
 		stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).Return(nil, storage.ErrExpired)
 
 		cred, err := NewInProcessService(stor, nil).GetValidTokensForUser(bg, readerUser, readerProvider)
@@ -628,6 +635,7 @@ func TestGetValidTokensForUser_ExpiryPaths(t *testing.T) {
 	t.Run("row past its expiry without ErrExpired from storage is refreshed", func(t *testing.T) {
 		t.Parallel()
 		stor := storagemocks.NewMockUpstreamTokenStorage(gomock.NewController(t))
+		allowRowIDResolution(stor)
 		stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).
 			Return(readerRow(readerUser, time.Now().Add(-time.Hour)), nil)
 		refreshed := readerRow(readerUser, time.Now().Add(time.Hour))
@@ -674,6 +682,7 @@ func TestGetValidTokensForUser_RefreshedRowOwnedByAnotherUser(t *testing.T) {
 			t.Parallel()
 			ctrl := gomock.NewController(t)
 			stor := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+			allowRowIDResolution(stor)
 			stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).
 				Return(tt.row(t), tt.read).AnyTimes()
 			refresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
@@ -721,6 +730,7 @@ func TestGetValidTokensForUser_RefreshedCredentialWithoutAccessToken(t *testing.
 			t.Parallel()
 			ctrl := gomock.NewController(t)
 			stor := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+			allowRowIDResolution(stor)
 			stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).
 				Return(tt.row(t), tt.read).AnyTimes()
 			refreshed := readerRow(readerUser, time.Now().Add(time.Hour))
@@ -733,6 +743,78 @@ func TestGetValidTokensForUser_RefreshedCredentialWithoutAccessToken(t *testing.
 			assert.Nil(t, cred)
 			assert.ErrorIs(t, err, ErrNeedsAuthorization)
 			assert.ErrorIs(t, err, ErrSessionNotFound)
+		})
+	}
+}
+
+// TestIDTokenSuppression_SharedAcrossReadPaths checks that the ID-token
+// suppression follows the storage row, not the session ID a path reads it
+// with. Under user-keyed storage the per-user reader and the session-level
+// reads address the same row, so once a refresh left the ID token expired,
+// neither path refreshes again; a different user's row is suppressed on its
+// own.
+func TestIDTokenSuppression_SharedAcrossReadPaths(t *testing.T) {
+	t.Parallel()
+	bg := context.Background()
+	expiredIDToken := signedIDToken(t, time.Now().Add(-10*time.Minute))
+
+	for storeName, newStore := range userKeyedStores(t) {
+		t.Run(storeName, func(t *testing.T) {
+			t.Parallel()
+			stor, _ := newStore(t)
+			for _, user := range []string{readerUser, readerIntruder} {
+				row := readerRow(user, time.Now().Add(time.Hour))
+				row.IDToken = expiredIDToken
+				require.NoError(t, stor.StoreUpstreamTokens(identity.WithCanonicalUser(bg, user), "", readerProvider, row))
+			}
+
+			// The provider omits id_token, so every refresh leaves the ID token
+			// expired and records a suppression.
+			var mu sync.Mutex
+			refreshes := map[string]int{}
+			refresher := storagemocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
+			refresher.EXPECT().RefreshAndStore(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+				DoAndReturn(func(_ context.Context, _ string, in *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+					mu.Lock()
+					refreshes[in.UserID]++
+					mu.Unlock()
+					out := *in
+					out.ExpiresAt = time.Now().Add(time.Hour)
+					return &out, nil
+				})
+			svc := NewInProcessService(stor, refresher)
+
+			bulk := func(user, tsid string) {
+				t.Helper()
+				creds, failed, err := svc.GetAllUpstreamCredentials(identity.WithCanonicalUser(bg, user), tsid)
+				require.NoError(t, err)
+				assert.Empty(t, failed)
+				assert.Equal(t, expiredIDToken, creds[readerProvider].IDToken)
+			}
+			single := func(user, tsid string) {
+				t.Helper()
+				cred, err := svc.GetValidTokens(identity.WithCanonicalUser(bg, user), tsid, readerProvider)
+				require.NoError(t, err)
+				assert.Equal(t, expiredIDToken, cred.IDToken)
+			}
+			forUser := func(user string) {
+				t.Helper()
+				cred, err := svc.GetValidTokensForUser(bg, user, readerProvider)
+				require.NoError(t, err)
+				assert.Equal(t, expiredIDToken, cred.IDToken)
+			}
+
+			// User A: the per-user reader refreshes first; the session paths,
+			// under two different tsids, then find the trigger suppressed.
+			forUser(readerUser)
+			bulk(readerUser, "tsid-a1")
+			single(readerUser, "tsid-a2")
+
+			// User B: the other way round. A's suppression does not cover B's row.
+			bulk(readerIntruder, "tsid-b1")
+			forUser(readerIntruder)
+
+			assert.Equal(t, map[string]int{readerUser: 1, readerIntruder: 1}, refreshes)
 		})
 	}
 }

@@ -374,6 +374,10 @@ func prepareServerStorageAndRegisterClients(
 	if stor == nil {
 		return nil, nil, nil, nil, fmt.Errorf("storage is required")
 	}
+	if storage.IsUserKeyed(stor) {
+		return nil, nil, nil, nil, errors.New("storage already contains the user-keyed upstream storage layer: " +
+			"the server adds it itself when UserKeyedUpstreamStorage is set, so pass storage without it")
+	}
 
 	// Storage no longer embeds DCRCredentialStore (the embed widened secret
 	// reach to every Storage consumer); obtain the DCR-capable handle via an
@@ -415,6 +419,15 @@ func prepareServerStorageAndRegisterClients(
 		return nil, nil, nil, nil, retErr
 	}
 	warnBlanketSelfIssuedExchange(cfg.DelegateClients, idJAGRedeemable(cfg.TrustedIssuers))
+	if cfg.UserKeyedUpstreamStorage {
+		// Outermost, so every consumer of the returned storage (refresher,
+		// handlers, fosite stores) reads and writes upstream rows by user.
+		wrapped, err := storage.NewUserKeyedUpstreamStorage(prepared)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		prepared = wrapped
+	}
 	return prepared, dcrStore, bundleSource, spiffeRegistry, nil
 }
 
@@ -990,7 +1003,9 @@ func buildTokenExchangeFactories(
 // order: the built-in upstream refresh guard (unless disabled or there is no
 // refresher, because no upstreams are configured), then the embedder's
 // Config.RefreshGrantHandlers. The guard's set of configured providers comes
-// from upstreams, the same resolved list the refresher was built from.
+// from upstreams, the same resolved list the refresher was built from. With
+// user-keyed storage (stor is, or decorates, the user-keyed layer) the guard
+// checks only the first upstream, the identity provider.
 func refreshGrantValidatorChain(
 	cfg Config, stor storage.Storage, refresher storage.UpstreamTokenRefresher, upstreams []handlers.NamedUpstream,
 ) ([]fosite.TokenEndpointHandler, error) {
@@ -1001,7 +1016,11 @@ func refreshGrantValidatorChain(
 	for i, u := range upstreams {
 		upstreamNames[i] = u.Name
 	}
-	guard, err := newUpstreamRefreshGuard(stor, refresher, upstreamNames)
+	newGuard := newUpstreamRefreshGuard
+	if storage.IsUserKeyed(stor) {
+		newGuard = newUserKeyedUpstreamRefreshGuard
+	}
+	guard, err := newGuard(stor, refresher, upstreamNames)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create upstream refresh guard: %w", err)
 	}
@@ -1175,6 +1194,7 @@ func newUpstreamTokenRefresher(
 		storage:              stor,
 		refreshTokenLifespan: refreshTokenLifespan,
 		rejected:             rejected,
+		userKeyed:            storage.IsUserKeyed(stor),
 	}
 }
 

@@ -34,6 +34,8 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -63,6 +65,19 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 				assert.Equal(t, transporttypes.TransportTypeStreamableHTTP, config.Transport, "Should default to streamable-http")
 				assert.Equal(t, 8080, config.Port)
 				assert.Nil(t, config.OIDCConfig, "OIDCConfig should be nil when no OIDCConfigRef is set")
+			},
+		},
+		{
+			name: "with instructions",
+			proxy: v1beta1test.NewMCPRemoteProxy("instructions-proxy", "default",
+				func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Spec.Instructions = &instructions.Config{Mode: instructions.ModeAppend, Value: "policy"}
+				},
+			),
+			validate: func(t *testing.T, config *runner.RunConfig) {
+				t.Helper()
+				assert.Equal(t, &instructions.Config{Mode: instructions.ModeAppend, Value: "policy"}, config.Instructions)
+				assert.True(t, hasMiddleware(config, mcp.InstructionsMiddlewareType))
 			},
 		},
 		{

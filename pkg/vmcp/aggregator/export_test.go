@@ -3,7 +3,12 @@
 
 package aggregator
 
-import "time"
+import (
+	"context"
+	"time"
+
+	"github.com/stacklok/toolhive/pkg/vmcp"
+)
 
 // NewCachingAggregatorWithClockForTest is NewCachingAggregator with an injected clock, so
 // TTL and pruning tests advance time explicitly instead of sleeping.
@@ -19,4 +24,9 @@ func CachedEntriesForTest(a Aggregator) int {
 		return -1
 	}
 	return c.cache.Len()
+}
+
+// CacheKeyForTest exposes cacheKey so tests can compare keys directly.
+func CacheKeyForTest(ctx context.Context, backends []vmcp.Backend) (string, error) {
+	return cacheKey(ctx, backends)
 }

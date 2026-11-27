@@ -702,6 +702,9 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	if err := validateGoogleTokeninfoAudience(config); err != nil {
 		return nil, err
 	}
+	if err := validateUserKeyedReader(config, o); err != nil {
+		return nil, err
+	}
 
 	// Create HTTP client with CA bundle and auth token support for JWKS
 	httpClient, err := networking.NewHttpClientBuilder().
@@ -779,6 +782,42 @@ func validateGoogleTokeninfoAudience(config TokenValidatorConfig) error {
 			"without it any valid Google access token is accepted regardless of the OAuth client it was minted for")
 	}
 	return nil
+}
+
+// validateUserKeyedReader refuses a validator whose upstream token reader reads
+// storage keyed by user (upstreamtoken.UserKeyedReader) unless the validator
+// can classify a token as an interactive session: it must be bound to the
+// embedded issuer (WithEmbeddedAuthServerIssuer equal to the configured
+// issuer), verify with the in-process key provider (WithKeyProvider), and have
+// an audience. Without all three no token is interactive, so the user-keyed
+// storage never learns whose tokens to load: every request then loads nothing
+// (bound validator) or fails with 503 (unbound), and a client that signs in
+// again gets the same answer. Refusing at startup names the missing setting
+// instead. A validator for a different issuer must not be given the embedded
+// server's upstream token reader (WithUpstreamTokenReader).
+func validateUserKeyedReader(config TokenValidatorConfig, o *tokenValidatorOptions) error {
+	reader, ok := o.upstreamTokenReader.(upstreamtoken.UserKeyedReader)
+	if !ok || !reader.UserKeyed() {
+		return nil
+	}
+	var missing []string
+	embeddedIssuer := strings.TrimSpace(o.embeddedAuthServerIssuer)
+	if embeddedIssuer == "" || strings.TrimSpace(config.Issuer) != embeddedIssuer {
+		missing = append(missing, "binding to the embedded authorization server issuer (WithEmbeddedAuthServerIssuer)")
+	}
+	if o.keyProvider == nil {
+		missing = append(missing, "the in-process key provider (WithKeyProvider)")
+	}
+	if strings.TrimSpace(config.Audience) == "" {
+		missing = append(missing, "an audience")
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("upstream token storage is keyed by user, so the token validator needs %s "+
+		"(a validator for a different issuer should not be given the embedded server's upstream token reader, "+
+		"WithUpstreamTokenReader)",
+		strings.Join(missing, ", "))
 }
 
 // ensureJWKSRegistered ensures that the JWKS URL is registered with the cache.

@@ -723,6 +723,7 @@ func TestInProcessService_RefreshOnExpiredIDToken(t *testing.T) {
 
 				ctrl := gomock.NewController(t)
 				mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+				allowRowIDResolution(mockStorage)
 				mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
 
 				calls := make([]any, 0, len(tt.rows))
@@ -831,6 +832,8 @@ func TestInProcessService_IDTokenRefreshFailure(t *testing.T) {
 			if tt.reRead != nil {
 				tt.reRead(mockStorage, row)
 			}
+			mockStorage.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session-1", "entra").
+				Return(storage.UpstreamTokenRowID("row-1"), nil).AnyTimes()
 
 			ctx := context.Background()
 			if tt.cancelCtx {
@@ -852,16 +855,17 @@ func TestInProcessService_IDTokenRefreshFailure(t *testing.T) {
 				assert.Equal(t, &UpstreamCredential{AccessToken: "valid-access-token", IDToken: expiredIDToken}, cred)
 			}
 
-			sup, ok := svc.idTokenSuppressions[suppressionKey("session-1", "entra")]
+			key := svc.suppressionKeyFor(context.Background(), "session-1", "entra")
+			sup, ok := svc.idTokenSuppressions[key]
 			require.Equal(t, tt.wantSuppress, ok)
 			if !tt.wantSuppress {
 				return
 			}
 			assert.Equal(t, expiredIDToken, sup.idToken)
 			assert.WithinDuration(t, tt.wantUntil(before), sup.until, tt.wantWithin)
-			assert.True(t, svc.idTokenRefreshSuppressed("session-1", "entra", expiredIDToken, before),
+			assert.True(t, svc.idTokenRefreshSuppressed(key, expiredIDToken, before),
 				"trigger must stay suppressed within the window")
-			assert.False(t, svc.idTokenRefreshSuppressed("session-1", "entra", expiredIDToken, sup.until),
+			assert.False(t, svc.idTokenRefreshSuppressed(key, expiredIDToken, sup.until),
 				"trigger must fire again once the window has passed")
 		})
 	}
@@ -882,6 +886,7 @@ func TestInProcessService_GetAllUpstreamCredentials_IDTokenRefreshRemovedRow(t *
 		ExpiresAt:    time.Now().Add(30 * time.Minute),
 	}
 	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+	allowRowIDResolution(mockStorage)
 	mockStorage.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-1").
 		Return(map[string]*storage.UpstreamTokens{"entra": row}, nil)
 	mockStorage.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "entra").Return(nil, storage.ErrNotFound)
@@ -943,20 +948,33 @@ func TestInProcessService_IDTokenSuppressionLifecycle(t *testing.T) {
 	newSvc := func() *InProcessService { return NewInProcessService(nil, nil) }
 	key := suppressionKey("session-1", "entra")
 
+	t.Run("the key is the storage row, or session and provider when no row resolves", func(t *testing.T) {
+		t.Parallel()
+		stor := storagemocks.NewMockUpstreamTokenStorage(gomock.NewController(t))
+		stor.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session-1", "entra").
+			Return(storage.UpstreamTokenRowID("row-1"), nil)
+		stor.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session-2", "entra").
+			Return(storage.UpstreamTokenRowID(""), storage.ErrNoCanonicalUser)
+		svc := NewInProcessService(stor, nil)
+		assert.Equal(t, "row\x00row-1", svc.suppressionKeyFor(context.Background(), "session-1", "entra"))
+		assert.Equal(t, suppressionKey("session-2", "entra"),
+			svc.suppressionKeyFor(context.Background(), "session-2", "entra"))
+	})
+
 	t.Run("a rotated ID token is not suppressed", func(t *testing.T) {
 		t.Parallel()
 		svc := newSvc()
-		svc.suppressIDTokenRefresh("session-1", "entra", "old-id-token", time.Now().Add(time.Hour), time.Time{})
-		assert.True(t, svc.idTokenRefreshSuppressed("session-1", "entra", "old-id-token", time.Now()))
-		assert.False(t, svc.idTokenRefreshSuppressed("session-1", "entra", "rotated-id-token", time.Now()))
+		svc.suppressIDTokenRefresh(key, "old-id-token", time.Now().Add(time.Hour), time.Time{})
+		assert.True(t, svc.idTokenRefreshSuppressed(key, "old-id-token", time.Now()))
+		assert.False(t, svc.idTokenRefreshSuppressed(key, "rotated-id-token", time.Now()))
 	})
 
 	t.Run("an expired entry is dropped on read", func(t *testing.T) {
 		t.Parallel()
 		svc := newSvc()
 		until := time.Now().Add(time.Minute)
-		svc.suppressIDTokenRefresh("session-1", "entra", "id-token", until, time.Time{})
-		assert.False(t, svc.idTokenRefreshSuppressed("session-1", "entra", "id-token", until))
+		svc.suppressIDTokenRefresh(key, "id-token", until, time.Time{})
+		assert.False(t, svc.idTokenRefreshSuppressed(key, "id-token", until))
 		assert.NotContains(t, svc.idTokenSuppressions, key)
 	})
 
@@ -966,7 +984,7 @@ func TestInProcessService_IDTokenSuppressionLifecycle(t *testing.T) {
 		svc.idTokenSuppressions[suppressionKey("session-old", "entra")] = idTokenSuppression{
 			idToken: "id-token", until: time.Now().Add(-time.Second),
 		}
-		svc.suppressIDTokenRefresh("session-1", "entra", "id-token", time.Now().Add(time.Hour), time.Time{})
+		svc.suppressIDTokenRefresh(key, "id-token", time.Now().Add(time.Hour), time.Time{})
 		assert.NotContains(t, svc.idTokenSuppressions, suppressionKey("session-old", "entra"))
 		assert.Contains(t, svc.idTokenSuppressions, key)
 
@@ -974,7 +992,7 @@ func TestInProcessService_IDTokenSuppressionLifecycle(t *testing.T) {
 		svc.idTokenSuppressions[suppressionKey("session-old", "entra")] = idTokenSuppression{
 			idToken: "id-token", until: time.Now().Add(-time.Second),
 		}
-		svc.suppressIDTokenRefresh("session-2", "entra", "id-token", time.Now().Add(time.Hour), time.Time{})
+		svc.suppressIDTokenRefresh(suppressionKey("session-2", "entra"), "id-token", time.Now().Add(time.Hour), time.Time{})
 		assert.Contains(t, svc.idTokenSuppressions, suppressionKey("session-old", "entra"))
 	})
 
@@ -982,7 +1000,7 @@ func TestInProcessService_IDTokenSuppressionLifecycle(t *testing.T) {
 		t.Parallel()
 		svc := newSvc()
 		sessionExpiry := time.Now().Add(24 * time.Hour)
-		svc.suppressIDTokenRefresh("session-1", "entra", "id-token", time.Time{}, sessionExpiry)
+		svc.suppressIDTokenRefresh(key, "id-token", time.Time{}, sessionExpiry)
 		assert.Equal(t, sessionExpiry, svc.idTokenSuppressions[key].until)
 	})
 
@@ -990,7 +1008,7 @@ func TestInProcessService_IDTokenSuppressionLifecycle(t *testing.T) {
 		t.Parallel()
 		svc := newSvc()
 		before := time.Now()
-		svc.suppressIDTokenRefresh("session-1", "entra", "id-token", time.Time{}, time.Time{})
+		svc.suppressIDTokenRefresh(key, "id-token", time.Time{}, time.Time{})
 		assert.WithinDuration(t, before.Add(defaultIDTokenSuppression), svc.idTokenSuppressions[key].until, time.Second)
 	})
 }
@@ -1004,6 +1022,7 @@ func TestInProcessService_ConcurrentIDTokenRefresh(t *testing.T) {
 	expiredIDToken := signedIDToken(t, time.Now().Add(-10*time.Minute))
 	ctrl := gomock.NewController(t)
 	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+	allowRowIDResolution(mockStorage)
 	mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
 
 	const workers = 16
@@ -1082,4 +1101,58 @@ func TestInProcessService_GetAllUpstreamCredentials_DoesNotCheckRefreshedRowOwne
 	require.NoError(t, err)
 	assert.Empty(t, failed)
 	assert.Equal(t, "new-access-token", creds["entra"].AccessToken)
+}
+
+// allowRowIDResolution lets the service resolve storage row IDs, which it does
+// to key ID-token suppression. Each session and provider pair gets its own row,
+// as with session-keyed storage.
+func allowRowIDResolution(s *storagemocks.MockUpstreamTokenStorage) {
+	s.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, sessionID, providerName string) (storage.UpstreamTokenRowID, error) {
+			return storage.UpstreamTokenRowID(sessionID + "/" + providerName), nil
+		})
+}
+
+// unwrappingStorage is a decorator above the user-keyed layer that exposes
+// Unwrap, as an embedder's own decorator might.
+type unwrappingStorage struct{ storage.Storage }
+
+func (s unwrappingStorage) Unwrap() storage.Storage { return s.Storage }
+
+// upstreamUnwrappingStorage is a decorator over the user-keyed layer's
+// UpstreamTokenStorage view that exposes Unwrap() storage.UpstreamTokenStorage.
+type upstreamUnwrappingStorage struct{ storage.UpstreamTokenStorage }
+
+func (s upstreamUnwrappingStorage) Unwrap() storage.UpstreamTokenStorage {
+	return s.UpstreamTokenStorage
+}
+
+func TestInProcessService_UserKeyed(t *testing.T) {
+	t.Parallel()
+	base := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = base.Close() })
+	wrapper, err := storage.NewUserKeyedUpstreamStorage(base)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		stor storage.UpstreamTokenStorage
+		want bool
+	}{
+		{name: "the user-keyed layer", stor: wrapper, want: true},
+		{name: "a decorator above the user-keyed layer", stor: unwrappingStorage{wrapper}, want: true},
+		{name: "an UpstreamTokenStorage decorator above the user-keyed layer",
+			stor: upstreamUnwrappingStorage{wrapper}, want: true},
+		{name: "an UpstreamTokenStorage decorator above session-keyed storage",
+			stor: upstreamUnwrappingStorage{base}, want: false},
+		{name: "session-keyed storage", stor: base, want: false},
+		{name: "a decorator above session-keyed storage", stor: unwrappingStorage{base}, want: false},
+		{name: "no storage", stor: nil, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, NewInProcessService(tt.stor, nil).UserKeyed())
+		})
+	}
 }

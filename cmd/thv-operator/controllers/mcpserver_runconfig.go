@@ -165,6 +165,9 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 		options = append(options, runner.WithToolsOverride(toolsOverride))
 	}
 
+	// Add instructions if present
+	options = append(options, runner.WithInstructions(m.Spec.Instructions.DeepCopy()))
+
 	// Create context for API operations
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -222,6 +223,72 @@ func TestServeOptimizerAdvertisesOnlyFindAndCallTool(t *testing.T) {
 	// The advertised set came from the core's single aggregation at registration.
 	assert.Equal(t, int32(1), fc.listToolsCalls.Load(),
 		"the optimizer must be built over the core's single registration-time aggregation")
+}
+
+// TestServeOptimizerAdvertisesFindToolAnnotations proves the behavioral hints
+// declared on the optimizer meta-tools survive the Serve path: tools/list must
+// advertise find_tool as read-only, non-destructive, idempotent, and closed-world,
+// while call_tool asserts none of those because it can proxy arbitrary side effects.
+func TestServeOptimizerAdvertisesFindToolAnnotations(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: "tool-a", Description: "first"}}}
+	_, sessionID, baseURL, _ := registerServeOptimizerSession(t, fc, fc.tools)
+
+	require.Eventually(t, func() bool {
+		return slices.Contains(serveToolNames(t, baseURL, sessionID), optimizerdec.FindToolName)
+	}, 2*time.Second, 20*time.Millisecond, "find_tool should appear once the optimizer tools are injected")
+
+	resp := postServeMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      100,
+		"method":  "tools/list",
+		"params":  map[string]any{},
+	}, sessionID)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				Annotations struct {
+					ReadOnlyHint    *bool `json:"readOnlyHint"`
+					DestructiveHint *bool `json:"destructiveHint"`
+					IdempotentHint  *bool `json:"idempotentHint"`
+					OpenWorldHint   *bool `json:"openWorldHint"`
+				} `json:"annotations"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Len(t, body.Result.Tools, 2)
+
+	for _, tool := range body.Result.Tools {
+		ann := tool.Annotations
+		switch tool.Name {
+		case optimizerdec.FindToolName:
+			require.NotNil(t, ann.ReadOnlyHint)
+			require.NotNil(t, ann.DestructiveHint)
+			require.NotNil(t, ann.IdempotentHint)
+			require.NotNil(t, ann.OpenWorldHint)
+			assert.True(t, *ann.ReadOnlyHint)
+			assert.False(t, *ann.DestructiveHint)
+			assert.True(t, *ann.IdempotentHint)
+			assert.False(t, *ann.OpenWorldHint)
+		case optimizerdec.CallToolName:
+			// go-sdk always serializes readOnlyHint and idempotentHint as plain
+			// bools, so an unannotated tool surfaces them as false rather than
+			// omitting them. The pointer hints stay absent, so clients apply the
+			// spec defaults (destructive, open-world).
+			assert.False(t, ann.ReadOnlyHint != nil && *ann.ReadOnlyHint)
+			assert.False(t, ann.IdempotentHint != nil && *ann.IdempotentHint)
+			assert.Nil(t, ann.DestructiveHint)
+			assert.Nil(t, ann.OpenWorldHint)
+		default:
+			t.Fatalf("unexpected tool advertised in optimizer mode: %s", tool.Name)
+		}
+	}
 }
 
 // TestServeOptimizerFindToolReturnsCoreTools proves find_tool searches the core's

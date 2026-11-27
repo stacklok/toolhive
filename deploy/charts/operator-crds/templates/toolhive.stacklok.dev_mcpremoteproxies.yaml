@@ -320,6 +320,39 @@ spec:
                       Use addHeadersFromSecret for sensitive data like API keys or tokens.
                     type: object
                 type: object
+              instructions:
+                description: |-
+                  Instructions sets the instructions clients receive in the result of a successful
+                  initialize or server/discover request: the proxy combines it with the
+                  instructions the remote MCP server returns, as mode says. Clients commonly add
+                  server instructions to the model's context, so this adds policy or usage
+                  guidance without changing the server.
+                properties:
+                  mode:
+                    default: append
+                    description: |-
+                      Mode says how value combines with the instructions the server returns.
+                      replace returns value alone. append returns the server's instructions,
+                      a blank line, and value. prepend returns value, a blank line, and the
+                      server's instructions. When the server returns no instructions, every
+                      mode returns value alone.
+                    enum:
+                    - replace
+                    - append
+                    - prepend
+                    type: string
+                  value:
+                    description: |-
+                      Value is the text that mode combines with the server's instructions.
+                      Leading and trailing ASCII white space (tab, LF, FF, CR, space) is
+                      dropped, and a value that is only such white space is rejected.
+                    maxLength: 65536
+                    minLength: 1
+                    pattern: \S
+                    type: string
+                required:
+                - value
+                type: object
               oidcConfigRef:
                 description: |-
                   OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
@@ -2109,6 +2142,39 @@ spec:
                       WARNING: Values are stored in plaintext and visible via kubectl commands.
                       Use addHeadersFromSecret for sensitive data like API keys or tokens.
                     type: object
+                type: object
+              instructions:
+                description: |-
+                  Instructions sets the instructions clients receive in the result of a successful
+                  initialize or server/discover request: the proxy combines it with the
+                  instructions the remote MCP server returns, as mode says. Clients commonly add
+                  server instructions to the model's context, so this adds policy or usage
+                  guidance without changing the server.
+                properties:
+                  mode:
+                    default: append
+                    description: |-
+                      Mode says how value combines with the instructions the server returns.
+                      replace returns value alone. append returns the server's instructions,
+                      a blank line, and value. prepend returns value, a blank line, and the
+                      server's instructions. When the server returns no instructions, every
+                      mode returns value alone.
+                    enum:
+                    - replace
+                    - append
+                    - prepend
+                    type: string
+                  value:
+                    description: |-
+                      Value is the text that mode combines with the server's instructions.
+                      Leading and trailing ASCII white space (tab, LF, FF, CR, space) is
+                      dropped, and a value that is only such white space is rejected.
+                    maxLength: 65536
+                    minLength: 1
+                    pattern: \S
+                    type: string
+                required:
+                - value
                 type: object
               oidcConfigRef:
                 description: |-

@@ -127,6 +127,9 @@ func (s *InProcessService) UserKeyed() bool {
 // GetValidTokens returns a valid upstream credential for a session and provider.
 // It transparently refreshes expired access tokens using the refresh token,
 // and refreshes expired ID tokens where possible (see InProcessService).
+// Unlike GetValidTokensForUser, it waits for an in-flight refresh to return even
+// if ctx ends, because the caller may hold a generation lease on ctx until the
+// read returns.
 func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, providerName string) (*UpstreamCredential, error) {
 	tokens, err := s.storage.GetUpstreamTokens(ctx, sessionID, providerName)
 	if err != nil {
@@ -185,10 +188,13 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 // When only the ID token needed refreshing and the access token is still
 // live, a failed refresh, including invalid_grant, is not an error: the stored
 // credential is returned and the failure is logged at WARN, because the
-// caller never sees it. Needs-authorization follows once the access token
-// expires. The exception is a refresh after which the refresher removed the
-// row, or cleared its refresh token, because it could not save a rotated
-// refresh token: that needs authorization at once. The refresher still logs on its own paths, so a rare refresher
+// caller never sees it, unless ctx ended during the refresh (see below).
+// Needs-authorization follows once the access token expires. The exception is
+// a refresh after which the refresher removed the row, or cleared its refresh
+// token, because it could not save a rotated refresh token: that needs
+// authorization at once, unless ctx ends during the refresh. In that case this
+// read still returns the stored credential and the next read reports
+// needs-authorization. The refresher still logs on its own paths, so a rare refresher
 // failure (a lost refresh race, or a row it could not delete or clear) shows up both
 // in its own line and in this WARN.
 //
@@ -196,11 +202,21 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 // the caller decides how loudly that failure is reported, so one failure does
 // not produce two WARN lines. The refresher still logs on its own paths.
 //
-// Only the refresh call itself is detached from the caller's deadline: it runs
-// under its own timeout, so it blocks until the refresh finishes or
-// refreshTimeout elapses. The initial read, the row-ID lookup and the ID-token
-// re-read use the caller's ctx. A caller that needs a shorter bound on the
-// refresh must select on ctx.
+// The read returns promptly when ctx ends, even if a refresh is in progress.
+// A detached refresh can finish and persist the updated row in the background
+// under the refresher's own timeout. Cancellation while waiting for an expired
+// access token to refresh matches both ErrRefreshFailed and ctx.Err(). When only
+// the ID token needed refreshing and ctx ends during the refresh, the read
+// returns the stored credential with a nil error and does not re-read storage.
+// If that refresh then fails in the background, the failure is logged once at
+// WARN and the ID-token trigger backs off, as for a failure the caller saw. The
+// initial read, row-ID lookup and ID-token re-read use the caller's ctx; the
+// refresher itself runs detached from its cancellation and deadline.
+//
+// Error text can include provider-supplied detail, such as an OAuth
+// error_description. Callers should log a failure category, not err.Error(),
+// and never return it to a client. Wrapped causes stay reachable with
+// errors.Is and errors.As.
 func (s *InProcessService) GetValidTokensForUser(
 	ctx context.Context, userID, providerName string,
 ) (*UpstreamCredential, error) {
@@ -257,6 +273,10 @@ func (s *InProcessService) GetValidTokensForUser(
 // Identity.UpstreamIDTokens for both consumers.
 //
 // Returns an empty map and nil failed map (not error) for unknown sessions.
+//
+// Unlike GetValidTokensForUser, it waits for an in-flight refresh to return even
+// if ctx ends, because the caller may hold a generation lease on ctx until the
+// read returns.
 func (s *InProcessService) GetAllUpstreamCredentials(
 	ctx context.Context, sessionID string,
 ) (map[string]UpstreamCredential, map[string]error, error) {
@@ -373,7 +393,15 @@ func (s *InProcessService) refreshOrFail(
 		return nil, ErrNoRefreshToken
 	}
 
-	refreshed, err := s.refresher.RefreshAndStore(ctx, sessionID, expired)
+	// Session reads must wait for RefreshAndStore: the caller may hold a
+	// generation lease on ctx that it releases when the read returns.
+	var refreshed *storage.UpstreamTokens
+	var err error
+	if expectedUserID != "" {
+		refreshed, err = s.refreshDetached(ctx, sessionID, providerName, expired, expectedUserID)
+	} else {
+		refreshed, err = s.refresher.RefreshAndStore(ctx, sessionID, expired)
+	}
 	if err != nil {
 		if warnOnFailure {
 			slog.Warn("upstream token refresh failed",
@@ -396,26 +424,119 @@ func (s *InProcessService) refreshOrFail(
 		return nil, ErrInvalidBinding
 	}
 
-	// Prefer the ID token from the refresh response when the provider rotated
-	// it (OIDC Core 1.0 §12.2 permits — but does not require — a new id_token on
-	// refresh). Fall back to the original login ID token when the refresh response
-	// omitted one. The primary carry-forward into storage is in
-	// upstreamTokenRefresher.refreshAndStore; this fallback is defense-in-depth
-	// so the caller never sees an empty subject token.
+	idToken := s.recordRefreshOutcome(ctx, sessionID, providerName, expired, refreshed)
+
+	return &UpstreamCredential{AccessToken: refreshed.AccessToken, IDToken: idToken}, nil
+}
+
+// recordRefreshOutcome returns the ID token for a refreshed row and, when that
+// token is still expired, suppresses the ID-token trigger for it. Prefer the ID
+// token from the refresh response when the provider rotated it (OIDC Core 1.0
+// §12.2 permits, but does not require, a new id_token on refresh). Fall back to
+// the original login ID token when the response omitted one. The primary
+// carry-forward into storage is in upstreamTokenRefresher.refreshAndStore; this
+// fallback is defense-in-depth so the caller never sees an empty subject token.
+//
+// A refresh that still leaves the ID token expired (the provider omitted
+// id_token) must not be retried on every read. The suppression covers this exact
+// ID token until the new access token expires, when the access-token trigger
+// refreshes anyway. Recording the same outcome twice is harmless.
+func (s *InProcessService) recordRefreshOutcome(
+	ctx context.Context, sessionID, providerName string, expired, refreshed *storage.UpstreamTokens,
+) string {
 	idToken := refreshed.IDToken
 	if idToken == "" {
 		idToken = expired.IDToken
 	}
-
-	// A refresh that still leaves the ID token expired (the provider omitted id_token) must not be retried on every read.
-	// Suppress the trigger for this exact ID token until the new access token
-	// expires, when the access-token trigger refreshes anyway.
 	if idTokenExpired(idToken, time.Now()) {
 		s.suppressIDTokenRefresh(s.suppressionKeyFor(ctx, sessionID, providerName),
 			idToken, refreshed.ExpiresAt, refreshed.SessionExpiresAt)
 	}
+	return idToken
+}
 
-	return &UpstreamCredential{AccessToken: refreshed.AccessToken, IDToken: idToken}, nil
+// refreshDetached bounds the wait, not the refresh. The worker runs the
+// refresher detached from ctx's cancellation and deadline (keeping its values),
+// because the refresher uses its context for row resolution before it detaches
+// the refresh itself, and a caller leaving in that window must not abort a
+// refresh that continues. When the wait ends first, the refresh can still
+// persist a row or fail, so after sending its result the worker records the
+// ID-token suppression, or the failure backoff, itself. A success is recorded
+// for the expected owner's row only.
+func (s *InProcessService) refreshDetached(
+	ctx context.Context, sessionID, providerName string, expired *storage.UpstreamTokens, expectedUserID string,
+) (*storage.UpstreamTokens, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	type result struct {
+		tokens *storage.UpstreamTokens
+		err    error
+	}
+	// A late result must not block the refresh goroutine after the read returns.
+	done := make(chan result, 1)
+	go func() {
+		detached := context.WithoutCancel(ctx)
+		tokens, err := s.refresher.RefreshAndStore(detached, sessionID, expired)
+		// Send first so a slow suppression-key lookup never delays the result.
+		// A waiting caller records the same outcome itself, and both writes are idempotent.
+		done <- result{tokens, err}
+		switch {
+		case err == nil && tokens != nil && tokens.UserID == expectedUserID:
+			s.recordRefreshOutcome(detached, sessionID, providerName, expired, tokens)
+		case err != nil && ctx.Err() != nil:
+			s.recordAbandonedIDTokenFailure(detached, sessionID, providerName, expired, err)
+		}
+	}()
+	select {
+	case r := <-done:
+		return r.tokens, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// recordAbandonedIDTokenFailure handles a refresh that failed after its caller
+// left. When the refresh was for an expired ID token only (the access token is
+// still live), refreshForIDToken returned the stored credential without
+// recording a backoff, so the worker records it and logs the failure once.
+// A missing or foreign row is not recorded, and neither is a failed refresh of
+// an expired access token, whose caller decides how to report it.
+func (s *InProcessService) recordAbandonedIDTokenFailure(
+	ctx context.Context, sessionID, providerName string, expired *storage.UpstreamTokens, err error,
+) {
+	if errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrInvalidBinding) || errors.Is(err, ErrInvalidBinding) {
+		return
+	}
+	if !expired.ExpiresAt.IsZero() && expired.IsExpired(time.Now()) {
+		return
+	}
+	if s.recordIDTokenRefreshFailure(ctx, sessionID, providerName, expired) {
+		// No session ID: on the per-user path it is derived from the user ID.
+		slog.WarnContext(ctx, "upstream ID token refresh failed after the caller left",
+			"provider", providerName,
+			"error", err,
+		)
+	}
+}
+
+// recordIDTokenRefreshFailure backs the ID-token trigger off for the stored ID
+// token of tokens for idTokenRefreshFailureBackoff, or until the access token
+// expires if sooner. It reports whether it recorded a backoff: it records
+// nothing when that time is not in the future.
+func (s *InProcessService) recordIDTokenRefreshFailure(
+	ctx context.Context, sessionID, providerName string, tokens *storage.UpstreamTokens,
+) bool {
+	now := time.Now()
+	until := now.Add(idTokenRefreshFailureBackoff)
+	if !tokens.ExpiresAt.IsZero() && tokens.ExpiresAt.Before(until) {
+		until = tokens.ExpiresAt
+	}
+	if !until.After(now) {
+		return false
+	}
+	s.suppressIDTokenRefresh(s.suppressionKeyFor(ctx, sessionID, providerName), tokens.IDToken, until, time.Time{})
+	return true
 }
 
 // shouldRefreshForIDToken reports whether the ID-token trigger applies to a
@@ -439,8 +560,10 @@ func (s *InProcessService) shouldRefreshForIDToken(
 // credential is returned unchanged, since its access token is still usable and
 // a transient upstream error should not force re-authentication. The trigger
 // then backs off for idTokenRefreshFailureBackoff (or until the access token
-// expires, if sooner) so a failing upstream is not hammered on every read; no
-// backoff is recorded when the failure is the caller's own context ending.
+// expires, if sooner) so a failing upstream is not hammered on every read. This
+// function records no backoff when the caller's own context ended; on the
+// per-user path the refresh worker records it, and logs the failure once, when
+// the background refresh fails after the caller left.
 //
 // The one fatal case is a row the failed refresh removed: the refresher deletes
 // it when the provider rotated the refresh token but the rotation could not be
@@ -472,6 +595,8 @@ func (s *InProcessService) refreshForIDToken(
 		return nil, err
 	}
 	// With warnOnFailure, refreshOrFail has already logged the failure at WARN.
+	// On the per-user path the refresh worker records the backoff and logs the
+	// failure once it ends (see refreshDetached).
 	if ctx.Err() != nil {
 		return &UpstreamCredential{AccessToken: tokens.AccessToken, IDToken: tokens.IDToken}, nil
 	}
@@ -496,11 +621,7 @@ func (s *InProcessService) refreshForIDToken(
 			"error", err,
 		)
 	}
-	until := time.Now().Add(idTokenRefreshFailureBackoff)
-	if !tokens.ExpiresAt.IsZero() && tokens.ExpiresAt.Before(until) {
-		until = tokens.ExpiresAt
-	}
-	s.suppressIDTokenRefresh(s.suppressionKeyFor(ctx, sessionID, providerName), tokens.IDToken, until, time.Time{})
+	s.recordIDTokenRefreshFailure(ctx, sessionID, providerName, tokens)
 	return &UpstreamCredential{AccessToken: tokens.AccessToken, IDToken: tokens.IDToken}, nil
 }
 

@@ -1062,7 +1062,9 @@ delete or the clear succeeds, its error wraps `storage.ErrNotFound`, so the
 per-user reader and the guard treat the connection as needing authorization; a
 lost swap or a storage error returns a plain error. The cleared row also gets an
 expired access token, so the connection needs authorization at once, whether the
-refresh was for an expired access token or only for an expired ID token. Without
+refresh was for an expired access token or only for an expired ID token, unless
+the caller's context ends during an ID-token-only refresh (the reader section
+below describes that case). Without
 that, a row whose upstream gave no `expires_in` has no expiry and no storage
 lifetime, and would be served for ever.
 
@@ -1144,6 +1146,22 @@ memory backend needs nothing, because it is cleared on restart.
   `invalid_grant`) gets `ErrNeedsAuthorization`, with the cause still
   reachable through `errors.Is`. A foreign row gets `ErrInvalidBinding`. A
   storage failure or a temporary refresh failure is returned as it came.
+  If the caller's context ends while an expired access token is being refreshed,
+  the read returns promptly with an error matching both `ErrRefreshFailed` and
+  the context error. If only the ID token needs refreshing and the context ends
+  during that refresh, the read returns the stored credential with no error. If
+  that refresh then fails, the failure is logged once at WARN and the ID-token
+  refresh backs off, as for a failure the caller saw. If the refresher instead
+  clears or removes the row, that read still returns the stored credential and
+  the next read reports needs-authorization. In both cases the in-flight refresh can still
+  finish and persist the updated row. Session reads (`GetValidTokens` and
+  `GetAllUpstreamCredentials`) still wait for the refresher to return.
+  Reader error text can include detail the provider supplied, such as the
+  OAuth `error_description`. Callers should log a failure category, not the
+  error text, and never return it to a client. Wrapped causes stay reachable
+  with `errors.Is` and `errors.As`. The one change in the provider's error
+  text is that the unexpected `token_type` message no longer includes the
+  provider's value.
 
 The refresh grant guard and the sign-in carry-forward also change under this
 option; see

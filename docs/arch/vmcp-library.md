@@ -116,7 +116,8 @@ entry of type `https://toolhive.dev/mcp_tool_call`: with a tool-call entry it ma
 start only the one `tools/call` the entry names, once (a retried call needs a fresh
 token); with a list-call entry it may send only the list method the entry names, once,
 answered with only that backend's items.
-`server.Config.CallBinding` (a `callbinding.Config`) adds the clients whose tokens
+`server.Config.CallBinding` (a `*callbinding.Binding`, built by `callbinding.New`
+from a `callbinding.Config`) adds the clients whose tokens
 must carry an entry (matched on `client_id`, or `azp` when `client_id` is absent),
 the maximum call duration, the single-use record, and the `realm`,
 `resource_metadata` and `scope` of the 401 challenge. Set `Challenge` to what the
@@ -124,9 +125,24 @@ token validator in front of the vMCP sends, so a refused token gets the same
 challenge from both: call binding answers a refusal that describes the token with
 401 and `invalid_token`, and a refusal of the request with 403 and no challenge. The
 default record is in memory and covers one replica; with sessions in Redis, supply a
-shared `Record`. List a client only once the authorization servers in front of the
-vMCP put the entry into that client's access tokens; otherwise every call from it is
-refused. See
+shared `Record`. Give the same `Binding` to the incoming auth factory
+(`factory.WithCallBinding`). By default `exp` is strict. With
+`callbinding.Config.ExpiredTokenAdmission`, a list of `{Issuer, ClientID, Grace}`
+entries that `vmcp serve` and the operator never set, the token validator accepts,
+for a matching token and for the entry's grace after `exp`, the messages of a call
+that outlives its token (a cancellation, an elicitation answer, a GET or DELETE on
+the call's session); if the factory was not given the `Binding`, they get 401 once
+the token expires, and the vMCP logs a warning when a call-bound tool call starts.
+`Serve` refuses a `Binding` that `callbinding.New` did not build.
+
+Upgrading an embedder from the previous call-binding API:
+
+| Before | After |
+|--------|-------|
+| `ServerConfig.CallBinding: callbinding.Config{...}` | `b, err := callbinding.New(callbinding.Config{...})`, then `ServerConfig.CallBinding: b` |
+| `factory.NewIncomingAuthMiddleware(ctx, cfg, ...)` | `factory.NewIncomingAuthMiddleware(ctx, cfg, ..., factory.WithCallBinding(b))`, with the same `b` | List a client only once the authorization servers
+in front of the vMCP put the entry into that client's access tokens; otherwise every
+call from it is refused. See
 [Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
 
 ## `pkg/vmcp/` Stability Table
@@ -147,7 +163,7 @@ The table below maps every sub-package to its stability level per RFC THV-0059. 
 | `pkg/vmcp/status` | Stable | `StatusReporter` interface; CLI and K8s reporter implementations |
 | `pkg/vmcp/optimizer` | Experimental | Optimizer interface and TEI integration; tier API may evolve |
 | `pkg/vmcp/cli` | Experimental | New in Phase 4; `Serve`, `Init`, `Validate` entry points may change before stabilisation |
-| `pkg/vmcp/callbinding` | Experimental | Call-bound access tokens: `Config`, the `Record` interface and `MemoryRecord`, `FromClaims` and `Token`, `ReadListResponse`, `ListResponse` and `ListParamsCarryCursor`, the refusal reasons. `ArgumentsSHA256` is a wire contract shared with the clients that request these tokens: it changes only with a new entry type |
+| `pkg/vmcp/callbinding` | Experimental | Call-bound access tokens: `Config`, `New` and `Binding` (shared by the server and the token validator through `Binding.TokenValidatorOption`), `ExpiredTokenAdmission` and `ValidateExpiredTokenAdmission` (admission after `exp`, off by default and set only in Go), the `Record` interface and `MemoryRecord`, `FromClaims` and `Token`, `ReadListResponse`, `ListResponse` and `ListParamsCarryCursor`, the refusal reasons. `ArgumentsSHA256` is a wire contract shared with the clients that request these tokens: it changes only with a new entry type |
 | `pkg/vmcp/composer` | Experimental | Composite tool DAG executor; workflow API not yet stable |
 | `pkg/vmcp/cache` | Internal | Token cache; not intended for external use |
 | `pkg/vmcp/conversion` | Internal | CRD-to-config conversion; K8s-specific, not for local embedding |

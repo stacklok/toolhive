@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,6 +62,23 @@ const (
 type cbTokens struct {
 	mu     sync.Mutex
 	claims map[string]map[string]any
+
+	// binding and clock, when binding is set, make the middleware stand in
+	// for a token validator given the binding's TokenValidatorOption: a token
+	// whose exp has passed on clock is accepted only when the binding admits
+	// the request, and marked; otherwise it gets 401 "unauthorized".
+	binding *callbinding.Binding
+	clock   *cbClock
+	// admitAll, with binding set, accepts and marks every expired token, as a
+	// validator whose admitter says yes to anything would.
+	admitAll bool
+}
+
+// setAdmitAll sets admitAll.
+func (c *cbTokens) setAdmitAll(admit bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.admitAll = admit
 }
 
 func (c *cbTokens) add(token string, claims map[string]any) string {
@@ -75,6 +93,7 @@ func (c *cbTokens) middleware(next http.Handler) http.Handler {
 		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		c.mu.Lock()
 		claims, ok := c.claims[token]
+		admitAll := c.admitAll
 		c.mu.Unlock()
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -85,6 +104,14 @@ func (c *cbTokens) middleware(next http.Handler) http.Handler {
 			PrincipalInfo: auth.PrincipalInfo{Subject: sub, Claims: claims},
 			Token:         token,
 			TokenType:     "Bearer",
+		}
+		if exp, _ := claims["exp"].(float64); c.binding != nil && !c.clock.Now().Before(time.Unix(int64(exp), 0)) {
+			expired := auth.ExpiredToken{Claims: claims, ExpiredAt: time.Unix(int64(exp), 0)}
+			if !admitAll && !c.binding.AdmitExpiredToken(r, expired, c.clock.Now()) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			identity.AdmittedAfterExpiry = expired.ExpiredAt
 		}
 		next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), identity)))
 	})
@@ -123,6 +150,8 @@ type blockingCore struct {
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
+	// wasCancelled records that a blocked call's context was cancelled.
+	wasCancelled atomic.Bool
 }
 
 func newBlockingCore() *blockingCore {
@@ -142,10 +171,14 @@ func (b *blockingCore) CallTool(
 	select {
 	case <-b.release:
 	case <-ctx.Done():
+		b.wasCancelled.Store(true)
 		return nil, ctx.Err()
 	}
 	return b.fakeCore.CallTool(ctx, identity, name, args, meta)
 }
+
+// cancelled reports whether a blocked call's context was cancelled.
+func (b *blockingCore) cancelled() bool { return b.wasCancelled.Load() }
 
 // waitStarted waits until the blocked core has started a call.
 func (b *blockingCore) waitStarted(t *testing.T) {
@@ -183,6 +216,10 @@ type cbServerOptions struct {
 	// redisAddr, when set, stores sessions in that Redis, so servers built
 	// on one address share them, as replicas do.
 	redisAddr string
+	// validateExpiry makes the test token middleware accept an expired token
+	// only when the binding admits the request, as a validator given the
+	// binding's option does. It needs clock.
+	validateExpiry bool
 }
 
 type cbTestServer struct {
@@ -201,12 +238,18 @@ func newCallBindingTestServer(t *testing.T, opts cbServerOptions) *cbTestServer 
 		strategies.NewUnauthenticatedStrategy(),
 	))
 	tokens := &cbTokens{claims: map[string]map[string]any{}}
+	binding, err := callbinding.New(opts.binding)
+	require.NoError(t, err)
+	if opts.validateExpiry {
+		require.NotNil(t, opts.clock, "validateExpiry needs a clock")
+		tokens.binding, tokens.clock = binding, opts.clock
+	}
 	cfg := &ServerConfig{
 		SessionTTL:           time.Minute,
 		AuthMiddleware:       tokens.middleware,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: vmcpsession.NewSessionFactory(authReg)},
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
-		CallBinding:          opts.binding,
+		CallBinding:          binding,
 	}
 	if opts.auditFile != "" {
 		cfg.AuditConfig = &audit.Config{LogFile: opts.auditFile}
@@ -709,18 +752,36 @@ func TestCallBinding_ModernToolCall(t *testing.T) {
 // postAsync sends a POST off the test goroutine and reports its status, or
 // 0 when the request failed. It must not use require.
 func (s *cbTestServer) postAsync(ctx context.Context, token, sessionID, body string) <-chan int {
+	return s.sendAsync(ctx, http.MethodPost, token, sessionID, body, nil)
+}
+
+// sendAsync sends a request off the test goroutine and reports its status, or
+// 0 when the request failed. An empty sessionID sends no Mcp-Session-Id, and
+// an empty body sends none. It must not use require.
+func (s *cbTestServer) sendAsync(
+	ctx context.Context, method, token, sessionID, body string, extra http.Header,
+) <-chan int {
 	done := make(chan int, 1)
 	go func() {
 		status := 0
 		defer func() { done <- status }()
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url+"/mcp", strings.NewReader(body))
+		var reader io.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, s.url+"/mcp", reader)
 		if err != nil {
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("Mcp-Session-Id", sessionID)
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+		for k, v := range extra {
+			req.Header[k] = v
+		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return
@@ -807,11 +868,11 @@ func TestCallBinding_OpenCallMessages(t *testing.T) {
 		callbinding.ReasonTokenReused, 9)
 }
 
-// TestCallBinding_CancelAfterDroppedPost pins a known limitation: a Legacy
-// client that closes the call's POST before it sends notifications/cancelled
-// gets no_open_call, because the call's request has returned. Accepting
-// messages for a call after its request returns belongs with accepting them
-// after exp.
+// TestCallBinding_CancelAfterDroppedPost checks that a Legacy client that
+// closes the call's POST before it sends notifications/cancelled, as go-sdk
+// clients do, can still cancel the call: closing the POST does not stop a
+// Legacy dispatch, so the call stays open while its dispatch runs, and the
+// cancellation reaches it. The call ends when its dispatch returns.
 func TestCallBinding_CancelAfterDroppedPost(t *testing.T) {
 	t.Parallel()
 	bc := newBlockingCore()
@@ -833,14 +894,29 @@ func TestCallBinding_CancelAfterDroppedPost(t *testing.T) {
 	bc.waitStarted(t)
 	cancelPost()
 	awaitStatus(t, done)
+	requireCallEnded(t, record, false)
 
-	key := cbIssuer + "\x00jti-1"
-	require.Eventually(t, func() bool {
-		call, found, err := record.Lookup(context.Background(), key)
-		return err == nil && found && call.Ended
-	}, 10*time.Second, 10*time.Millisecond, "the dropped POST must end the call's request")
-
+	cancel := s.send(t, http.MethodPost, token, session, cancelBody("7"), nil)
+	require.Equal(t, http.StatusAccepted, cancel.status, "body: %s", cancel.body)
+	requireCallEnded(t, record, true)
+	assert.Zero(t, s.fc.callToolCalls.Load(), "the cancelled call must not complete")
 	requireRefused(t, s.send(t, http.MethodPost, token, session, cancelBody("7"), nil), callbinding.ReasonNoOpenCall, nil)
+}
+
+// requireCallEnded checks whether the call of the token with jti-1 has ended
+// in record: it waits for the end when ended is true, and checks it stays open
+// for a moment when ended is false.
+func requireCallEnded(t *testing.T, record callbinding.Record, ended bool) {
+	t.Helper()
+	isEnded := func() bool {
+		call, found, err := record.Lookup(context.Background(), cbIssuer+"\x00jti-1")
+		return err == nil && found && call.Ended
+	}
+	if ended {
+		require.Eventually(t, isEnded, 10*time.Second, 10*time.Millisecond, "the call must end")
+		return
+	}
+	require.Never(t, isEnded, 300*time.Millisecond, 10*time.Millisecond, "the call must stay open")
 }
 
 // TestCallBinding_ResponseAfterMaxCallDuration checks that a response is
@@ -993,17 +1069,11 @@ func TestCallBinding_OptimizerToolsAreNotBindable(t *testing.T) {
 	}
 }
 
-func TestNewCallBindingValidates(t *testing.T) {
+func TestNewCallBindingDefaults(t *testing.T) {
 	t.Parallel()
-	_, err := newCallBinding(callbinding.Config{MaxCallDuration: -time.Second}, nil, nil)
-	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
-	_, err = newCallBinding(callbinding.Config{Clients: []string{"a", ""}}, nil, nil)
-	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
-
-	cb, err := newCallBinding(callbinding.Config{}, nil, nil)
-	require.NoError(t, err)
-	assert.Equal(t, callbinding.DefaultMaxCallDuration, cb.maxCallDuration)
-	assert.NotNil(t, cb.record)
+	cb := newCallBinding(nil, nil, nil)
+	assert.Equal(t, callbinding.DefaultMaxCallDuration, cb.binding.MaxCallDuration())
+	assert.NotNil(t, cb.binding.Record())
 }
 
 // spyRecord records the expiry of each Start and can fail on demand.
@@ -1456,16 +1526,4 @@ func TestCallBinding_ChallengeParameters(t *testing.T) {
 		`resource_metadata="https://vmcp.example.com/.well-known/oauth-protected-resource/mcp", scope="mcp", `+
 		`error="invalid_token", error_description="the access token is not accepted (token_reused)"`,
 		resp.header.Get("WWW-Authenticate"))
-}
-
-func TestCallBindingReturnedCalls(t *testing.T) {
-	t.Parallel()
-	now := time.Unix(1_900_000_000, 0)
-	var calls returnedCalls
-	assert.False(t, calls.has("a", now))
-	calls.add("a", now.Add(time.Minute), now)
-	assert.True(t, calls.has("a", now))
-	assert.False(t, calls.has("a", now.Add(time.Minute)), "an entry ends at its expiry")
-	calls.add("b", now.Add(2*time.Minute), now.Add(time.Minute))
-	assert.Len(t, calls.expires, 1, "an add drops expired entries")
 }

@@ -287,17 +287,19 @@ type Config struct {
 	// entity name).
 	Authz *authz.Config
 
-	// CallBinding sets up enforcement of access tokens bound to one MCP call.
+	// CallBinding is the enforcement of access tokens bound to one MCP call.
 	// The vMCP always enforces a token that carries an authorization_details
 	// entry of type https://toolhive.dev/mcp_tool_call: with a tool-call entry
 	// it may start only the one tools/call the entry names, once; with a
 	// list-call entry, only the one list call the entry names, answered with
-	// only that backend's items. CallBinding adds the
-	// clients whose tokens must carry one, the maximum call duration, the
-	// single-use record, and the parameters of the 401 challenge. The zero
-	// value lists no client and keeps the record in memory, on this replica
-	// only. See callbinding.Config.
-	CallBinding callbinding.Config
+	// only that backend's items. The Binding, built by callbinding.New from a
+	// callbinding.Config, adds the clients whose tokens must carry one, the
+	// maximum call duration, the single-use record, and the parameters of the
+	// 401 challenge. Give the same Binding to the incoming auth factory
+	// (factory.WithCallBinding), so the token validator accepts the messages
+	// of a call that outlives its token. Nil is the zero Config's Binding: no
+	// client listed, the record in memory, on this replica only.
+	CallBinding *callbinding.Binding
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.

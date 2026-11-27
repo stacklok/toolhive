@@ -173,15 +173,6 @@ func TestServePreservesExplicitConfig(t *testing.T) {
 	assert.Equal(t, 11*time.Second, srv.config.StatusReportingInterval)
 }
 
-func TestServeRefusesInvalidCallBinding(t *testing.T) {
-	t.Parallel()
-	cfg := testMinimalServeConfig()
-	cfg.CallBinding = callbinding.Config{MaxCallDuration: -time.Second}
-	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
-	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
-	assert.Nil(t, srv)
-}
-
 func TestServeHandlerRegistersUnauthenticatedRoutes(t *testing.T) {
 	t.Parallel()
 
@@ -439,7 +430,7 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		UsageMetricsMiddleware:  func(h http.Handler) http.Handler { return h },
 		AuditConfig:             &audit.Config{},
 		AuditSubjectEnricher:    stubSubjectEnricher,
-		CallBinding:             callbinding.Config{Clients: []string{"c"}},
+		CallBinding:             testCallBinding(),
 	}
 
 	got := reflect.ValueOf(*buildServeConfig(src))
@@ -451,4 +442,13 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		}
 		assert.Falsef(t, got.Field(i).IsZero(), "Config.%s was not populated by buildServeConfig", name)
 	}
+}
+
+func TestServeRefusesUnbuiltCallBinding(t *testing.T) {
+	t.Parallel()
+	cfg := testMinimalServeConfig()
+	cfg.CallBinding = &callbinding.Binding{}
+	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
+	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
+	assert.Nil(t, srv)
 }

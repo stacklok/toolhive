@@ -311,7 +311,13 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 			return mcp.NewToolResultError(fmt.Sprintf("Unauthorized: %v", err)), nil
 		}
 
-		result, err := s.core.CallTool(ctx, caller, toolName, args, conversion.FromMCPMeta(req.Params.Meta))
+		// A call-bound token's call stays open while this dispatch runs, even
+		// after the client closes the call's POST, so its cancellation is
+		// still admitted (see callBinding.dispatching).
+		result, err := func() (*vmcp.ToolCallResult, error) {
+			defer s.callBinding.dispatching(caller)()
+			return s.core.CallTool(ctx, caller, toolName, args, conversion.FromMCPMeta(req.Params.Meta))
+		}()
 		if err != nil {
 			return legacyToolCallError(server.ClientSessionFromContext(ctx), err)
 		}

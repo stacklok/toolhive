@@ -141,7 +141,8 @@ of these uses up the token. Before its `exp`, such a token may also send, to the
   up the token;
 - GET and DELETE on sessions its principal owns, and once the token has started its
   call, only on that call's session;
-- on the Legacy session of its tool call, while the call's request is open: a
+- on the Legacy session of its tool call, while the call is open (its request is
+  open, or its dispatch still runs, as after the client closes the call's POST): a
   `notifications/cancelled` for the call and any JSON-RPC response, such as an
   elicitation answer.
 
@@ -158,10 +159,21 @@ with the reason, and the request is audited as `denied` with
 
 Two consequences are easy to miss. A token whose `authorization_details` claim is
 malformed is refused on every request, whatever its client, even one that never
-asked for call binding. And messages for a call are accepted only until the earlier of
-the token's `exp` and the end of the call's request: an elicitation answer or
-cancellation sent after `exp` gets 401, even while the call is still open, and a fresh
-token does not help because it has no call of its own. See
+asked for call binding. And `exp` is strict: once a call-bound token expires, every
+request with it gets 401, even one that cancels or answers a call still running.
+`vmcp serve` and the operator have no setting to change that. A Go embedder can opt
+in per issuer and client with `callbinding.Config.ExpiredTokenAdmission`, a list of
+`{Issuer, ClientID, Grace}` entries matched against the token's `iss` and `client_id`
+claims (`azp` is not read). For a matching token, a tool call that outlives its token
+keeps, on its session, its cancellation, elicitation answers, and GET and DELETE, for
+the entry's `Grace` after `exp`, and only until the call ends (its request has
+returned and its dispatch has finished) or has run for the maximum call duration (30
+minutes by default, which no `Grace` may exceed). Within the grace, a message for a
+call that has ended is answered without being dispatched: 202 for its cancellation or
+a response, 403 `no_open_call` for a GET or DELETE. Anything else after `exp` gets
+401. This needs the token validator to share the vMCP's call binding
+(`factory.WithCallBinding`).
+See
 [Call-bound access tokens](arch/10-virtual-mcp-architecture.md#call-bound-access-tokens).
 
 For Legacy vMCP and stateful proxy requests, a delegated session is bound to the

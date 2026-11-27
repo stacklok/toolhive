@@ -14,8 +14,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
 )
 
-// Config is how an embedder sets up call binding on the vMCP. The zero value
-// is valid: no client must send an entry, calls last at most
+// Config is how an embedder sets up call binding on the vMCP; New builds the
+// Binding the server and the token validator share from it. The zero value is
+// valid: no client must send an entry, calls last at most
 // DefaultMaxCallDuration, and the record is in memory.
 //
 // The vMCP enforces an mcp_tool_call entry whenever a token carries one,
@@ -40,9 +41,19 @@ type Config struct {
 
 	// MaxCallDuration bounds how long one call keeps its record open: the
 	// record of a token lasts until its exp, or until the call has run for
-	// MaxCallDuration, whichever is later. It does not stop a call that runs
-	// longer. Zero means DefaultMaxCallDuration.
+	// MaxCallDuration, whichever is later. It also bounds how long the call's
+	// messages are accepted, after exp too, and every ExpiredTokenAdmission
+	// grace. It does not stop a call that runs longer. Zero means
+	// DefaultMaxCallDuration.
 	MaxCallDuration time.Duration
+
+	// ExpiredTokenAdmission lists the issuers and clients whose call-bound
+	// tokens may still send their call's own messages after exp, and for how
+	// long. Empty by default: once a token expires, every request with it gets
+	// 401, as RFC 7519 section 4.1.4 and RFC 9068 require, even one that
+	// cancels or answers a call still running. See ExpiredTokenAdmission and
+	// ValidateExpiredTokenAdmission.
+	ExpiredTokenAdmission []ExpiredTokenAdmission
 
 	// Record is the single-use record. Nil means a MemoryRecord, which
 	// covers one replica only: a replay to another replica is not seen.

@@ -53,7 +53,8 @@ will fail to restore the session (`RestoreSession()` finds no stored metadata)
 and the client must reinitialize. Backend connections held by the cached
 `MultiSession` are released when the background cache sweep finds the
 metadata gone, when the LRU cache evicts the entry, or when the session is
-explicitly terminated, whichever comes first.
+explicitly terminated, whichever comes first. A DELETE cancels the session's
+open Legacy calls only on the replica that receives it.
 
 The sweep runs every `FactoryConfig.SweepInterval` (1 minute by default; a
 negative value disables it). It reads each cached session's metadata with

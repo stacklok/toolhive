@@ -47,7 +47,8 @@ import (
 // rejected like a missing one.
 func (s *Server) sessionOwnershipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := s.checkSessionOwnership(r); err != nil {
+		sessionID, err := s.checkSessionOwnership(r)
+		if err != nil {
 			if errors.Is(err, sessionbinding.ErrNotFound) {
 				http.Error(w, "Session terminated", http.StatusNotFound)
 				return
@@ -55,52 +56,58 @@ func (s *Server) sessionOwnershipMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "Session store unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		// The owner's DELETE terminates the session. The transport closes it
+		// by waiting for its open requests, so cancel them first (see
+		// openRequests).
+		if r.Method == http.MethodDelete && sessionID != "" {
+			defer s.openRequests.endSession(sessionID)()
+		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-// checkSessionOwnership returns nil for a sessionless request or one from the
-// session's owner, sessionbinding.ErrNotFound for anything that must look like
-// a missing session, and the storage error otherwise.
-func (s *Server) checkSessionOwnership(r *http.Request) error {
+// checkSessionOwnership returns the request's session ID ("" for a sessionless
+// request) when the caller may use it, sessionbinding.ErrNotFound for anything
+// that must look like a missing session, and the storage error otherwise.
+func (s *Server) checkSessionOwnership(r *http.Request) (string, error) {
 	sessionID, err := sessionbinding.RequestID(r, "")
 	if err != nil {
 		slog.Warn("rejected MCP request with an ambiguous session ID",
 			"method", r.Method, "path", r.URL.Path)
-		return sessionbinding.ErrNotFound
+		return "", sessionbinding.ErrNotFound
 	}
 	if sessionID == "" {
-		return nil
+		return "", nil
 	}
 
 	owner, err := s.vmcpSessionMgr.LookupOwner(r.Context(), sessionID)
 	switch {
 	case errors.Is(err, sessionbinding.ErrNotFound):
-		return sessionbinding.ErrNotFound
+		return "", sessionbinding.ErrNotFound
 	case err != nil && r.Context().Err() != nil:
 		// The client went away; nothing to warn an operator about.
 		slog.Debug("session ownership lookup abandoned by the client",
 			"method", r.Method, "path", r.URL.Path, "error", err)
-		return err
+		return "", err
 	case err != nil:
 		slog.Warn("session ownership lookup failed",
 			"method", r.Method, "path", r.URL.Path, "error", err)
-		return err
+		return "", err
 	case owner == "":
 		// No owner yet: see the invariant on sessionOwnershipMiddleware.
 		// sessionbinding.Validate would reject an empty owner too; this branch
 		// exists so placeholders and unowned records are rejected without the
 		// WARN below, which is for callers that fail the ownership check.
-		return sessionbinding.ErrNotFound
+		return "", sessionbinding.ErrNotFound
 	}
 
 	identity, _ := auth.IdentityFromContext(r.Context())
 	if err := sessionbinding.Validate(owner, identity); err != nil {
 		slog.Warn("rejected MCP request for a session the caller does not own",
 			rejectionAttrs(r, owner, identity)...)
-		return sessionbinding.ErrNotFound
+		return "", sessionbinding.ErrNotFound
 	}
-	return nil
+	return sessionID, nil
 }
 
 // rejectionAttrs describes why sessionbinding.Validate rejected the caller. It

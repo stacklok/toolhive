@@ -285,6 +285,33 @@ no state: there is no elicitation ID to look up later and nothing a different
 caller can resume. The retry is an ordinary `tools/call`, which your decorator
 answers again from its own state.
 
+### Writing a `VMCP` decorator
+
+A `VMCP` decorator usually embeds `core.VMCP` and overrides the methods it
+changes. List calls (call-bound tokens that list one backend) are answered from
+one aggregation through the optional `core.BackendCapabilitiesLookup` interface,
+when the `VMCP` the server serves implements it. Embedding does not promote that
+method, so a decorator that does not implement it gets list calls answered from
+its own `LookupBackend` and `List*` methods: what it filters stays filtered, at the
+cost of separate aggregations that can disagree. To keep the single aggregation:
+
+- If your decorator narrows no list, forward the lookup. When the inner `VMCP`
+  does not implement it either, `core.LookupBackendCapabilities` returns
+  `core.ErrBackendCapabilitiesLookupUnsupported`, and the list call falls back as
+  above.
+
+  ```go
+  func (d *myDecorator) LookupBackendCapabilities(ctx context.Context,
+  	identity *auth.Identity, backendID string,
+  ) (*core.AdmittedBackendCapabilities, error) {
+  	return core.LookupBackendCapabilities(ctx, d.VMCP, identity, backendID)
+  }
+  ```
+
+- If it narrows a list, narrow the same items in the result, or refuse that
+  list method by setting its entry in `ListErrors`, which a list call answers
+  with 503.
+
 ### What ToolHive Does Not Provide for Embedders
 
 - Goroutine leak protection in Experimental/Internal packages — test your shutdown paths.

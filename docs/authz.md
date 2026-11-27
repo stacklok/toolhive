@@ -59,6 +59,36 @@ remain 413). Valid client responses do not populate `ParsedMCPRequest`; their
 handling remains transport-specific. Authorization middleware still refuses
 POSTs without a parsed request, including client responses.
 
+### What authorization decides on
+
+Authorization decides on the request: the caller's claims, the operation, the
+resource ID, and the arguments. When a mutating webhook rewrites the request,
+authorization evaluates the rewritten version (see
+[Dynamic webhook middleware](middleware.md#dynamic-webhook-middleware)). It does not see or limit
+what the MCP server or its backend does while carrying out a permitted call,
+and the only responses it filters are the list operations (see
+[List operations](#list-operations)).
+
+This matters when an MCP server reaches its backend with one shared credential
+for every caller, such as a static API key or service account token. A policy
+that pins a tool to one object, for example `issue_read` on a given issue, can
+still permit a call whose result includes other objects the backend resolves
+on its own, such as linked or blocking issues the shared credential can see.
+A permitted write can also cause backend side effects outside the pinned
+object, such as cross-references the backend adds to other issues. The request
+looks the same whether or not this happens, so no request-level policy can
+tell the two apart.
+
+To keep callers apart at the data level, have each call reach the backend with
+the caller's own credential, so the backend's access controls decide what each
+caller can see and change. ToolHive supports this through token exchange and
+through the embedded authorization server's per-user upstream tokens (see
+[Understanding Auth, Upstream Swap, and Token Exchange Middleware](middleware.md#understanding-auth-upstream-swap-and-token-exchange-middleware)
+and the user guide's
+[Backend authentication](https://docs.stacklok.com/toolhive/concepts/backend-auth)). Confining
+an agent to a subset of its own user's objects needs narrower credentials from
+the backend itself, such as a token scoped to one repository.
+
 ### Virtual MCP parity
 
 Virtual MCP (`vmcp`) enforces the same Cedar policies through its core admission
@@ -94,9 +124,15 @@ with only that backend's items, all in one response without `nextCursor`; it can
 start a `tools/call`. Before that list call, a `tools/call` or another list method gets
 **HTTP 403** `method_mismatch`, and a list request that carries a `cursor` gets 403
 `invalid_params`. A backend the caller is not admitted to anything of, including one
-that does not exist, gets 403 `server_not_found`; one the caller can see but that is
-not served now for its health status gets **HTTP 503**. None of these uses up the
-token. Before its `exp`, such a token may also send, to the MCP endpoint:
+that does not exist or that cannot be discovered now, gets 403 `server_not_found`; one
+the caller can see but that is not served now, for its health status or because listing
+that kind of item failed for now, gets **HTTP 503**. The 403 `server_not_found` and the
+503 for a backend's health status run the same authorization checks, over every
+backend's items, whichever backend they name, so the time they take does not tell which
+backends exist. While no backend of a non-empty group
+can be discovered, a valid list call that has to discover backends gets **HTTP 503**,
+whatever backend it names; a caller whose view is still cached is answered from it. None
+of these uses up the token. Before its `exp`, such a token may also send, to the MCP endpoint:
 
 - the handshake (`initialize`, `notifications/initialized`), the Modern
   `server/discover` probe and `ping`; `initialize` only until the token has started
@@ -297,7 +333,7 @@ In the context of MCP servers, the following entities are used:
     - `Action::"get_skill"`: Get a skill
 
   Note: List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) are always
-  allowed but the response is filtered based on the corresponding call/get/read policies.
+  allowed, but the response is filtered by the user's permissions for the corresponding operation. `tools/list` uses the `tool:read` check, which a `tool:call` grant also satisfies (see List operations below).
   Define policies for the specific operations (call_tool, get_prompt, read_resource, get_skill)
   and the list responses will automatically show only the items the user is authorized to access.
 
@@ -555,7 +591,12 @@ List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) 
 They are always allowed but the response is automatically filtered based on the user's permissions
 for the corresponding operations:
 
-- `tools/list` shows only tools the user can call (based on `call_tool` policies); a result in which a tool repeats `name`, `annotations`, or the annotation `title` or a hint such as `readOnlyHint`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error, so policies evaluate exactly the hints the client receives.
+- `tools/list` shows only tools the user can read. The read check is `tool:read`, and a `tool:call` grant also satisfies it, so a user who can call a tool can also see it. `tool:read` never grants `tool:call`.
+  - **Cedar:** Cedar has no `tool:read` action, so it denies `tool:read` without evaluating policies and the `tool:call` check decides visibility. In policies this is `call_tool`, so a tool is listed only when a `call_tool` policy allows it.
+  - **HTTP PDP:** by default the PDP is asked only `mcp:tool:call`, so a call-only forbid keeps hiding its tool and visibility is unchanged. Each tool costs one PDP decision. Set `pdp.forward_tool_read: true` to ask `mcp:tool:read` instead: a tool is then listed when the PDP allows read, with one decision per tool and no call fallback. With that flag, the PDP must answer `mcp:tool:read`; an error from it hides the tool. With `forward_tool_read: true`, a PDP that allows `tool:read` and forbids `tool:call` for one tool lists that tool, and calls to it are still refused. With that flag the PDP must allow `tool:read` wherever it allows `tool:call`.
+  - **vMCP:** filtering uses the same `tool:read` check as the single-server path, so the same visibility rules apply.
+  - **Errors:** an error from either check skips that tool and logs a WARN, and a `tool:read` error does not fall back to `tool:call`. The whole filter runs under one 30 second deadline, and tools checked after it expires are hidden.
+  - A result in which a tool repeats `name`, `annotations`, or the annotation `title` or a hint such as `readOnlyHint`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error, so policies evaluate exactly the hints the client receives.
 - `prompts/list` shows only prompts the user can get (based on `get_prompt` policies)
 - `resources/list` shows only resources the user can read (based on `read_resource` policies)
 - `skills/list` shows only skill entries the user can get (based on `get_skill` policies); entries
@@ -568,10 +609,11 @@ transport negotiate `gzip` on its own, which it decodes before the filter runs.
 Those responses therefore reach the client uncompressed, while every other
 method — `features/list` included — keeps end-to-end compression. If a backend
 compresses one of them without being asked, the filter cannot read it and will
-not forward it unfiltered: the client receives HTTP 500 with a generic JSON-RPC
-internal error, and ToolHive logs a `WARN` naming the encoding and the backend's
-status. An encoded non-2xx response is exempt, since it cannot carry a list, and
-is forwarded with its status and body intact.
+not forward it unfiltered: the body is replaced with a generic JSON-RPC internal
+error carrying the request id, served as `application/json`, and ToolHive logs a
+`WARN` naming the encoding and the backend's status. A 2xx response gets HTTP
+500. A non-2xx response keeps the backend's status, so a client that gets a 404
+for an expired session can still start a new one.
 
 For example, if you have this policy:
 ```plain
@@ -581,6 +623,14 @@ permit(principal, action == Action::"call_tool", resource == Tool::"weather");
 Then `tools/list` will only show the "weather" tool for that user.
 
 A filtered list depends on the caller's permissions, so `tools/list`, `prompts/list`, and `resources/list` responses carry the HTTP header `Cache-Control: private, no-store`, and a `cacheScope` or `ttlMs` member the backend sent in the result is replaced with `"private"` or `0`. The proxy does not add either member when the backend omitted it, so a list from a backend on an MCP revision that predates these members reaches the client without them. A result that repeats `cacheScope` or `ttlMs`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error. `resources/templates/list` responses carry the same header, and their result always includes `cacheScope: "private"` and `ttlMs: 0`.
+
+On the POST path, a filtered method's response is held until the backend has sent all of it, and its status and headers reach the client only once the whole response has been filtered. A fail-closed error that replaces the whole body therefore arrives with `application/json` and HTTP 500, or the backend's status for an encoded non-2xx body. A filtered method's response never carries the backend's entity headers (`Content-Length`, `ETag`, `Last-Modified`, digests) or HTTP trailers, since they describe bytes the filter may rewrite. Other methods are unaffected: their status and headers are still sent as soon as the proxy flushes.
+
+A filtered method's response that the filter cannot read as labeled is not forwarded unfiltered:
+
+- A body whose `Content-Type` is neither `application/json` nor `text/event-stream` is checked as both. If it carries a JSON-RPC result, it is filtered as if it had been labeled correctly. A JSON answer written in its place, filtered or an error, is served as `application/json`. A body with no result in either shape passes through unchanged.
+- A body, labeled `application/json` or not, that carries a result outside a clean JSON-RPC response, or names a `result` the decoder cannot read (such as one nested past `encoding/json`'s depth limit), gets HTTP 500 with a generic JSON-RPC internal error, served as `application/json`. The error carries the request id, or the body's own top-level id when the request has none.
+- An SSE event with a lone CR line break, whose data could carry a result when split at that CR, is replaced with one `data:` line carrying a JSON-RPC error with the request id. Clients disagree on whether a lone CR ends a line, so the filter cannot know which data the client will read.
 
 The SSE transport (`--transport sse`) and the GET stream of streamable HTTP filter list answers on the event stream. The middleware wraps every `GET`, so this applies to each GET it sees. Each event is filtered as it arrives, with the filter chosen from the result's shape:
 
@@ -1201,6 +1251,7 @@ The configuration fields are:
 - `pdp.http.url`: The base URL of the PDP server (required)
 - `pdp.http.timeout`: HTTP request timeout in seconds (default: 30)
 - `pdp.http.insecure_skip_verify`: Skip TLS certificate verification (default: false)
+- `pdp.forward_tool_read`: Ask the PDP for `mcp:tool:read` when deciding `tools/list` visibility, instead of `mcp:tool:call` (default: false)
 - `pdp.claim_mapping`: Claim mapper type (required)
   - `"mpe"`: Maps to m-prefixed claims (mroles, mgroups, mclearance, mannotations) - compatible with Manetu PolicyEngine and similar systems
   - `"standard"`: Uses standard OIDC claim names (roles, groups) - compatible with PDPs expecting standard OIDC conventions

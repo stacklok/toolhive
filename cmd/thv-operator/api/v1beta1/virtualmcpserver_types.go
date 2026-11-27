@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -21,6 +22,8 @@ import (
 // +kubebuilder:validation:XValidation:rule="!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools) || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type == 'oidc')",message="per-tool perUser rate limiting requires incomingAuth.type oidc"
 // +kubebuilder:validation:XValidation:rule="!has(self.config) || !has(self.config.sessionStorage) || !has(self.config.sessionStorage.tls)",message="config.sessionStorage.tls is ignored by the operator; set sessionStorage.tls instead"
 // +kubebuilder:validation:XValidation:rule="!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer) && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider == 'openai')",message="embeddingServerRef provisions a managed TEI server and cannot be combined with optimizer.embeddingProvider 'openai'; openai mode uses embeddingService directly"
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.instructions) && has(self.config) && has(self.config.instructions))",message="set instructions or config.instructions, not both"
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.authServerUpstreamFilter) || has(self.authServerConfig)",message="authServerUpstreamFilter requires authServerConfig to be set"
 // +kubebuilder:validation:XValidation:rule="!has(self.authServerUpstreamFilter) || (has(self.authServerConfig) && has(self.authServerConfig.upstreamProviders) && size(self.authServerConfig.upstreamProviders) >= 2)",message="authServerUpstreamFilter requires at least two configured upstream providers"
@@ -63,6 +66,14 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	// +listType=atomic
 	PassthroughHeaders []string `json:"passthroughHeaders,omitempty"`
+
+	// Instructions sets the instructions clients receive in the result of a successful
+	// initialize or server/discover request: the Virtual MCP server combines it with
+	// any instructions it produces, as mode says. Clients commonly add server
+	// instructions to the model's context, so this adds policy or usage guidance
+	// without changing the server. Set this or config.instructions, not both.
+	// +optional
+	Instructions *instructions.Config `json:"instructions,omitempty"`
 
 	// ServiceType specifies the Kubernetes service type for the Virtual MCP server
 	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer

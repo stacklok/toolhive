@@ -131,6 +131,8 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --host string                                        Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --ignore-globally[=true|false]                       Load global ignore patterns from ~/.config/toolhive/thvignore (default true)
       --image-verification string                          Set image verification mode (warn, enabled, disabled) (default "warn")
+      --instructions-file string                           Path to a text file whose content is added to the instructions the MCP server returns to clients
+      --instructions-mode string                           How the --instructions-file text combines with the server's instructions: replace, append, or prepend (default append)
       --isolate-network[=true|false]                       Isolate the container network from the host. Use --isolate-network=false to opt out. Not enforced with --network host or --network none (isolation requires bridge networking). (default true)
       --jwks-allow-private-ip[=true|false]                 Allow JWKS/OIDC endpoints on private IP addresses (use with caution) (default false)
       --jwks-auth-token-file string                        Path to file containing bearer token for authenticating JWKS/OIDC requests

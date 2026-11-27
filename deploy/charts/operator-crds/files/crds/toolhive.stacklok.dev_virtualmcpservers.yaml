@@ -3647,6 +3647,38 @@ spec:
                     required:
                     - type
                     type: object
+                  instructions:
+                    description: |-
+                      Instructions sets the instructions clients receive in the result of a
+                      successful initialize or server/discover request: vMCP combines it with
+                      any instructions it produces, as mode says. A VirtualMCPServer sets
+                      either spec.instructions or this field, not both.
+                    properties:
+                      mode:
+                        default: append
+                        description: |-
+                          Mode says how value combines with the instructions the server returns.
+                          replace returns value alone. append returns the server's instructions,
+                          a blank line, and value. prepend returns value, a blank line, and the
+                          server's instructions. When the server returns no instructions, every
+                          mode returns value alone.
+                        enum:
+                        - replace
+                        - append
+                        - prepend
+                        type: string
+                      value:
+                        description: |-
+                          Value is the text that mode combines with the server's instructions.
+                          Leading and trailing ASCII white space (tab, LF, FF, CR, space) is
+                          dropped, and a value that is only such white space is rejected.
+                        maxLength: 65536
+                        minLength: 1
+                        pattern: \S
+                        type: string
+                    required:
+                    - value
+                    type: object
                   metadata:
                     additionalProperties:
                       type: string
@@ -5113,6 +5145,39 @@ spec:
                 - message: authzConfig and authzConfigRef are mutually exclusive;
                     use authzConfigRef to reference a shared MCPAuthzConfig
                   rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
+              instructions:
+                description: |-
+                  Instructions sets the instructions clients receive in the result of a successful
+                  initialize or server/discover request: the Virtual MCP server combines it with
+                  any instructions it produces, as mode says. Clients commonly add server
+                  instructions to the model's context, so this adds policy or usage guidance
+                  without changing the server. Set this or config.instructions, not both.
+                properties:
+                  mode:
+                    default: append
+                    description: |-
+                      Mode says how value combines with the instructions the server returns.
+                      replace returns value alone. append returns the server's instructions,
+                      a blank line, and value. prepend returns value, a blank line, and the
+                      server's instructions. When the server returns no instructions, every
+                      mode returns value alone.
+                    enum:
+                    - replace
+                    - append
+                    - prepend
+                    type: string
+                  value:
+                    description: |-
+                      Value is the text that mode combines with the server's instructions.
+                      Leading and trailing ASCII white space (tab, LF, FF, CR, space) is
+                      dropped, and a value that is only such white space is rejected.
+                    maxLength: 65536
+                    minLength: 1
+                    pattern: \S
+                    type: string
+                required:
+                - value
+                type: object
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend resources.
@@ -5387,6 +5452,8 @@ spec:
               rule: '!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer)
                 && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider
                 == ''openai'')'
+            - message: set instructions or config.instructions, not both
+              rule: '!(has(self.instructions) && has(self.config) && has(self.config.instructions))'
             - message: authServerUpstreamFilter requires authServerConfig to be set
               rule: '!has(self.authServerUpstreamFilter) || has(self.authServerConfig)'
             - message: authServerUpstreamFilter requires at least two configured upstream
@@ -9349,6 +9416,38 @@ spec:
                     required:
                     - type
                     type: object
+                  instructions:
+                    description: |-
+                      Instructions sets the instructions clients receive in the result of a
+                      successful initialize or server/discover request: vMCP combines it with
+                      any instructions it produces, as mode says. A VirtualMCPServer sets
+                      either spec.instructions or this field, not both.
+                    properties:
+                      mode:
+                        default: append
+                        description: |-
+                          Mode says how value combines with the instructions the server returns.
+                          replace returns value alone. append returns the server's instructions,
+                          a blank line, and value. prepend returns value, a blank line, and the
+                          server's instructions. When the server returns no instructions, every
+                          mode returns value alone.
+                        enum:
+                        - replace
+                        - append
+                        - prepend
+                        type: string
+                      value:
+                        description: |-
+                          Value is the text that mode combines with the server's instructions.
+                          Leading and trailing ASCII white space (tab, LF, FF, CR, space) is
+                          dropped, and a value that is only such white space is rejected.
+                        maxLength: 65536
+                        minLength: 1
+                        pattern: \S
+                        type: string
+                    required:
+                    - value
+                    type: object
                   metadata:
                     additionalProperties:
                       type: string
@@ -10815,6 +10914,39 @@ spec:
                 - message: authzConfig and authzConfigRef are mutually exclusive;
                     use authzConfigRef to reference a shared MCPAuthzConfig
                   rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
+              instructions:
+                description: |-
+                  Instructions sets the instructions clients receive in the result of a successful
+                  initialize or server/discover request: the Virtual MCP server combines it with
+                  any instructions it produces, as mode says. Clients commonly add server
+                  instructions to the model's context, so this adds policy or usage guidance
+                  without changing the server. Set this or config.instructions, not both.
+                properties:
+                  mode:
+                    default: append
+                    description: |-
+                      Mode says how value combines with the instructions the server returns.
+                      replace returns value alone. append returns the server's instructions,
+                      a blank line, and value. prepend returns value, a blank line, and the
+                      server's instructions. When the server returns no instructions, every
+                      mode returns value alone.
+                    enum:
+                    - replace
+                    - append
+                    - prepend
+                    type: string
+                  value:
+                    description: |-
+                      Value is the text that mode combines with the server's instructions.
+                      Leading and trailing ASCII white space (tab, LF, FF, CR, space) is
+                      dropped, and a value that is only such white space is rejected.
+                    maxLength: 65536
+                    minLength: 1
+                    pattern: \S
+                    type: string
+                required:
+                - value
+                type: object
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend resources.
@@ -11089,6 +11221,8 @@ spec:
               rule: '!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer)
                 && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider
                 == ''openai'')'
+            - message: set instructions or config.instructions, not both
+              rule: '!(has(self.instructions) && has(self.config) && has(self.config.instructions))'
             - message: authServerUpstreamFilter requires authServerConfig to be set
               rule: '!has(self.authServerUpstreamFilter) || has(self.authServerConfig)'
             - message: authServerUpstreamFilter requires at least two configured upstream

@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	baseratelimit "github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -176,6 +177,11 @@ type Config struct {
 	// Empty disables capture (no middleware is installed).
 	PassthroughHeaders []string
 
+	// Instructions sets the instructions of the initialize and server/discover
+	// results the MCP endpoint returns (see mcp.NewInstructionsMiddleware). If
+	// nil, they are returned as the SDK and the core produce them.
+	Instructions *instructions.Config
+
 	// RateLimiter is the optional core-layer limiter applied at CallTool.
 	// It runs below the session optimizer, so tool names are already resolved
 	// to the backend tool name before bucket selection.
@@ -319,6 +325,10 @@ type Server struct {
 	// callBinding enforces call-bound access tokens (call_binding.go). Serve
 	// always sets it.
 	callBinding *callBinding
+
+	// openRequests tracks the Legacy requests running on each session, so the
+	// owner's DELETE can cancel them (open_requests.go).
+	openRequests openRequests
 
 	// optimizerFactory builds a per-session optimizer over the core's advertised
 	// tools. Set only when the optimizer is enabled (nil otherwise). When non-nil,
@@ -564,8 +574,9 @@ func New(
 
 	// Wrap the aggregator in a per-identity caching decorator: the core re-derives the
 	// advertised view on every call, so without this the Serve path re-sweeps every backend's
-	// tools/list per tool call. The cache is keyed on identity + forwarded credentials, so it
-	// never serves one caller's capability view to another.
+	// tools/list per tool call. The cache is keyed on the session binding, platform user ID,
+	// forwarded headers and backend IDs, so it does not serve one caller's view to a caller with
+	// a different issuer, subject or delegated client. It does not key on the caller's tokens.
 	cachedAgg := aggregator.NewCachingAggregator(cfg.Aggregator, capabilityCacheTTL)
 
 	// Code mode telemetry is built before the core, so a failure here has
@@ -761,6 +772,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	//   forwarded-header capture (if PassthroughHeaders is set) →
 	//   audit (if configured) → auth (if configured) → MCP-parsing →
 	//   telemetry (if configured) → host-guard → call binding →
+	//   instructions (if configured) →
 	//   classification → session ownership (Legacy only) → handler
 	// Rate limiting is a core VMCP decorator rather than an HTTP middleware and
 	// runs during tool dispatch inside the handler.
@@ -804,6 +816,22 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// dispatcher 403 is still recorded by the telemetry middleware instead of
 	// bypassing it entirely.
 	mcpHandler = s.classifyingHandler(mcpHandler)
+
+	// Set the instructions of initialize and server/discover results. Applied
+	// outside classification, so it reads the SDK's initialize and
+	// server/discover results and the Modern dispatcher's server/discover
+	// result alike, and inside the MCP-parsing middleware, whose parse names
+	// the request a response answers. vMCP serves Streamable HTTP only, so
+	// LegacySSE stays unset: of its GET streams, the middleware reads only
+	// one a GET with Last-Event-ID resumes, which may replay a result.
+	if s.config.Instructions != nil {
+		instructionsMiddleware, err := mcpparser.NewInstructionsMiddleware(
+			mcpparser.InstructionsMiddlewareParams{Instructions: *s.config.Instructions})
+		if err != nil {
+			return nil, fmt.Errorf("invalid instructions configuration: %w", err)
+		}
+		mcpHandler = instructionsMiddleware(mcpHandler)
+	}
 
 	// Enforce access tokens bound to one MCP call. It runs before
 	// classification, so Legacy and Modern requests both pass through it, and
@@ -1376,6 +1404,13 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 		return // tools already registered (normal pod-local case)
 	}
 	sessionID := sess.SessionID()
+	// Listing the tools may reach the backends, so the session's DELETE
+	// cancels it like any other request (see openRequests).
+	ctx, end := s.openRequests.begin(ctx, sessionID)
+	defer end()
+	if ctx.Err() != nil {
+		return
+	}
 
 	// Re-derive the tool set the same way registration did, so cross-pod re-injection
 	// matches the advertised set: a fresh core.ListTools for the request identity (the core

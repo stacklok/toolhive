@@ -22,6 +22,7 @@ import (
 	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpsdk "github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -170,6 +171,8 @@ type serverOptions struct {
 	// reaches BackendClient.CallTool. Lets a test assert a name was never
 	// forwarded, which a response-level assertion alone cannot prove.
 	onBackendCall func(toolName string)
+	// instructions, when set, configures server.Config.Instructions.
+	instructions *instructions.Config
 }
 
 // capsFromTools builds the AggregatedCapabilities the stub aggregator returns: the tools
@@ -252,6 +255,7 @@ func buildTestServerWithOptions(
 			SessionFactory:   factory,
 			OptimizerFactory: opts.optimizerFactory,
 			Aggregator:       newStubAggregator(capsFromTools(opts.tools, opts.hiddenTools)),
+			Instructions:     opts.instructions,
 		},
 		rt,
 		mockBackendClient,

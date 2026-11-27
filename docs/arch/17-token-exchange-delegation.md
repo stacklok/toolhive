@@ -3477,6 +3477,9 @@ top-level `act: null` on a delegated token is refused, like a malformed `act`;
 a nested `act: null` just ends the chain. Without an actor, the binding isolates agents
 only if each uses its own `client_id`. See
 [vMCP Session Ownership](10-virtual-mcp-architecture.md#session-ownership).
+The vMCP capability cache uses the same session binding in its key, so
+delegated and interactive identities never share a cached view, and an identity
+whose binding fails bypasses the cache.
 
 ## Implementation
 

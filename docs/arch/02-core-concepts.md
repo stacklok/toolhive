@@ -125,6 +125,7 @@ A **proxy** is the component that sits between MCP clients and MCP servers, forw
 - **MCP Parser** (`mcp-parser`) - JSON-RPC parsing
 - **Tool Filter** (`tool-filter`) - Filter and override tools in `tools/list` responses
 - **Tool Call Filter** (`tool-call-filter`) - Validate and map `tools/call` requests
+- **Instructions** (`instructions`) - Set the instructions of `initialize` and `server/discover` results
 - **Rate Limit** (`ratelimit`) - Per-client request rate limiting
 - **Usage Metrics** (`usagemetrics`) - Anonymous usage metrics for ToolHive development, also reported by vMCP; the fields are listed in the [middleware docs](../middleware.md#6-usage-metrics-middleware) (opt-out: `thv config usage-metrics disable`)
 - **Telemetry** (`telemetry`) - OpenTelemetry instrumentation
@@ -154,7 +155,7 @@ Middleware is applied in reverse configuration order, and the chain composed for
 - **Networking**: `host`, `port`, `targetPort`, `targetHost`, `isolateNetwork`, `proxyMode`
 - **Security**: `permissionProfile`, `secrets`, `oidcConfig`, `authzConfig`, `trustProxyHeaders`
 - **Observability**: `auditConfig`, `telemetryConfig`, `debug`
-- **Customization**: `envVars`, `volumes`, `toolsFilter`, `toolsOverride`, `ignoreConfig`
+- **Customization**: `envVars`, `volumes`, `toolsFilter`, `toolsOverride`, `instructions`, `ignoreConfig`
 - **Organization**: `group`, `containerLabels`
 - **Middleware**: `middlewareConfigs` - Dynamic middleware chain configuration
 - **Remote servers**: `remoteURL`, `remoteAuthConfig`

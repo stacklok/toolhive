@@ -42,6 +42,8 @@ type Aggregator interface {
 
 	// QueryAllCapabilities queries all backends for their capabilities in parallel.
 	// Handles backend failures gracefully (logs and continues with remaining backends).
+	// When no backend's capabilities could be queried, it returns an error
+	// wrapping ErrNoBackendCapabilities.
 	QueryAllCapabilities(ctx context.Context, backends []vmcp.Backend) (map[string]*BackendCapabilities, error)
 
 	// ResolveConflicts applies conflict resolution strategy to handle
@@ -60,6 +62,8 @@ type Aggregator interface {
 	// 1. Query all backends
 	// 2. Resolve conflicts
 	// 3. Merge into final view
+	// When no backend's capabilities could be queried, it returns an error
+	// wrapping ErrNoBackendCapabilities.
 	AggregateCapabilities(ctx context.Context, backends []vmcp.Backend) (*AggregatedCapabilities, error)
 }
 
@@ -85,6 +89,10 @@ type BackendCapabilities struct {
 
 	// SupportsSampling indicates if the backend supports MCP sampling.
 	SupportsSampling bool
+
+	// UnavailableLists names the list methods whose listing failed
+	// transiently; see vmcp.CapabilityList.UnavailableLists.
+	UnavailableLists []string
 }
 
 // ResolvedCapabilities contains capabilities after conflict resolution.
@@ -192,6 +200,14 @@ type AggregatedCapabilities struct {
 
 	// Metadata contains aggregation statistics and info.
 	Metadata *AggregationMetadata
+
+	// UnavailableLists maps a backend ID to the list methods (such as
+	// "prompts/list") whose listing failed transiently on that backend, so the
+	// backend's items of that kind are missing from this view although the
+	// backend was aggregated. It is set by AggregateCapabilities; a backend
+	// with every list available, or that failed discovery, has no entry, and
+	// an Aggregator that does not report it leaves it nil.
+	UnavailableLists map[string][]string
 }
 
 // AggregationMetadata contains information about the aggregation process.
@@ -258,6 +274,10 @@ type CacheInvalidator interface {
 var (
 	// ErrNoBackendsFound indicates no backends were discovered.
 	ErrNoBackendsFound = fmt.Errorf("no backends found in group")
+
+	// ErrNoBackendCapabilities indicates that no backend's capabilities could
+	// be queried: every backend aggregated failed discovery.
+	ErrNoBackendCapabilities = fmt.Errorf("no backends returned capabilities")
 
 	// ErrBackendQueryFailed indicates a backend query failed.
 	ErrBackendQueryFailed = fmt.Errorf("failed to query backend capabilities")

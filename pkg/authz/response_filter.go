@@ -36,13 +36,10 @@ type ResponseFilteringWriter struct {
 	annotationCache  *AnnotationCache
 	passThroughTools map[string]struct{}
 	// contentEncoding latches the backend's Content-Encoding value the first
-	// time any method observes one, because the header is rewritten before
-	// FlushAndFilter runs. Empty means the backend declared no encoding.
+	// time WriteHeader or Write observes one, so FlushAndFilter judges the
+	// encoding the body was written with even if the shared header map changes
+	// afterwards. Empty means the backend declared no encoding.
 	contentEncoding string
-	// rejected records that an encoded response was replaced by an error, so
-	// the rewrite and its log line happen once whether Flush or FlushAndFilter
-	// reaches it first.
-	rejected bool
 	// streamWarn makes errorResponseBody log at WARN instead of ERROR. Only the
 	// GET event-stream writer sets it: a stream error is caused by upstream
 	// content, not by a server fault, and the POST path keeps its ERROR level.
@@ -100,8 +97,6 @@ func (rfw *ResponseFilteringWriter) WriteHeader(statusCode int) {
 // FlushAndFilter processes the captured response and applies filtering if needed.
 // Returns an error if filtering or writing fails.
 func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
-	rfw.applyResponseCachePolicy()
-
 	// Check if this response needs filtering
 	if !requiresResponseFiltering(rfw.method) {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
@@ -112,14 +107,33 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 	rawResponse := rfw.buffer.Bytes()
 
 	// A body still carrying a Content-Encoding is opaque to every decode and
-	// sniff below, which would pass it through unfiltered. Callers withhold the
-	// client's Accept-Encoding from the backend so Go's transport decodes gzip
-	// itself, but a backend can compress unprompted. Fail closed rather than
-	// forward bytes that cannot be filtered. If Flush already committed the
-	// rejection's headers, the error body is owed even when nothing was buffered.
-	if rfw.shouldRejectEncoded() && (len(rawResponse) > 0 || rfw.rejected) {
-		rfw.rejectEncodedResponse()
-		return rfw.writeRejectionBody(rfw.requestID())
+	// sniff below, which would pass it through unfiltered whatever its status.
+	// Callers withhold the client's Accept-Encoding from the backend so Go's
+	// transport decodes gzip itself, but a backend can compress unprompted, or
+	// with a coding the transport does not decode. Decide here, before the
+	// entity headers that name the coding are dropped below. An empty body has
+	// nothing to filter and takes the empty-response path.
+	rejectEncoded := rfw.isContentEncoded() && len(rawResponse) > 0
+
+	// Every path below commits the head after the backend has finished, and
+	// may write other bytes than the backend sent: filtering rewrites the body,
+	// an error may replace it, and a leading BOM is stripped even from a body
+	// passed through. The backend's entity headers (Content-Length, ETag,
+	// Last-Modified, digests, and the like) describe its bytes, so they are
+	// dropped once here and net/http frames what is written. The backend's
+	// trailers describe its bytes too, so they are dropped as well. The cache
+	// policy is applied after both, so a trailer naming Cache-Control cannot
+	// remove it. Content-Type is kept: it labels the pass-through paths, and the
+	// paths that write JSON in place of the backend's body relabel it.
+	rfw.dropBackendTrailers()
+	mcpparser.DeleteEntityHeaders(rfw.Header())
+	rfw.applyResponseCachePolicy()
+
+	// Fail closed rather than forward bytes that cannot be filtered. Flush
+	// commits nothing for a filtered method, so the rejection's status and
+	// headers are set before the only commit.
+	if rejectEncoded {
+		return rfw.rejectEncodedResponse()
 	}
 
 	// A client strips a leading BOM per the WHATWG UTF-8 decode algorithm
@@ -148,15 +162,8 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 
 	switch mimeType {
 	case "application/json":
-		// Remove the upstream Content-Length header. The reverse proxy copies it
-		// from the backend response via Header() (which we don't override), but
-		// filtering changes the body size. Without this, Go's HTTP server detects
-		// the mismatch and tears down the connection.
-		rfw.ResponseWriter.Header().Del("Content-Length")
 		return rfw.processJSONResponse(rawResponse)
 	case "text/event-stream":
-		// Same issue: filtering changes the SSE payload size.
-		rfw.ResponseWriter.Header().Del("Content-Length")
 		return rfw.processSSEResponse(rawResponse)
 	default:
 		// A response to a method whose result must be filtered,
@@ -174,12 +181,13 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 		case sniffFilterJSON, sniffRejectJSON:
 			slog.Warn("response with unrecognized media type carries a JSON-RPC result; filtering as JSON",
 				"method", rfw.method, "contentType", contentType)
-			rfw.ResponseWriter.Header().Del("Content-Length")
+			// processJSONResponse answers either route with a filtered Response or
+			// an error, never the backend's bytes, so the head must describe JSON.
+			rfw.relabelAsJSON()
 			return rfw.processJSONResponse(rawResponse)
 		case sniffFilterSSE:
 			slog.Warn("response with unrecognized media type carries a JSON-RPC result; filtering as SSE",
 				"method", rfw.method, "contentType", contentType)
-			rfw.ResponseWriter.Header().Del("Content-Length")
 			return rfw.processSSEResponse(rawResponse)
 		case sniffRejectNamed:
 			slog.Warn("response with unrecognized media type names a result that could not be decoded; dropping",
@@ -194,10 +202,6 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 		case sniffPassThrough:
 			// Falls through to the unchanged write below.
 		}
-		// The leading BOM was removed above, so the backend's Content-Length
-		// is now three bytes too large even though this fallback doesn't filter
-		// the body. Clear it before writing to avoid a truncated response.
-		rfw.ResponseWriter.Header().Del("Content-Length")
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rawResponse)
 		return err
@@ -212,66 +216,97 @@ func (rfw *ResponseFilteringWriter) recordContentEncoding() {
 	}
 }
 
-// shouldRejectEncoded reports whether the buffered response must be replaced by
-// an error because it carries an encoding this filter cannot read.
-//
-// Only a 2xx response can carry a list, so an encoded non-2xx (a 404 from a
-// backend whose session expired, say) is forwarded untouched: replacing it with
-// an opaque 500 would cost the client the signal it needs to start a new
-// session, and there is no list in it to leak. Once a rejection is latched the
-// status has already been rewritten to 500, so the latch answers instead of the
-// status check.
-func (rfw *ResponseFilteringWriter) shouldRejectEncoded() bool {
-	if rfw.rejected {
-		return true
-	}
+// isContentEncoded reports whether the backend declared a content coding other
+// than identity for the body, as latched by Write and WriteHeader. It latches
+// once more in case the handler set the header without calling either.
+func (rfw *ResponseFilteringWriter) isContentEncoded() bool {
 	rfw.recordContentEncoding()
-	return rfw.contentEncoding != "" &&
-		rfw.statusCode >= http.StatusOK && rfw.statusCode < http.StatusMultipleChoices
+	return rfw.contentEncoding != ""
 }
 
-// rejectEncodedResponse rewrites the response head for the plain JSON error that
-// replaces an encoded body: status 500, JSON media type, and none of the
-// backend's entity headers. It must run before the headers are committed, which
-// is why Flush calls it as well as FlushAndFilter. It is idempotent.
-func (rfw *ResponseFilteringWriter) rejectEncodedResponse() {
-	if rfw.rejected {
-		return
-	}
-	rfw.rejected = true
+// rejectEncodedResponse answers a content-encoded body, which the filter cannot
+// read, with the generic JSON-RPC error carrying the request id, served as
+// application/json. A body of any status can carry a list, so every encoded body
+// is replaced. The status is kept unless it is 2xx: a non-2xx, such as a 404 from
+// a backend whose session expired, still gives the client the signal it needs to
+// start a new session, while a 2xx becomes a 500 because the request did not
+// succeed. FlushAndFilter has already dropped the backend's entity headers,
+// Content-Encoding among them, and calls this before committing the head.
+func (rfw *ResponseFilteringWriter) rejectEncodedResponse() error {
 	slog.Warn("dropping content-encoded response to a filtered method; its body cannot be filtered",
 		"method", rfw.method, "contentEncoding", truncateForLog(rfw.contentEncoding),
 		"backendStatus", rfw.statusCode)
-	mcpparser.DeleteEntityHeaders(rfw.Header())
-	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
-	rfw.statusCode = http.StatusInternalServerError
+	status := func() int {
+		if rfw.statusCode >= http.StatusOK && rfw.statusCode < http.StatusMultipleChoices {
+			return http.StatusInternalServerError
+		}
+		return rfw.statusCode
+	}()
+	rfw.relabelAsJSON()
+	rfw.ResponseWriter.WriteHeader(status)
+	// The reason is logged above, so encodeErrorBody does not log it again.
+	_, err := rfw.ResponseWriter.Write(encodeErrorBody(rfw.requestID()))
+	return err
 }
 
-// Flush implements http.Flusher if the underlying ResponseWriter supports it.
-// This method is required for streaming support (SSE, streamable-http).
-//
-// We must delete the Content-Length header before flushing because
-// httputil.ReverseProxy (with FlushInterval: -1) calls Flush() after copying
-// the backend response. The first Flush() on the underlying writer triggers an
-// implicit WriteHeader(200), sending headers to the wire. If the stale
-// Content-Length is still present at that point, it's too late to remove it in
-// FlushAndFilter().
-//
-// Commit the recorded status before the first flush. Without this, the
-// implicit 200 would rewrite a non-2xx backend status (e.g. 500) on the wire.
-// Committing here keeps the wire status identical to the recorded backend
-// status; SSE (statusCode 200) is unaffected and later WriteHeader calls in
-// FlushAndFilter become no-ops instead of corrupting the status.
-func (rfw *ResponseFilteringWriter) Flush() {
-	if flusher, ok := rfw.ResponseWriter.(http.Flusher); ok {
-		rfw.applyResponseCachePolicy()
-		rfw.ResponseWriter.Header().Del("Content-Length")
-		// An encoded body to a filtered method is replaced by FlushAndFilter with
-		// a plain error, and headers cannot change once committed here, so the
-		// error's status and headers are fixed before the commit.
-		if requiresResponseFiltering(rfw.method) && rfw.shouldRejectEncoded() {
-			rfw.rejectEncodedResponse()
+// relabelAsJSON labels the head for a JSON body the filter writes in place of
+// the backend's, however the backend labeled it. FlushAndFilter has already
+// dropped the backend's entity headers, so only the media type is set here.
+func (rfw *ResponseFilteringWriter) relabelAsJSON() {
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+}
+
+// dropBackendTrailers removes the backend's trailers from the head before
+// FlushAndFilter commits it. httputil.ReverseProxy announces them in a Trailer
+// header and, once the body is copied, stores their values in the head map: under
+// their own names when the backend sent only the announced ones, under
+// http.TrailerPrefix otherwise. Because the head is still uncommitted then, the
+// announced values would go out as ordinary header fields. A filtered body is
+// rewritten, so trailers such as a digest describe bytes that are not sent.
+func (rfw *ResponseFilteringWriter) dropBackendTrailers() {
+	h := rfw.Header()
+	for _, announced := range h.Values("Trailer") {
+		for _, name := range strings.Split(announced, ",") {
+			h.Del(strings.TrimSpace(name))
 		}
+	}
+	h.Del("Trailer")
+	for key := range h {
+		if strings.HasPrefix(key, http.TrailerPrefix) {
+			delete(h, key)
+		}
+	}
+}
+
+// Flush implements http.Flusher. httputil.ReverseProxy with FlushInterval: -1
+// calls it through http.NewResponseController after each body write, once on a
+// timer that can fire before the first write, and once after the body is copied
+// when the backend sent trailers, to force chunked encoding before it stores the
+// trailer values in the head map.
+//
+// For a method whose response is filtered, Flush does nothing. Write buffers
+// the whole body, so a flush would stream no bytes; it would only commit the
+// status and headers before FlushAndFilter can change them. FlushAndFilter
+// commits the head once, with the final status (a 500 when it fails closed on a
+// 2xx), Content-Type, and Cache-Control, and without the backend's entity
+// headers or trailers.
+// ResponseController stops at this method and does not unwrap to the underlying
+// writer, because the writer has no Unwrap.
+//
+// For any other method, Flush commits the recorded backend status and flushes
+// the underlying writer, which sends the head early. Without the explicit
+// WriteHeader, the first flush would send an implicit 200 in place of a non-2xx
+// backend status. Content-Length is deleted first because the head goes out here,
+// before FlushAndFilter has written any of the body, and could not be corrected
+// afterwards. The body on this path is forwarded unchanged, so the backend's
+// length would still match it. The deletion dates from when Flush also committed
+// filtered responses, and its only effect here is that net/http chunks the body.
+func (rfw *ResponseFilteringWriter) Flush() {
+	if requiresResponseFiltering(rfw.method) {
+		return
+	}
+	if flusher, ok := rfw.ResponseWriter.(http.Flusher); ok {
+		rfw.ResponseWriter.Header().Del("Content-Length")
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		flusher.Flush()
 	}
@@ -280,9 +315,10 @@ func (rfw *ResponseFilteringWriter) Flush() {
 // applyResponseCachePolicy prevents a caller-specific tools, prompts,
 // resources, or resource-template view from being reused across authorization
 // contexts by an HTTP cache. It applies to every filtered list, including a
-// list result that carries no caching hints of its own. Flush calls this
-// before an SSE response commits its headers; FlushAndFilter covers buffered
-// JSON.
+// list result that carries no caching hints of its own. FlushAndFilter calls it
+// for every filtered method before any path commits the head, whatever the
+// response's media type, and after dropBackendTrailers, which could otherwise
+// delete it.
 func (rfw *ResponseFilteringWriter) applyResponseCachePolicy() {
 	switch responseFilterForMethod(rfw.method) {
 	case responseFilterTools, responseFilterPrompts, responseFilterResources, responseFilterResourceTemplates:
@@ -373,10 +409,10 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	// I don't see an obvious way to factor out the commonalities, so I'm
 	// duplicating it here, but we should refactor response parsing
 	// respecting mime types to a common routine.
-	// Commit the recorded status before writing the first event. On streaming
-	// proxy paths Flush has already done this and WriteHeader is a no-op; on a
-	// buffered non-2xx response this prevents the first body write from
-	// implicitly changing the status to 200.
+	// Commit the recorded status before writing the first event. Flush does not
+	// commit for a filtered method, so this is the head's only commit; without
+	// it, the first body write would send an implicit 200 in place of a non-2xx
+	// backend status.
 	rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 
 	// A client strips a leading BOM per the WHATWG UTF-8 decode algorithm
@@ -1046,7 +1082,7 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 
 	// authorizedToolIndexes checks each tool against the caller's Cedar policies
 	// (injecting annotations into context for when-clause evaluation) and returns
-	// the positions of the tools the caller is authorized to call.
+	// the positions of the tools the caller is authorized to read.
 	for _, index := range authorizedToolIndexes(rfw.request.Context(), rfw.authorizer, regular) {
 		permitted = append(permitted, rawTools[regularIndexes[index]])
 	}
@@ -1557,29 +1593,20 @@ func encodeErrorBody(id jsonrpc2.ID) []byte {
 }
 
 // writeErrorResponse writes an error response for the application/json path.
-// The SSE path must NOT use this: WriteHeader is a no-op once Flush() has
-// committed the headers, which is the case for any real SSE response. On the
-// SSE path a filtering failure instead becomes the replacement payload of the
-// event's data: line (see filterSSEEventData), written through
-// processSSEResponse's normal line writer alongside every other line — no
-// separate write path or WriteHeader call is needed there.
+// The head is not committed yet (Flush does not commit for a filtered method),
+// so the 500 reaches the client. The error replaces the backend's body, so the
+// head is relabeled as JSON (relabelAsJSON).
+//
+// The SSE path must NOT use this: one event's failure must not replace the
+// whole stream, and processSSEResponse has already committed the status by the
+// time it resolves an event. There a filtering failure instead becomes the
+// replacement payload of the event's data: line (see filterSSEEventData),
+// written through processSSEResponse's normal line writer alongside every other
+// line.
 func (rfw *ResponseFilteringWriter) writeErrorResponse(id jsonrpc2.ID, err error) error {
+	rfw.relabelAsJSON()
 	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
 	_, writeErr := rfw.ResponseWriter.Write(rfw.errorResponseBody(id, err))
-	return writeErr
-}
-
-// writeRejectionBody writes the JSON-RPC error that replaces a content-encoded
-// body the filter refused. rejectEncodedResponse has already logged the reason
-// at WARN and named the encoding, so nothing is logged again here.
-//
-// Unlike writeErrorResponse this is safe to reach after Flush() has committed
-// the headers, which is the case for a flushed event stream: Flush calls
-// rejectEncodedResponse first, so the head it commits is already the 500 with
-// the JSON media type, and the WriteHeader below is the no-op it should be.
-func (rfw *ResponseFilteringWriter) writeRejectionBody(id jsonrpc2.ID) error {
-	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
-	_, writeErr := rfw.ResponseWriter.Write(encodeErrorBody(id))
 	return writeErr
 }
 

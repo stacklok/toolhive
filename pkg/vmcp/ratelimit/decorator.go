@@ -16,8 +16,11 @@ import (
 )
 
 // decorator wraps a [core.VMCP] to rate-limit tool calls. Every method except
-// CallTool is promoted from the embedded inner core unchanged. The decorator sits
-// below the session optimizer, so name is already the resolved backend tool name.
+// CallTool is promoted from the embedded inner core unchanged, and the
+// decorator forwards [core.BackendCapabilitiesLookup], which embedding does
+// not promote: it narrows no list, so list calls keep inner's single
+// aggregation. The decorator sits below the session optimizer, so name is
+// already the resolved backend tool name.
 //
 // CheckToolCall is deliberately NOT overridden: promoting it to inner is correct
 // because a pre-flight admission check must not consume a rate-limit token — the
@@ -27,7 +30,10 @@ type decorator struct {
 	limiter baseratelimit.Limiter
 }
 
-var _ core.VMCP = (*decorator)(nil)
+var (
+	_ core.VMCP                      = (*decorator)(nil)
+	_ core.BackendCapabilitiesLookup = (*decorator)(nil)
+)
 
 // NewDecorator wraps inner with vMCP rate limiting.
 //
@@ -45,6 +51,13 @@ func NewDecorator(inner core.VMCP, limiter baseratelimit.Limiter) core.VMCP {
 		VMCP:    inner,
 		limiter: limiter,
 	}
+}
+
+// LookupBackendCapabilities forwards to inner: list calls are not rate-limited.
+func (d *decorator) LookupBackendCapabilities(
+	ctx context.Context, identity *auth.Identity, backendID string,
+) (*core.AdmittedBackendCapabilities, error) {
+	return core.LookupBackendCapabilities(ctx, d.VMCP, identity, backendID)
 }
 
 // CallTool checks the rate limit for name before delegating to inner. At this

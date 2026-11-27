@@ -27,6 +27,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -69,6 +71,27 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Empty(t, config.ProxyReadTimeout)
+			},
+		},
+		{
+			name: "instructions flow to the RunConfig and the middleware chain",
+			mcpServer: v1beta1test.NewMCPServer("instructions-server", "test-ns",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.Instructions = &instructions.Config{Mode: instructions.ModeReplace, Value: "policy"}
+				})),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, &instructions.Config{Mode: instructions.ModeReplace, Value: "policy"}, config.Instructions)
+				assert.True(t, hasMiddleware(config, mcp.InstructionsMiddlewareType))
+			},
+		},
+		{
+			name:      "no instructions add no middleware",
+			mcpServer: v1beta1test.NewMCPServer("no-instructions-server", "test-ns"),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Nil(t, config.Instructions)
+				assert.False(t, hasMiddleware(config, mcp.InstructionsMiddlewareType))
 			},
 		},
 		{
@@ -1757,4 +1780,15 @@ func TestCreateRunConfigFromMCPServer_SetsMCPServerGeneration(t *testing.T) {
 
 	assert.Equal(t, int64(7), rc.MCPServerGeneration,
 		"MCPServerGeneration should match MCPServer .metadata.generation")
+}
+
+// hasMiddleware reports whether the RunConfig's middleware chain holds a
+// middleware of mwType.
+func hasMiddleware(config *runner.RunConfig, mwType string) bool {
+	for _, mw := range config.MiddlewareConfigs {
+		if mw.Type == mwType {
+			return true
+		}
+	}
+	return false
 }

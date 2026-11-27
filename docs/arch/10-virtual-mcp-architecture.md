@@ -618,7 +618,7 @@ Embedder obligations for the connect page are in
 
 ## Served MCP Capabilities
 
-Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities. Every served capability flows through the domain **core** (`pkg/vmcp/core`), so the same admission decision that filters `tools/list` also gates reads, gets, and completions.
+Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities. Every served capability flows through the domain **core** (`pkg/vmcp/core`), so the admission decision that filters `tools/list` (read visibility) and gates `tools/call` (call check) also gates reads, gets, and completions.
 
 | Capability | Served? | Notes |
 |------------|---------|-------|
@@ -702,14 +702,18 @@ reserved band (#6101).
 
 "Does not gate Modern" is not "costs the same", though. The limiter wraps only
 the `CallTool` seam, so the list verbs and `server/discover` are unmetered on
-both eras — but Legacy aggregates once per session registration, while Modern
-re-runs the full backend fan-out on every request with no cache, by design
-(`core_vmcp.go`'s `aggregatedView`). A Modern client can therefore loop
-unmetered, uncached fan-outs — reachable unauthenticated when incoming auth is
-anonymous. Rate-limiting the list/discover verbs, or a short-TTL per-identity
-capability cache, is deferred until profiling shows the per-request fan-out
-cost matters (#5761 — the same deferral recorded in `dispatchModernDiscover`'s
-doc comment).
+both eras. Legacy aggregates once per session registration. Modern re-derives
+the view on every request, but `server.New` wraps the aggregator in
+`NewCachingAggregator` with a 30 second TTL, so discovery is cached per
+identity for 30 seconds and concurrent misses for the same key share one
+backend fan-out. Requests with no identity share one anonymous view. A request
+whose identity is present but cannot be bound to a session (for example, one
+with no issuer claim) is not rejected: it is swept fresh on every call and
+never cached or shared. The cache key is made from the session binding, the
+platform user ID, the forwarded headers and the backend IDs. A Modern client
+can still loop unmetered fan-outs once the TTL expires or when its identity
+cannot be bound, and the list and discover verbs remain outside the rate
+limiter (#5761).
 
 Wire behavior when the gate is closed:
 
@@ -881,12 +885,15 @@ Each worker's resync body (`runListChangedResync`), off the receive loop:
    per-identity capability cache (`aggregator.CacheInvalidator`), covering all
    capability kinds together (tools, resources, resource templates, prompts
    share one cached `AggregatedCapabilities` per identity). This is coarse (not
-   scoped to the one backend that changed): the LRU key is a hash of identity +
-   forwarded headers + backend-set, so per-backend invalidation would need a
-   reverse index that is disproportionate here. The coalescing above already
+   scoped to the one backend that changed): the LRU key combines the caller's
+   identity, forwarded headers and backend IDs (see the rate limiter
+   discussion above), so per-backend invalidation would need a reverse index
+   that is disproportionate here. The coalescing above already
    bounds the purge to at most once per resync burst per kind, and a purge
    only forces the next call per identity to re-sweep — an accepted de-opt /
-   follow-up. An aggregator that does not implement `CacheInvalidator`
+   follow-up. An identity that cannot be bound has no cache entry: it
+   bypasses the cache and is swept fresh on every call, so the purge does not
+   affect it. An aggregator that does not implement `CacheInvalidator`
    WARN-logs instead of silently no-opping.
 4. Re-derives and **replaces** — not merges — the session's advertised set for
    the notification's kind, from the (now cold) cache: `KindTools` re-derives
@@ -1260,10 +1267,11 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 | 11 | Telemetry | Optional | OpenTelemetry instrumentation |
 | 12 | Loopback Host guard | Always | DNS-rebinding protection: on a connection that arrived over loopback, rejects a non-loopback `Host` header with 403 before classification, so Legacy and Modern requests are held to the same rule. Mirrors go-sdk's localhost protection, which covers only Legacy requests that reach `StreamableHTTPHandler`; Modern requests (`dispatchModern`) and cross-replica Legacy sessions rehydrated by toolhive-core's `mcpcompat` did not pass through it, and the guard covers all of them. mcpcompat also runs session cleanup for a Legacy DELETE around go-sdk's Host check, so without the guard a DELETE with a forged `Host` and a known session ID could end that session even though go-sdk answered 403; the guard runs first and stops this. Only the MCP route is guarded: `/health`, `/ping`, `/readyz`, `/status`, `/api/backends/health`, `/metrics`, `/.well-known/` and the embedded auth server routes are deliberately left unguarded because they are unauthenticated by design and expose only operational metadata. Connections on a non-loopback local address (e.g. a pod IP) are unaffected; a loopback hop that preserves a non-loopback `Host` must rewrite it. See `pkg/vmcp/server/loopback_host_guard.go`. |
 | 13 | Call binding | Always | Before Modern/Legacy classification, so it covers both. Refuses a request whose access token carries an `authorization_details` entry of type `https://toolhive.dev/mcp_tool_call` unless the request is the one `tools/call` the entry names, once, the one list call a list-call entry names (answered with only that backend's items), or a message the token may send without starting a call. Runs whether or not Authorization is configured and can only refuse or narrow. See "Call-bound access tokens" below. |
-| 14 | Session ownership | Always | After Modern/Legacy classification (Legacy only), rejects any request carrying the `Mcp-Session-Id` of a session the authenticated caller does not own with a non-disclosing plain-text 404, before the Streamable HTTP transport routes it. See "Session Ownership" below. |
-| 15 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport after the session-ownership check (row 14) and before the transport's session-existence validation and SDK dispatch, so a foreign or unknown session gets 404 before any Cedar 403 (only the loopback Host guard, row 12, and a call-binding refusal, row 13, come first). Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
+| 14 | Instructions | Optional | Sets the `instructions` of successful `initialize` and `server/discover` results to the configured value, combined with any instructions vMCP produces by the configured mode (`config.instructions`, or `spec.instructions` on a VirtualMCPServer). Wraps classification, so it covers the SDK's results and the Modern dispatcher's `server/discover` alike. See [Instructions Middleware](../middleware.md#13-instructions-middleware). |
+| 15 | Session ownership | Always | After Modern/Legacy classification (Legacy only), rejects any request carrying the `Mcp-Session-Id` of a session the authenticated caller does not own with a non-disclosing plain-text 404, before the Streamable HTTP transport routes it. See "Session Ownership" below. |
+| 16 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport after the session-ownership check (row 15) and before the transport's session-existence validation and SDK dispatch, so a foreign or unknown session gets 404 before any Cedar 403 (only the loopback Host guard, row 12, and a call-binding refusal, row 13, come first). Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
 
-> On the New/Serve path, authorization is enforced by the **core admission seam**, not by rows 6–8 as standalone HTTP middleware; row 15 is the transport-level projection of that decision. See [Authorization Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate).
+> On the New/Serve path, authorization is enforced by the **core admission seam**, not by rows 6–8 as standalone HTTP middleware; row 16 is the transport-level projection of that decision. See [Authorization Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate).
 
 Every MCP POST passes shared envelope validation before Modern dispatch or the
 Legacy SDK, with or without authentication. Malformed, ambiguous, mixed
@@ -1324,6 +1332,10 @@ reach it.
   unknown session) makes them start a new session.
   A store failure gets 503. A rejected request never terminates or otherwise
   disturbs the owner's session. Rejections of foreign callers are logged at WARN.
+- The owner's DELETE first cancels the session's Legacy requests still running
+  on the replica that receives it, because the transport closes a session by
+  waiting for its open requests. Requests running on other replicas are not
+  cancelled.
 - Because the check precedes the pre-dispatch authorization gate, a Cedar-denied
   call on a foreign or unknown session ID gets 404 rather than 403. The loopback
   Host guard and call binding run before this check, so their 403 (or call
@@ -1476,7 +1488,9 @@ policies are configured:
   name to the inner core. A backend that advertised a tool named `execute_tool_script`
   would be silently shadowed by the virtual tool and skip its own Cedar admission, so the
   decorator fails **loud** (`ErrReservedToolName`) on that collision — `ListTools`,
-  `LookupTool`, and the `CallTool` script-binding path all refuse to serve rather than mask it.
+  `LookupTool`, and the `CallTool` script-binding path all refuse to serve rather than mask it,
+  and `LookupBackendCapabilities` refuses that backend's `tools/list`, while its other lists
+  are still answered.
 
 The `Call*` methods keep their internal admission checks as defense-in-depth for other
 embedders and misconfigured gates.
@@ -1557,16 +1571,32 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   `server` must be a backend in the caller's view: one the caller is admitted to at
   least one tool, resource, resource template or prompt of. A server that is unknown,
   hidden by authorization, offers the caller nothing, or contributes nothing to the
-  view (its discovery fails) gets the same 403 `server_not_found`, as an unknown tool
-  gets `tool_not_found`: AS-1 signs any `server` name, so the answer must not tell
-  whether a backend the caller cannot see exists. A backend in the caller's view that
+  view (its discovery fails while another backend's succeeds) gets the same 403
+  `server_not_found`, as an unknown tool gets `tool_not_found`: AS-1 signs any
+  `server` name, so the answer must not tell whether a backend the caller cannot see
+  exists. A backend in the caller's view that
   the core's lists leave out for its health status (unhealthy, unknown or
   unauthenticated, even while it still answers) gets 503; a degraded one stays in the
-  lists and is listed. The check and the items come from separate aggregations, so a
-  backend that drops out of the view between the two is answered with an empty list
-  and the token is used. A list call that carries a cursor is refused with
-  `invalid_params`. A `tools/call` or another list method is refused with
-  `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
+  lists and is listed. A backend in the caller's view whose list of the method's
+  items cannot be listed now also gets 503: the list failed transiently (a Modern
+  backend's optional list, which the lists report as empty), or code mode refuses the
+  backend's `tools/list` because it advertises `execute_tool_script`. One the caller
+  could see only through a list that failed is not known to be in view, so it gets
+  403. While no backend in a non-empty group answers discovery, a list call that
+  reaches the check on a capability-cache miss gets 503, whatever its `server`, so the
+  outage tells nothing about which backends exist; an empty group has no backend to
+  find, so every `server` gets 403. The check and the items come from one aggregation
+  when the core offers `core.BackendCapabilitiesLookup`, so they cannot disagree. That
+  interface is separate from `core.VMCP`, so a decorator that only embeds `core.VMCP`
+  does not promote it; the list call then falls back to the decorator's own
+  `LookupBackend` and `List*` answers, from separate aggregations. A list call that
+  is answered runs admission over its backend's items only. Every 403
+  `server_not_found` and every health 503 runs the same aggregations and, in each,
+  admission over every item once, as the lists do (the items of the other backends
+  are checked and the results discarded), so its time does not tell an unknown
+  `server` from a hidden backend with many items. A list call that
+  carries a cursor is refused with `invalid_params`. A `tools/call` or another list
+  method is refused with `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
   a tool-call entry: it uses up the token. It is recorded only once its answer is
   ready, and ended at once: of concurrent duplicates, each runs the handler, but only
   the first to record is answered, and the others get `token_reused`.

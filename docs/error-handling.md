@@ -141,9 +141,10 @@ capabilities, discovery itself fails instead of producing a tool list.
 
 After the user connects the provider, Modern requests can still see the old
 view until the capability cache TTL expires (30 seconds by default). On Legacy,
-start a new session to pick up tools missing from the session's advertised
-list; if the shared capability view is still cached, wait for it to expire
-before starting that session.
+the reliable way to pick up newly visible tools is a fresh session started
+after the cache expires. A `list_changed` resync triggered by a notification
+from an eligible backend can also update a live session, but connecting a
+provider does not trigger one.
 
 In code mode, a script's tool call (`execute_tool_script`) does not go through
 these renderers. The script receives the error text, which is the same text

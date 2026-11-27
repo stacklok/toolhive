@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
+	"slices"
 	"sync/atomic"
 
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -21,10 +23,28 @@ type Option func(*upstreamCredentials)
 // WithUserCredentialReader configures the reader used to look up delegated
 // credentials by platform user ID and provider. It does not change token
 // resolution on non-delegated routes.
+// A nil or typed-nil reader is treated as no reader.
 func WithUserCredentialReader(reader upstreamtoken.UserCredentialReader) Option {
 	return func(c *upstreamCredentials) {
-		c.reader = reader
+		if !isNilReader(reader) {
+			c.reader = reader
+		}
 	}
+}
+
+// isNilReader reports whether reader is nil or wraps a nil value, which would
+// panic on the first delegated read instead of failing closed.
+func isNilReader(reader upstreamtoken.UserCredentialReader) bool {
+	if reader == nil {
+		return true
+	}
+	v := reflect.ValueOf(reader)
+	if slices.Contains([]reflect.Kind{
+		reflect.Pointer, reflect.Map, reflect.Func, reflect.Interface, reflect.Slice, reflect.Chan,
+	}, v.Kind()) {
+		return v.IsNil()
+	}
+	return false
 }
 
 type upstreamCredentials struct {

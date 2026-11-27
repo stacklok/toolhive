@@ -168,28 +168,43 @@ func TestDelegatedCredentialNotDiscoveredBeforeConnection(t *testing.T) {
 			handler := newCredentialVMCP(t, incoming, strategy, nil, backendA.backend, backendB.backend)
 			rpc := credentialRPC{handler: handler, token: signCredentialToken(t, as, credentialIssuer, delegatedClaims()), version: version}
 			rpc.warm(t, backendB.tool)
-			assertCredentialToolHidden(t, rpc, backendA.tool)
+			assertCredentialToolHidden(t, rpc, backendA.tool, backendB.tool)
 
 			// Connecting does not update the existing capability view immediately.
 			seedCredential(t, stor, credentialUser, credentialProvider, credentialToken)
-			assertCredentialToolHidden(t, rpc, backendA.tool)
+			assertCredentialToolHidden(t, rpc, backendA.tool, backendB.tool)
 			assert.Empty(t, backendA.headers())
 		})
 	}
 }
 
-func assertCredentialToolHidden(t *testing.T, rpc credentialRPC, tool string) {
+func assertCredentialToolHidden(t *testing.T, rpc credentialRPC, hidden, present string) {
 	t.Helper()
 	list := rpc.post(t, "tools/list", "", nil)
 	require.Equal(t, http.StatusOK, list.Code, list.Body.String())
-	assert.NotContains(t, list.Body.String(), fmt.Sprintf(`"name":%q`, tool))
+	var envelope struct {
+		Result *struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(list.Body.Bytes(), &envelope), list.Body.String())
+	require.Empty(t, envelope.Error, list.Body.String())
+	require.NotNil(t, envelope.Result, list.Body.String())
+	names := make([]string, 0, len(envelope.Result.Tools))
+	for _, tool := range envelope.Result.Tools {
+		names = append(names, tool.Name)
+	}
+	assert.NotContains(t, names, hidden)
+	assert.Contains(t, names, present)
 
 	message := "unknown tool"
 	if rpc.version == mcpparser.MCPVersionLegacy {
-		message = fmt.Sprintf("tool %q not found", tool)
+		message = fmt.Sprintf("tool %q not found", hidden)
 	}
-	response := rpc.call(t, tool, nil)
-	assert.JSONEq(t, fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":%q}}`, message), response.Body.String())
+	assertCredentialRPCError(t, rpc.call(t, hidden, nil), -32602, message)
 }
 
 func TestDelegatedCredentialWithoutReader(t *testing.T) {
@@ -269,7 +284,7 @@ func TestDelegatedCredentialRouteNegatives(t *testing.T) {
 			response := rpc.post(t, "tools/list", "", nil)
 			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 			// The only backend cannot be enumerated without an upstream token.
-			assert.JSONEq(t, `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"internal error"}}`, response.Body.String())
+			assertCredentialRPCError(t, response, -32603, "internal error")
 			assert.Empty(t, backend.headers())
 		})
 	}
@@ -418,6 +433,9 @@ func newCredentialVMCP(t *testing.T, incoming func(http.Handler) http.Handler, s
 	return handler
 }
 
+// credentialRequestID gives every request a fresh ID; MCP forbids reusing one within a session.
+var credentialRequestID atomic.Int64
+
 type credentialRPC struct {
 	handler http.Handler
 	token   string
@@ -447,7 +465,11 @@ func (c *credentialRPC) warm(t *testing.T, tools ...string) {
 
 func (c credentialRPC) call(t *testing.T, tool string, args map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
-	return c.post(t, "tools/call", tool, map[string]any{"name": tool, "arguments": args})
+	params := map[string]any{"name": tool}
+	if args != nil {
+		params["arguments"] = args
+	}
+	return c.post(t, "tools/call", tool, params)
 }
 
 func (c credentialRPC) requireSuccess(t *testing.T, tool string, args map[string]any) {
@@ -470,7 +492,7 @@ func (c credentialRPC) post(t *testing.T, method, name string, params map[string
 	}
 	envelope := map[string]any{"jsonrpc": "2.0", "method": method, "params": params}
 	if method != "notifications/initialized" {
-		envelope["id"] = 1
+		envelope["id"] = credentialRequestID.Add(1)
 	}
 	payload, err := json.Marshal(envelope)
 	require.NoError(t, err)
@@ -507,5 +529,21 @@ func toolCredentialResult(t *testing.T, response *httptest.ResponseRecorder) *mc
 func assertCredentialUnavailable(t *testing.T, response *httptest.ResponseRecorder) {
 	t.Helper()
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
-	assert.JSONEq(t, `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"upstream credential unavailable"}}`, response.Body.String())
+	assertCredentialRPCError(t, response, -32603, "upstream credential unavailable")
+}
+
+func assertCredentialRPCError(t *testing.T, response *httptest.ResponseRecorder, code int, message string) {
+	t.Helper()
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope), response.Body.String())
+	require.NotNil(t, envelope.Error, response.Body.String())
+	assert.Empty(t, envelope.Result, response.Body.String())
+	assert.Equal(t, code, envelope.Error.Code)
+	assert.Equal(t, message, envelope.Error.Message)
 }

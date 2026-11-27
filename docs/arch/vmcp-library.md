@@ -136,8 +136,18 @@ If you build your own outgoing auth registry with
 `upstream_inject` strategy with an `upstreamtoken.UserCredentialReader`:
 
 ```go
+registry := vmcpauth.NewDefaultOutgoingAuthRegistry()
 strategy := strategies.NewUpstreamInjectStrategy(strategies.WithUserCredentialReader(reader))
+if err := registry.RegisterStrategy(authtypes.StrategyTypeUpstreamInject, strategy); err != nil {
+	return fmt.Errorf("register upstream_inject strategy: %w", err)
+}
 ```
+
+`factory.NewOutgoingAuthRegistry`, and therefore the stock `thv vmcp serve`,
+does not pass a reader yet, so delegated requests to `upstream_inject` backends
+fail closed there. You cannot patch the factory's registry afterwards, because
+`RegisterStrategy` rejects a name that is already registered. Build the registry
+with `NewDefaultOutgoingAuthRegistry` instead.
 
 On `AdmissionRouteDelegated`, a nil reader fails closed with `upstream
 credential unavailable`; the strategy does not fall back to credentials on

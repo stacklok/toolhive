@@ -238,6 +238,7 @@ func TestUpstreamInjectStrategy_AuthenticateDelegated(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
 		useReader   bool
+		typedNil    bool
 		readerErr   error
 		healthCheck bool
 		wantHeader  string
@@ -245,6 +246,7 @@ func TestUpstreamInjectStrategy_AuthenticateDelegated(t *testing.T) {
 	}{
 		{name: "delegated credential wins over identity token", useReader: true, wantHeader: "Bearer " + accessToken},
 		{name: "no reader fails closed", wantErr: authtypes.ErrDelegatedCredentialUnavailable},
+		{name: "typed-nil reader fails closed", typedNil: true, wantErr: authtypes.ErrDelegatedCredentialUnavailable},
 		{
 			name: "needs authorization", useReader: true, readerErr: upstreamtoken.ErrNeedsAuthorization,
 			wantErr: upstreamtoken.ErrNeedsAuthorization,
@@ -263,6 +265,9 @@ func TestUpstreamInjectStrategy_AuthenticateDelegated(t *testing.T) {
 				ctx = healthcontext.WithHealthCheckMarker(ctx)
 			}
 			var opts []Option
+			if tt.typedNil {
+				opts = append(opts, WithUserCredentialReader((*upstreamtoken.InProcessService)(nil)))
+			}
 			if tt.useReader {
 				reader := delegatedReaderFunc(func(_ context.Context, gotUserID, gotProvider string) (*upstreamtoken.UpstreamCredential, error) {
 					assert.Equal(t, userID, gotUserID)

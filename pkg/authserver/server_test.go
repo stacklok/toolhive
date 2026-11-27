@@ -1782,3 +1782,43 @@ func TestUpstreamIdentityBinding_OAuth2HostOnly(t *testing.T) {
 		assert.Empty(t, claim)
 	})
 }
+
+func TestOAuth2BindingIssuer(t *testing.T) {
+	t.Parallel()
+
+	const mode = "userinfo"
+	tests := []struct {
+		name     string
+		endpoint string
+		sameAs   string
+		differs  string
+		empty    bool
+	}{
+		{name: "https default port", endpoint: "https://api.example.com:443/user", sameAs: "https://api.example.com/user"},
+		{name: "http default port", endpoint: "http://api.example.com:80/user", sameAs: "http://api.example.com/user"},
+		{name: "non-default port", endpoint: "https://api.example.com:8443/user", differs: "https://api.example.com/user"},
+		{name: "http default port on https", endpoint: "https://api.example.com:80/user", differs: "https://api.example.com/user"},
+		{name: "host case", endpoint: "https://API.Example.COM/user", sameAs: "https://api.example.com/user"},
+		{name: "ipv6 default port", endpoint: "https://[2001:db8::1]:443/user", sameAs: "https://[2001:db8::1]/user"},
+		{name: "ipv6 non-default port", endpoint: "https://[2001:db8::1]:8443/user", differs: "https://[2001:db8::1]/user"},
+		{name: "different host", endpoint: "https://api.other.example.com/user", differs: "https://api.example.com/user"},
+		{name: "unparseable", endpoint: "://bad", empty: true},
+		{name: "no host", endpoint: "/user", empty: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := oauth2BindingIssuer(mode, tt.endpoint)
+			switch {
+			case tt.empty:
+				assert.Empty(t, got)
+			case tt.sameAs != "":
+				assert.NotEmpty(t, got)
+				assert.Equal(t, oauth2BindingIssuer(mode, tt.sameAs), got)
+			default:
+				assert.NotEmpty(t, got)
+				assert.NotEqual(t, oauth2BindingIssuer(mode, tt.differs), got)
+			}
+		})
+	}
+}

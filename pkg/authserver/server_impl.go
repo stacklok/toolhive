@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -141,16 +142,19 @@ func buildUpstreams(ctx context.Context, cfg Config) ([]handlers.NamedUpstream, 
 //     matching the validated ID token. Config.signInUpstream and
 //     the run-config validation derive the same pair through oidcIdentityBinding.
 //   - Plain OAuth 2.0: "oauth2:<mode>:sha256:<hex>", where mode is token,
-//     userinfo or synthetic and the hash covers the lower-cased host (and port)
-//     of the endpoint that defines the subject (the token endpoint for token
-//     and synthetic, the userinfo endpoint for userinfo). The subject claim is
-//     the extraction rule: "token:<path>", "userinfo:<json-fields>" (field
-//     order matters, the first non-empty field wins) or "synthetic".
+//     userinfo or synthetic and the hash covers the lower-cased hostname of
+//     the endpoint that defines the subject (the token endpoint for token
+//     and synthetic, the userinfo endpoint for userinfo), plus the port only
+//     when it is not the scheme's default (443 for https, 80 for http). The
+//     subject claim is the extraction rule: "token:<path>",
+//     "userinfo:<json-fields>" (field order matters, the first non-empty field
+//     wins) or "synthetic".
 //
-// Only the host is hashed so that a change to the path, query, trailing slash
-// or a same-host endpoint move does not give users new accounts, while moving
-// to another host does. Hashing keeps endpoint addresses out of storage and
-// logs. The mode prefix keeps plain OAuth 2.0 rows disjoint from OIDC issuers
+// Only the host is hashed so that a change to the path, query, trailing slash,
+// host case, a written-out default port or a same-host endpoint move does not
+// give users new accounts, while moving to another host or a non-default port
+// does. Hashing keeps endpoint addresses out of storage and logs. The mode
+// prefix keeps plain OAuth 2.0 rows disjoint from OIDC issuers
 // and detects mode changes on the same upstream name. Synthesis mode sets
 // Identity.Synthetic=true and bypasses UserResolver, so it never writes
 // provider-identity rows; populating a distinct pair keeps the mapping total
@@ -202,15 +206,24 @@ func oidcIdentityBinding(issuer, subjectClaim string) (string, string) {
 	return issuer, cmp.Or(subjectClaim, upstream.DefaultSubjectClaim)
 }
 
+// defaultPorts maps a URL scheme to its default port, which the OAuth 2.0
+// binding ignores.
+var defaultPorts = map[string]string{"https": "443", "http": "80"}
+
 // oauth2BindingIssuer builds the stamped issuer for a plain OAuth 2.0 upstream
-// from the mode and the host of the endpoint that defines the subject. It
-// returns "" when the endpoint has no parseable host.
+// from the mode and the host of the endpoint that defines the subject. The
+// hash covers the lower-cased hostname, plus the port only when it is not the
+// scheme's default. It returns "" when the endpoint has no parseable host.
 func oauth2BindingIssuer(mode, endpoint string) string {
 	u, err := url.Parse(endpoint)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Hostname() == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(strings.ToLower(u.Host)))
+	host := strings.ToLower(u.Hostname())
+	if port := u.Port(); port != "" && port != defaultPorts[strings.ToLower(u.Scheme)] {
+		host = net.JoinHostPort(host, port)
+	}
+	sum := sha256.Sum256([]byte(host))
 	return "oauth2:" + mode + ":sha256:" + hex.EncodeToString(sum[:])
 }
 

@@ -814,3 +814,46 @@ func TestWithIdentityBinding_PanicsOnEmptyArg(t *testing.T) {
 	assert.Panics(t, func() { WithIdentityBinding("default", "", "sub") })
 	assert.Panics(t, func() { WithIdentityBinding("default", "https://idp.example.com", "") })
 }
+
+//nolint:paralleltest // mutates the process-global slog default (slog.SetDefault)
+func TestUserResolver_UnstampedWithoutSwapperLogsInfoOnce(t *testing.T) {
+	const (
+		provider = "default"
+		issuer   = "https://idp.example.com"
+		claim    = "sub"
+	)
+	base := storage.NewMemoryStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	ctx := context.Background()
+	for _, subject := range []string{"sub-1", "sub-2"} {
+		_, err := NewUserResolver(base).ResolveUser(ctx, provider, subject)
+		require.NoError(t, err)
+	}
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	r := NewUserResolver(nonSwappingUserStorage{UserStorage: base}, WithIdentityBinding(provider, issuer, claim))
+	infoLines := func() int {
+		n := 0
+		for _, line := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(line, "level=INFO") && strings.Contains(line, "ProviderIdentitySwapper") {
+				n++
+			}
+		}
+		return n
+	}
+
+	_, err := r.ResolveUser(ctx, provider, "sub-1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, infoLines())
+	assert.Contains(t, logs.String(), "provider_id=default")
+	assert.NotContains(t, logs.String(), "sub-1")
+
+	_, err = r.ResolveUser(ctx, provider, "sub-2")
+	require.NoError(t, err)
+	assert.Equal(t, 1, infoLines(), "later unstamped sign-ins stay at DEBUG")
+	assert.Contains(t, logs.String(), "level=DEBUG")
+}

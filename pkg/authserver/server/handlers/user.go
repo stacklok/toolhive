@@ -52,6 +52,7 @@ type UserResolver struct {
 	// Immutable after construction.
 	bindings         map[string]identityBinding
 	unstampedLogOnce sync.Once
+	noSwapperLogOnce sync.Once
 }
 
 // ResolverOption configures a UserResolver.
@@ -317,16 +318,29 @@ func (r *UserResolver) adoptLinkedUser(
 // It reports lost when the stamp lost to a concurrent write (the row changed or
 // disappeared), in which case the caller reads the row again. Without a
 // swapper, and after any other failure, the row stays unstamped and the sign-in
-// continues: stamping is best effort.
+// continues: stamping is best effort. Without a swapper, the first such row per
+// resolver is logged at INFO and later ones at DEBUG.
 func (r *UserResolver) stampUnstampedIdentity(
 	ctx context.Context,
 	existing *storage.ProviderIdentity,
 	binding identityBinding,
 ) (lost bool) {
 	if r.swapper == nil {
-		slog.Debug("matched unstamped provider identity on storage without swapper; leaving it unstamped",
-			"provider_id", existing.ProviderID,
-		)
+		logged := false
+		r.noSwapperLogOnce.Do(func() {
+			logged = true
+			slog.Info(
+				"matched an unstamped provider identity on storage without the ProviderIdentitySwapper "+
+					"capability; rows on this storage are not stamped. Storage that serves identity rows itself "+
+					"needs no change; storage that wraps real rows should forward the capability",
+				"provider_id", existing.ProviderID,
+			)
+		})
+		if !logged {
+			slog.Debug("matched unstamped provider identity on storage without swapper; leaving it unstamped",
+				"provider_id", existing.ProviderID,
+			)
+		}
 		return false
 	}
 

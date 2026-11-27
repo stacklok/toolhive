@@ -134,6 +134,12 @@ not found. On a Modern backend, when the read fails on an optional list
 (resources, resource templates, or prompts) after the tool list succeeded,
 that list is empty and vMCP logs a warning that names the credential failure.
 
+In code mode, a script's tool call (`execute_tool_script`) does not go through
+these renderers. The script receives the error text, which is the same text
+named above and carries no backend or transport detail, and the outer call
+answers with an ordinary tool result. A URL elicitation answer cannot reach the
+client through a script.
+
 These rules do not change how a missing token on the non-delegated path is
 classified, and do not enable delegated credential reads by themselves.
 

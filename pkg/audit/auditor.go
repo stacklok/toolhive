@@ -20,7 +20,6 @@ import (
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -217,10 +216,6 @@ func ensureAuditContext(r *http.Request) *http.Request {
 	}
 	if _, ok := mcp.AuthzDenialMarkerFromContext(ctx); !ok {
 		ctx = mcp.WithAuthzDenialMarker(ctx, &mcp.AuthzDenialMarker{})
-		changed = true
-	}
-	if _, ok := authorizers.DiscoveryMarkerFromContext(ctx); !ok {
-		ctx = authorizers.WithDiscoveryMarker(ctx, &authorizers.DiscoveryMarker{})
 		changed = true
 	}
 	if !changed {
@@ -731,14 +726,6 @@ func (a *Auditor) addMetadata(event *AuditEvent, r *http.Request, duration time.
 	}
 
 	stampTraceContext(r.Context(), event)
-
-	// A tools/list entry granted only by tool:call is discovery, not invocation.
-	// Recording it lets the audit trail tell the two apart. The count is taken during authz,
-	// before the --tools allowlist runs, so it can be higher than the tools the client receives.
-	// On vMCP the same key can also show up on initialize, server/discover and ListBackends events.
-	if marker, ok := authorizers.DiscoveryMarkerFromContext(r.Context()); ok && marker.FallbackCount > 0 {
-		event.Metadata.Extra[MetadataExtraKeyDiscoveryFallbackCount] = marker.FallbackCount
-	}
 }
 
 // stampTraceContext records the trace and span IDs carried by ctx on the event,

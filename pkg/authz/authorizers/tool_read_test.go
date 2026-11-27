@@ -47,67 +47,60 @@ func TestToolCallImpliesRead(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		allowed    []authorizers.MCPOperation
-		feature    authorizers.MCPFeature
-		operation  authorizers.MCPOperation
-		want       bool
-		wantCalls  []authorizers.MCPOperation
-		wantMarked bool
+		name      string
+		allowed   []authorizers.MCPOperation
+		feature   authorizers.MCPFeature
+		operation authorizers.MCPOperation
+		want      bool
+		wantCalls []authorizers.MCPOperation
 	}{
 		{
-			name:       "tool:read allowed directly is granted without a call check",
-			allowed:    []authorizers.MCPOperation{authorizers.MCPOperationRead},
-			feature:    authorizers.MCPFeatureTool,
-			operation:  authorizers.MCPOperationRead,
-			want:       true,
-			wantCalls:  []authorizers.MCPOperation{authorizers.MCPOperationRead},
-			wantMarked: false,
+			name:      "tool:read allowed directly is granted without a call check",
+			allowed:   []authorizers.MCPOperation{authorizers.MCPOperationRead},
+			feature:   authorizers.MCPFeatureTool,
+			operation: authorizers.MCPOperationRead,
+			want:      true,
+			wantCalls: []authorizers.MCPOperation{authorizers.MCPOperationRead},
 		},
 		{
-			name:       "tool:call alone implies tool:read",
-			allowed:    []authorizers.MCPOperation{authorizers.MCPOperationCall},
-			feature:    authorizers.MCPFeatureTool,
-			operation:  authorizers.MCPOperationRead,
-			want:       true,
-			wantCalls:  []authorizers.MCPOperation{authorizers.MCPOperationRead, authorizers.MCPOperationCall},
-			wantMarked: true,
+			name:      "tool:call alone implies tool:read",
+			allowed:   []authorizers.MCPOperation{authorizers.MCPOperationCall},
+			feature:   authorizers.MCPFeatureTool,
+			operation: authorizers.MCPOperationRead,
+			want:      true,
+			wantCalls: []authorizers.MCPOperation{authorizers.MCPOperationRead, authorizers.MCPOperationCall},
 		},
 		{
-			name:       "neither tool:read nor tool:call denies",
-			allowed:    nil,
-			feature:    authorizers.MCPFeatureTool,
-			operation:  authorizers.MCPOperationRead,
-			want:       false,
-			wantCalls:  []authorizers.MCPOperation{authorizers.MCPOperationRead, authorizers.MCPOperationCall},
-			wantMarked: false,
+			name:      "neither tool:read nor tool:call denies",
+			allowed:   nil,
+			feature:   authorizers.MCPFeatureTool,
+			operation: authorizers.MCPOperationRead,
+			want:      false,
+			wantCalls: []authorizers.MCPOperation{authorizers.MCPOperationRead, authorizers.MCPOperationCall},
 		},
 		{
-			name:       "tool:read alone never implies tool:call",
-			allowed:    []authorizers.MCPOperation{authorizers.MCPOperationRead},
-			feature:    authorizers.MCPFeatureTool,
-			operation:  authorizers.MCPOperationCall,
-			want:       false,
-			wantCalls:  []authorizers.MCPOperation{authorizers.MCPOperationCall},
-			wantMarked: false,
+			name:      "tool:read alone never implies tool:call",
+			allowed:   []authorizers.MCPOperation{authorizers.MCPOperationRead},
+			feature:   authorizers.MCPFeatureTool,
+			operation: authorizers.MCPOperationCall,
+			want:      false,
+			wantCalls: []authorizers.MCPOperation{authorizers.MCPOperationCall},
 		},
 		{
-			name:       "tool:call passes through unchanged",
-			allowed:    []authorizers.MCPOperation{authorizers.MCPOperationCall},
-			feature:    authorizers.MCPFeatureTool,
-			operation:  authorizers.MCPOperationCall,
-			want:       true,
-			wantCalls:  []authorizers.MCPOperation{authorizers.MCPOperationCall},
-			wantMarked: false,
+			name:      "tool:call passes through unchanged",
+			allowed:   []authorizers.MCPOperation{authorizers.MCPOperationCall},
+			feature:   authorizers.MCPFeatureTool,
+			operation: authorizers.MCPOperationCall,
+			want:      true,
+			wantCalls: []authorizers.MCPOperation{authorizers.MCPOperationCall},
 		},
 		{
-			name:       "non-tool read is not rewritten to a tool:call check",
-			allowed:    []authorizers.MCPOperation{authorizers.MCPOperationCall},
-			feature:    authorizers.MCPFeatureResource,
-			operation:  authorizers.MCPOperationRead,
-			want:       false,
-			wantCalls:  []authorizers.MCPOperation{authorizers.MCPOperationRead},
-			wantMarked: false,
+			name:      "non-tool read is not rewritten to a tool:call check",
+			allowed:   []authorizers.MCPOperation{authorizers.MCPOperationCall},
+			feature:   authorizers.MCPFeatureResource,
+			operation: authorizers.MCPOperationRead,
+			want:      false,
+			wantCalls: []authorizers.MCPOperation{authorizers.MCPOperationRead},
 		},
 	}
 
@@ -118,14 +111,12 @@ func TestToolCallImpliesRead(t *testing.T) {
 			inner := newFakeOps(t, tc.allowed, nil)
 
 			a := authorizers.WithToolCallImpliesRead(inner)
-			marker := &authorizers.DiscoveryMarker{}
-			ctx := authorizers.WithDiscoveryMarker(context.Background(), marker)
+			ctx := context.Background()
 			got, err := a.AuthorizeWithJWTClaims(ctx, tc.feature, tc.operation, "weather", nil)
 
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got)
 			assert.Equal(t, tc.wantCalls, inner.calls)
-			assert.Equal(t, tc.wantMarked, marker.FallbackCount > 0)
 		})
 	}
 }
@@ -170,8 +161,7 @@ func TestToolCallImpliesRead_ErrorPaths(t *testing.T) {
 			t.Parallel()
 
 			inner := newFakeOps(t, tc.allowed, tc.errs)
-			marker := &authorizers.DiscoveryMarker{}
-			ctx := authorizers.WithDiscoveryMarker(context.Background(), marker)
+			ctx := context.Background()
 
 			ok, err := authorizers.WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
 				ctx, authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
@@ -179,7 +169,6 @@ func TestToolCallImpliesRead_ErrorPaths(t *testing.T) {
 			require.ErrorIs(t, err, tc.wantErr)
 			assert.False(t, ok)
 			assert.Equal(t, tc.wantCalls, inner.calls)
-			assert.Zero(t, marker.FallbackCount)
 		})
 	}
 }
@@ -200,8 +189,7 @@ func TestToolCallImpliesRead_CallOnlyAuthorizerNeverSeesToolRead(t *testing.T) {
 		fakeOps:     newFakeOps(t, []authorizers.MCPOperation{authorizers.MCPOperationCall}, nil),
 		answersRead: false,
 	}
-	marker := &authorizers.DiscoveryMarker{}
-	ctx := authorizers.WithDiscoveryMarker(context.Background(), marker)
+	ctx := context.Background()
 
 	ok, err := authorizers.WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
 		ctx, authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
@@ -210,7 +198,6 @@ func TestToolCallImpliesRead_CallOnlyAuthorizerNeverSeesToolRead(t *testing.T) {
 	assert.True(t, ok, "a tool:call allow must make the tool visible")
 	assert.Equal(t, []authorizers.MCPOperation{authorizers.MCPOperationCall}, inner.calls,
 		"a call-only authorizer must be asked only tool:call, never tool:read")
-	assert.Equal(t, 1, marker.FallbackCount, "the call-only grant is counted as discovery")
 }
 
 func TestToolCallImpliesRead_ReadAnsweringAuthorizerIsAskedOnce(t *testing.T) {

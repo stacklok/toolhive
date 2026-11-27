@@ -182,53 +182,56 @@ type nativeOps struct {
 
 func (a *nativeOps) AnswersToolRead() bool { return a.answersRead }
 
-func TestToolCallImpliesRead_CallOnlyAuthorizerNeverSeesToolRead(t *testing.T) {
+func TestToolCallImpliesRead_NativeAuthorizer(t *testing.T) {
 	t.Parallel()
 
-	inner := &nativeOps{
-		fakeOps:     newFakeOps(t, []authorizers.MCPOperation{authorizers.MCPOperationCall}, nil),
-		answersRead: false,
-	}
-	ctx := context.Background()
-
-	ok, err := authorizers.WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
-		ctx, authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
-
-	require.NoError(t, err)
-	assert.True(t, ok, "a tool:call allow must make the tool visible")
-	assert.Equal(t, []authorizers.MCPOperation{authorizers.MCPOperationCall}, inner.calls,
-		"a call-only authorizer must be asked only tool:call, never tool:read")
-}
-
-func TestToolCallImpliesRead_ReadAnsweringAuthorizerIsAskedOnce(t *testing.T) {
-	t.Parallel()
-
-	inner := &nativeOps{
-		fakeOps:     newFakeOps(t, []authorizers.MCPOperation{authorizers.MCPOperationCall}, nil),
-		answersRead: true,
-	}
-
-	ok, err := authorizers.WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
-		context.Background(), authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
-
-	require.NoError(t, err)
-	assert.False(t, ok, "a read deny must not fall back to call when the authorizer answers tool:read")
-	assert.Equal(t, []authorizers.MCPOperation{authorizers.MCPOperationRead}, inner.calls,
-		"a read-answering authorizer is asked tool:read once and never tool:call")
-}
-
-func TestToolCallImpliesRead_ReadAnsweringAuthorizerReadAllow(t *testing.T) {
-	t.Parallel()
-
-	inner := &nativeOps{
-		fakeOps:     newFakeOps(t, []authorizers.MCPOperation{authorizers.MCPOperationRead}, nil),
-		answersRead: true,
+	tests := []struct {
+		name        string
+		answersRead bool
+		allowed     []authorizers.MCPOperation
+		wantOK      bool
+		wantCalls   []authorizers.MCPOperation
+	}{
+		{
+			// Call-only authorizers (the default HTTP PDP) decide visibility with one tool:call check.
+			name:        "call-only authorizer is never asked tool:read",
+			answersRead: false,
+			allowed:     []authorizers.MCPOperation{authorizers.MCPOperationCall},
+			wantOK:      true,
+			wantCalls:   []authorizers.MCPOperation{authorizers.MCPOperationCall},
+		},
+		{
+			// A read-answering authorizer (forward_tool_read) is asked tool:read once; a deny never falls back to call.
+			name:        "read-answering authorizer is asked once and a read deny does not fall back",
+			answersRead: true,
+			allowed:     []authorizers.MCPOperation{authorizers.MCPOperationCall},
+			wantOK:      false,
+			wantCalls:   []authorizers.MCPOperation{authorizers.MCPOperationRead},
+		},
+		{
+			name:        "read-answering authorizer read allow is granted without a call check",
+			answersRead: true,
+			allowed:     []authorizers.MCPOperation{authorizers.MCPOperationRead},
+			wantOK:      true,
+			wantCalls:   []authorizers.MCPOperation{authorizers.MCPOperationRead},
+		},
 	}
 
-	ok, err := authorizers.WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
-		context.Background(), authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.NoError(t, err)
-	assert.True(t, ok)
-	assert.Equal(t, []authorizers.MCPOperation{authorizers.MCPOperationRead}, inner.calls)
+			inner := &nativeOps{
+				fakeOps:     newFakeOps(t, tc.allowed, nil),
+				answersRead: tc.answersRead,
+			}
+
+			ok, err := authorizers.WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
+				context.Background(), authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.wantCalls, inner.calls)
+		})
+	}
 }

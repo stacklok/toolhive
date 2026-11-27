@@ -59,6 +59,35 @@ remain 413). Valid client responses do not populate `ParsedMCPRequest`; their
 handling remains transport-specific. Authorization middleware still refuses
 POSTs without a parsed request, including client responses.
 
+### What authorization decides on
+
+Authorization decides on the request: the caller's claims, the operation, the
+resource ID, and the arguments the client sent. It does not inspect or limit
+what the MCP server or its backend does while carrying out a permitted call.
+The only responses ToolHive filters are the list operations (see
+[List operations](#list-operations)); a `tools/call` result reaches the client
+as the backend sent it.
+
+This matters when an MCP server reaches its backend with one shared credential
+for every caller, such as a static API key or service account token. A policy
+that pins a tool to one object, for example `issue_read` on a given issue, can
+still permit a call whose result includes other objects the backend resolves
+on its own, such as linked or blocking issues the shared credential can see.
+A permitted write can also cause backend side effects outside the pinned
+object, such as cross-references the backend adds to other issues. The request
+looks the same whether or not this happens, so no request-level policy can
+tell the two apart.
+
+To keep callers apart at the data level, have each call reach the backend with
+the caller's own credential, so the backend's access controls decide what each
+caller can see and change. ToolHive supports this through token exchange and
+through the embedded authorization server's per-user upstream tokens (see
+[Understanding Auth, Upstream Swap, and Token Exchange Middleware](middleware.md#understanding-auth-upstream-swap-and-token-exchange-middleware)
+and the user guide's
+[Backend authentication](https://docs.stacklok.com/toolhive/concepts/backend-auth)). Confining
+an agent to a subset of its own user's objects needs narrower credentials from
+the backend itself, such as a token scoped to one repository.
+
 ### Virtual MCP parity
 
 Virtual MCP (`vmcp`) enforces the same Cedar policies through its core admission

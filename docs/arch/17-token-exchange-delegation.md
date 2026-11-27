@@ -3481,6 +3481,23 @@ The vMCP capability cache uses the same session binding in its key, so
 delegated and interactive identities never share a cached view, and an identity
 whose binding fails bypasses the cache.
 
+### Delegated upstream credentials in vMCP
+
+On `AdmissionRouteDelegated`, `upstream_inject` reads the backend's configured
+provider credential for `Identity.PlatformUserID`, the resolved user rather
+than the acting agent, through `upstreamtoken.UserCredentialReader`. If the
+reader is missing or the read fails, the strategy fails closed; it never falls
+back to `Identity.UpstreamTokens` or the incoming bearer token. Interactive and
+unspecified routes are unchanged. See [embedder wiring](vmcp-library.md#delegated-upstream-credentials).
+
+A failure while listing tools omits the backend from discovery. On a Modern
+backend, a failure on an optional list (resources, resource templates, prompts)
+after `tools/list` succeeded leaves the tools available, and only that list is
+empty. A direct call to an omitted tool cannot reach the backend, so it does not get the provider-named
+`isError` result that an already-advertised tool can return after a refresh
+failure. See [delegated credential failures](../error-handling.md#vmcp-delegated-credential-failures)
+for the wire responses and when newly connected providers become visible.
+
 ## Implementation
 
 - `pkg/authserver/server/tokenexchange/actor_validator.go` — `ActorTokenValidator` and its contract, `ActorValidatorRegistration`, `ActIssuerProblem`, `ActorProfile`

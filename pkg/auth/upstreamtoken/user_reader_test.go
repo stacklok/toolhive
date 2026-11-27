@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -20,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/authserver/identity"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -416,7 +419,7 @@ func TestGetValidTokensForUser_IDTokenRefreshFailureRecordedOnce(t *testing.T) {
 					close(started)
 					<-release
 				}
-				return nil, errors.New("idp unavailable")
+				return nil, errors.New("idp unavailable: secret-provider-detail")
 			})
 		unblock := sync.OnceFunc(func() { close(release) })
 		t.Cleanup(unblock)
@@ -443,7 +446,7 @@ func TestGetValidTokensForUser_IDTokenRefreshFailureRecordedOnce(t *testing.T) {
 		assert.Equal(t, int32(1), calls.Load(), "the second read must not call the refresher again")
 	})
 
-	assert.Equal(t, 1, handler.count(slog.LevelWarn))
+	requireReasonOnlyWarn(t, handler, "refresh_failed")
 }
 
 // A row read with storage.ErrExpired but no ExpiresAt is an expired access
@@ -890,6 +893,7 @@ func TestGetValidTokensForUser_StorageErrors(t *testing.T) {
 type recordingHandler struct {
 	mu     sync.Mutex
 	levels []slog.Level
+	lines  []string
 }
 
 func (*recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
@@ -897,6 +901,12 @@ func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.levels = append(h.levels, r.Level)
+	line := r.Message
+	r.Attrs(func(a slog.Attr) bool {
+		line += " " + a.Key + "=" + a.Value.String()
+		return true
+	})
+	h.lines = append(h.lines, line)
 	return nil
 }
 func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
@@ -963,12 +973,13 @@ func TestGetValidTokensForUser_WarnsOnceForIDTokenFallback(t *testing.T) {
 	stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).Return(row, nil).Times(2)
 	refresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
 	refresher.EXPECT().RefreshAndStore(gomock.Any(), rowKey, gomock.Any()).
-		Return(nil, errors.New("upstream token refresh failed: 503"))
+		Return(nil, errors.New("upstream token refresh failed: secret-provider-detail"))
 
 	cred, err := NewInProcessService(stor, refresher).GetValidTokensForUser(context.Background(), readerUser, readerProvider)
 
 	require.NoError(t, err)
 	assert.Equal(t, "access-"+readerUser, cred.AccessToken)
+	requireReasonOnlyWarn(t, handler, "refresh_failed")
 	handler.mu.Lock()
 	defer handler.mu.Unlock()
 	warns := 0
@@ -1319,6 +1330,64 @@ func TestIDTokenSuppression_SharedAcrossReadPaths(t *testing.T) {
 			forUser(readerIntruder)
 
 			assert.Equal(t, map[string]int{readerUser: 1, readerIntruder: 1}, refreshes)
+		})
+	}
+}
+
+// requireReasonOnlyWarn asserts the single WARN carries the reason and neither
+// the error text nor a user-derived key.
+func requireReasonOnlyWarn(t *testing.T, h *recordingHandler, reason string) {
+	t.Helper()
+	warns := h.warnLines()
+	require.Len(t, warns, 1)
+	assert.Contains(t, warns[0], "reason="+reason)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, line := range h.lines {
+		assert.NotContains(t, line, "secret-provider-detail")
+		assert.NotContains(t, line, userRowKey(readerUser))
+	}
+}
+
+// warnLines returns the recorded WARN lines.
+func (h *recordingHandler) warnLines() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	for i, level := range h.levels {
+		if level == slog.LevelWarn {
+			out = append(out, h.lines[i])
+		}
+	}
+	return out
+}
+
+func TestRefreshFailureReason(t *testing.T) {
+	t.Parallel()
+	rejected := &oauth2.RetrieveError{
+		Response:         &http.Response{StatusCode: http.StatusBadRequest},
+		ErrorCode:        "invalid_grant",
+		ErrorDescription: "secret-provider-detail",
+	}
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"rejected grant", fmt.Errorf("%w: %w", ErrRefreshFailed, rejected), "grant_rejected"},
+		{"grant rejected sentinel", fmt.Errorf("%w: %w", ErrRefreshFailed, upstream.ErrGrantRejected), "grant_rejected"},
+		{"token endpoint error", &oauth2.RetrieveError{
+			Response: &http.Response{StatusCode: http.StatusBadRequest}, ErrorCode: "invalid_client",
+		}, "token_endpoint_error"},
+		{"canceled", fmt.Errorf("refresh: %w", context.Canceled), "network_or_timeout"},
+		{"deadline", fmt.Errorf("refresh: %w", context.DeadlineExceeded), "network_or_timeout"},
+		{"net error", &net.OpError{Op: "dial", Err: errors.New("refused")}, "network_or_timeout"},
+		{"other", errors.New("secret-provider-detail"), "refresh_failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, refreshFailureReason(tt.err))
 		})
 	}
 }

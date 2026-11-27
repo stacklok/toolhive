@@ -533,7 +533,10 @@ func TestIsWorkloadOwnedSecretName(t *testing.T) {
 	}{
 		{"exact base", "foo", prefix + "foo", true},
 		{"unique suffix", "foo", prefix + "foo_1730000000000000000_ab12cd34", true},
-		{"single digit timestamp", "foo", prefix + "foo_1_ab12cd34", true},
+		// Known limitation: "foo_1_ab12cd34" is also a valid workload name,
+		// so this suffixed name is indistinguishable from that workload's
+		// base secret. The name-shape predicate cannot prove provenance.
+		{"suffix-shaped foreign base is indistinguishable", "foo", prefix + "foo_1_ab12cd34", true},
 		{"empty workload never owns empty base", "", prefix, false},
 		{"empty workload never owns base", "", prefix + "foo", false},
 		{"foreign workload base", "foo", prefix + "bar", false},

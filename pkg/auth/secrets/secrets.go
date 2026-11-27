@@ -166,15 +166,19 @@ func GenerateUniqueSecretNameWithPrefix(workloadName, prefix string, secretManag
 	return uniqueName, nil
 }
 
-// IsWorkloadOwnedSecretName reports whether name is a secret name that
-// GenerateUniqueSecretNameWithPrefix could have produced for workloadName with
-// the given prefix: either the exact base "<prefix><workloadName>" or the
-// collision-resistant "<prefix><workloadName>_<digits>_<8 lowercase hex>" form.
+// IsWorkloadOwnedSecretName reports whether name has one of the two shapes
+// GenerateUniqueSecretNameWithPrefix can emit for workloadName with the given
+// prefix: the exact base "<prefix><workloadName>" or the suffixed
+// "<prefix><workloadName>_<digits>_<8 lowercase hex>" form.
 //
-// The anchor after the workload name is what makes this safe: a plain HasPrefix
-// would treat "OAUTH_REFRESH_TOKEN_foo_1" (owned by workload "foo_1") as owned
-// by "foo" and could delete another workload's live secret. An empty workload
-// name never proves ownership.
+// This is a name-shape check, not provenance. It is unambiguous only when no
+// other workload name ends in "_<digits>_<8 hex>": workload names allow '_', so
+// a secret owned by workload "foo_1_ab12cd34" also matches the suffixed shape
+// for workload "foo". Anchoring only rules out the plain-prefix collision
+// ("foo" vs "foo_1"); it cannot distinguish a generated suffix from a base
+// name that happens to look like one. Callers deleting another workload's ref
+// from imported config need provenance recorded alongside the ref, which this
+// predicate does not provide. An empty workload name never proves ownership.
 func IsWorkloadOwnedSecretName(workloadName, prefix, name string) bool {
 	if workloadName == "" {
 		return false

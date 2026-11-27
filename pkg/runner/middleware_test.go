@@ -776,7 +776,7 @@ func TestGetSupportedMiddlewareFactories(t *testing.T) {
 
 // TestOBORegistration exercises the proxyrunner path for an operator-injected
 // obo middleware: the RunConfig round-trips through JSON, the runner's factory
-// map builds the built-in OBO middleware, and a request through it has its
+// map builds the OBO middleware, and a request through it has its
 // subject token exchanged at a (mock) Entra token endpoint and forwarded as the
 // backend bearer token.
 //

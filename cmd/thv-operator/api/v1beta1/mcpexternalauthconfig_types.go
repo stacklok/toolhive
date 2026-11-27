@@ -2883,11 +2883,12 @@ type typeConfigEntry struct {
 //
 // Each ExternalAuthType with a config sub-field is one row in the typeConfigEntry
 // table, checked by a uniform biconditional in the loop below ("config set iff
-// type matches"). OBO gets the same biconditional, checked ahead of the table;
-// the unauthenticated guard then asserts no config is set for the
+// type matches"). OBO gets the same biconditional, checked before the table
+// loop; the unauthenticated guard then asserts no config is set for the
 // unauthenticated type. Each row still maps one-to-one onto the corresponding
-// CEL XValidation rule on MCPExternalAuthConfigSpec, so a reviewer can audit the
-// structural-validation contract by comparing the table against the markers.
+// CEL XValidation rule on MCPExternalAuthConfigSpec, so a reviewer can audit
+// the structural-validation contract by comparing the table against the
+// markers.
 // See issue #5329 for the broader discussion.
 func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	entries := []typeConfigEntry{

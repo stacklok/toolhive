@@ -148,7 +148,7 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		assert.NoError(t, err, "unauthenticated strategy should accept empty strategy")
 	})
 
-	t.Run("obo strategy is the built-in Entra OBO strategy", func(t *testing.T) {
+	t.Run("obo strategy is the Entra OBO strategy", func(t *testing.T) {
 		t.Parallel()
 
 		registry, err := NewOutgoingAuthRegistry(context.Background(), &env.OSReader{})
@@ -184,9 +184,9 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 			return strategy.Validate(oboStrategy)
 		}
 
-		assert.NoError(t, validate(staticEnv{"OBO_TEST_CLIENT_SECRET": "from-the-injected-reader"}),
+		assert.NoError(t, validate(stubEnvReader{"OBO_TEST_CLIENT_SECRET": "from-the-injected-reader"}),
 			"the secret is only resolvable through the reader passed to NewOutgoingAuthRegistry")
-		assert.Error(t, validate(staticEnv{}))
+		assert.ErrorContains(t, validate(stubEnvReader{}), "OBO_TEST_CLIENT_SECRET")
 	})
 
 	t.Run("all strategies have correct names", func(t *testing.T) {
@@ -219,15 +219,4 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 				"strategy type %s should have name %s", tc.strategyType, tc.expectedName)
 		}
 	})
-}
-
-// staticEnv is a map-backed env.Reader, so tests can identify the reader a
-// strategy was given by what it resolves.
-type staticEnv map[string]string
-
-func (e staticEnv) Getenv(key string) string { return e[key] }
-
-func (e staticEnv) LookupEnv(key string) (string, bool) {
-	v, ok := e[key]
-	return v, ok
 }

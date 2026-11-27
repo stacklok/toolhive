@@ -106,9 +106,9 @@ func OBOVMCPSecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVa
 // or MCPRemoteProxy to opts. It builds the obo.MiddlewareParameters contract,
 // verifies the referenced client Secret is present, and appends the
 // "obo"-typed MiddlewareConfig through the runner's AdditionalMiddlewareConfigs
-// seam. A malformed config is an
-// *obo.ValidationError; a referenced Secret that is not available yet is a
-// plain (transient) error. It does not mutate opts on error.
+// seam. A malformed config is an *obo.ValidationError; a referenced Secret that
+// is not available yet is a plain (transient) error. It does not mutate opts
+// on error.
 func applyOBORunConfig(
 	ctx context.Context,
 	c client.Client,

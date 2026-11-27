@@ -79,9 +79,10 @@ const auditComponent = "toolhive-obo"
 // CreateMiddleware is the OBO middleware factory registered in the runner's
 // middleware factory map. It parses the MiddlewareParameters contract, reads
 // the client secret from the named environment variable, builds the cached
-// Entra Exchanger, and installs the middleware under the config's type name. It fails loudly at startup
-// (returns an error, installs nothing) on malformed parameters or a missing
-// secret rather than deferring the failure to the first request.
+// Entra Exchanger, and installs the middleware under the config's type name.
+// It fails loudly at startup (returns an error, installs nothing) on malformed
+// parameters or a missing secret rather than deferring the failure to the
+// first request.
 func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
 	params, err := parseParameters(config.Parameters)
 	if err != nil {

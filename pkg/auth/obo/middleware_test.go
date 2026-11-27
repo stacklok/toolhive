@@ -198,11 +198,11 @@ func TestCreateMiddleware_InstallsOBOMiddleware(t *testing.T) {
 		Times(1)
 
 	require.NoError(t, CreateMiddleware(cfg, mockRunner),
-		"dispatch through the registered factory must succeed")
+		"CreateMiddleware must succeed")
 	require.NotNil(t, captured)
 
 	installed, ok := captured.(*middleware)
-	require.True(t, ok, "the default factory must install the OBO middleware")
+	require.True(t, ok, "CreateMiddleware must install the OBO middleware")
 	assert.Empty(t, installed.providerName, "no subjectTokenProviderName means inbound mode")
 
 	// A request with no authenticated identity must reach the OBO handler (401).

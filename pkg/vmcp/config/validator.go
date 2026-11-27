@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 )
 
 // Incoming auth type constants.
@@ -197,7 +198,38 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 		}
 	}
 
+	if len(auth.ExpiredTokenAdmission) > 0 && auth.Type != IncomingAuthTypeOIDC {
+		return fmt.Errorf("incomingAuth.expiredTokenAdmission requires type 'oidc'")
+	}
+	return ValidateExpiredTokenAdmission(auth.ExpiredTokenAdmission)
+}
+
+// ValidateExpiredTokenAdmission validates an incomingAuth.expiredTokenAdmission
+// list as the vMCP does when it starts: each issuer and clientId must be
+// non-empty, each grace positive and at most the maximum call duration, and
+// no two entries may name the same issuer and clientId.
+func ValidateExpiredTokenAdmission(entries []ExpiredTokenAdmissionConfig) error {
+	if err := callbinding.ValidateExpiredTokenAdmission(CallBindingExpiredTokenAdmission(entries), 0); err != nil {
+		return fmt.Errorf("incomingAuth.expiredTokenAdmission: %w", err)
+	}
 	return nil
+}
+
+// CallBindingExpiredTokenAdmission converts an incomingAuth.expiredTokenAdmission
+// list to the call binding's form (callbinding.Config.ExpiredTokenAdmission).
+func CallBindingExpiredTokenAdmission(entries []ExpiredTokenAdmissionConfig) []callbinding.ExpiredTokenAdmission {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]callbinding.ExpiredTokenAdmission, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, callbinding.ExpiredTokenAdmission{
+			Issuer:   e.Issuer,
+			ClientID: e.ClientID,
+			Grace:    time.Duration(e.Grace),
+		})
+	}
+	return out
 }
 
 func (*DefaultValidator) validateAuthz(authz *AuthzConfig) error {

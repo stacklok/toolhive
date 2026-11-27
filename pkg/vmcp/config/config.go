@@ -238,6 +238,52 @@ type IncomingAuthConfig struct {
 
 	// Authz contains authorization configuration (optional).
 	Authz *AuthzConfig `json:"authz,omitempty" yaml:"authz,omitempty"`
+
+	// ExpiredTokenAdmission lists the token issuers and OAuth clients whose
+	// call-bound access tokens may still send their call's own messages after
+	// the token expires, and for how long. A call-bound token carries an
+	// authorization_details entry of type https://toolhive.dev/mcp_tool_call
+	// and may start one call before it expires; that call can run longer than
+	// the token lives.
+	//
+	// Empty by default: once a token expires, every request with it gets 401,
+	// even one that cancels or answers a call still running. For a token whose
+	// iss and client_id claims match an entry, the vMCP accepts, for the entry's
+	// grace after the token's exp and while the call is open, only that call's
+	// own messages on its session: a cancellation of the call, a reply to a
+	// question the call asked (such as an elicitation), and a GET or DELETE.
+	// Nothing else, and a new call can still start only before exp.
+	//
+	// Requires type "oidc". Each grace must be positive and at most 30 minutes
+	// (the maximum call duration), and no two entries may name the same issuer
+	// and clientId.
+	// +optional
+	// +listType=map
+	// +listMapKey=issuer
+	// +listMapKey=clientId
+	ExpiredTokenAdmission []ExpiredTokenAdmissionConfig `json:"expiredTokenAdmission,omitempty" yaml:"expiredTokenAdmission,omitempty"` //nolint:lll
+}
+
+// ExpiredTokenAdmissionConfig lets one issuer's call-bound tokens for one
+// OAuth client send their call's own messages after the token expires. See
+// IncomingAuthConfig.ExpiredTokenAdmission.
+// +kubebuilder:object:generate=true
+// +gendoc
+type ExpiredTokenAdmissionConfig struct {
+	// Issuer must equal the token's iss claim exactly.
+	// +kubebuilder:validation:MinLength=1
+	Issuer string `json:"issuer" yaml:"issuer"`
+
+	// ClientID must equal the token's client_id claim exactly. The azp claim
+	// is not read, so a token that names its client only in azp never matches.
+	// client_id names the client the token was issued to, not the one
+	// presenting it.
+	// +kubebuilder:validation:MinLength=1
+	ClientID string `json:"clientId" yaml:"clientId"`
+
+	// Grace is how long after the token's exp its call's messages are still
+	// accepted, such as "2m". It must be positive and at most 30 minutes.
+	Grace Duration `json:"grace" yaml:"grace"`
 }
 
 // OIDCConfig configures OpenID Connect authentication.

@@ -618,6 +618,15 @@ func WithExpiredTokenAdmission(maxAge time.Duration, admit ExpiredTokenAdmitter)
 	}
 }
 
+// WithStrictExpiry keeps exp strict: every expired token gets 401. That is
+// the default. It undoes an earlier WithExpiredTokenAdmission, and lets a
+// caller that only sometimes admits expired tokens say so explicitly.
+func WithStrictExpiry() TokenValidatorOption {
+	return func(o *tokenValidatorOptions) {
+		o.expiredAdmission = nil
+	}
+}
+
 // TokenValidatorOption is a functional option for NewTokenValidator.
 type TokenValidatorOption func(*tokenValidatorOptions)
 

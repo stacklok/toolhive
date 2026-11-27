@@ -124,6 +124,14 @@ func TestMiddlewareExpiredTokenAdmission(t *testing.T) {
 		require.Equal(t, strict.rr.Body.String(), got.rr.Body.String())
 	}
 
+	t.Run("WithStrictExpiry undoes an earlier admission", func(t *testing.T) {
+		t.Parallel()
+		admit, calls := countingAdmitter(true)
+		v := makeValidator(t, WithExpiredTokenAdmission(maxAge, admit), WithStrictExpiry())
+		requireStrict(t, serve(t, v, expiredToken))
+		require.Zero(t, calls.Load(), "a strict validator never asks an admitter")
+	})
+
 	t.Run("an admitter refusal is today's 401", func(t *testing.T) {
 		t.Parallel()
 		admit, calls := countingAdmitter(false)

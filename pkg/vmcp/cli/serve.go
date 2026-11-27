@@ -389,12 +389,18 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		embeddedAuthServerIssuer = authServerRC.Issuer
 	}
 
-	// One call binding is shared by the token validator and the server: the
-	// validator accepts the messages of a call that outlives its token, and
-	// the server answers a refused call-bound token with the same challenge
-	// parameters as the validator.
+	// One call binding is shared by the token validator and the server: with
+	// an incomingAuth.expiredTokenAdmission list, the validator accepts the
+	// messages of a call that outlives its token (without one, exp is strict),
+	// and the server answers a refused call-bound token with the same
+	// challenge parameters as the validator.
+	var expiredTokenAdmission []callbinding.ExpiredTokenAdmission
+	if vmcpCfg.IncomingAuth != nil {
+		expiredTokenAdmission = config.CallBindingExpiredTokenAdmission(vmcpCfg.IncomingAuth.ExpiredTokenAdmission)
+	}
 	callBinding, err := callbinding.New(callbinding.Config{
-		Challenge: authfactory.IncomingBearerChallenge(vmcpCfg.IncomingAuth),
+		Challenge:             authfactory.IncomingBearerChallenge(vmcpCfg.IncomingAuth),
+		ExpiredTokenAdmission: expiredTokenAdmission,
 	})
 	if err != nil {
 		return err

@@ -26,9 +26,17 @@ func TestNewValidates(t *testing.T) {
 	_, err = New(Config{Clients: []string{"a", ""}})
 	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
 
+	_, err = New(Config{ExpiredTokenAdmission: []ExpiredTokenAdmission{{Issuer: "i", ClientID: "c"}}})
+	require.ErrorIs(t, err, vmcp.ErrInvalidConfig, "an invalid admission list")
+	_, err = New(Config{MaxCallDuration: time.Minute, ExpiredTokenAdmission: []ExpiredTokenAdmission{
+		{Issuer: "i", ClientID: "c", Grace: 2 * time.Minute},
+	}})
+	require.ErrorIs(t, err, vmcp.ErrInvalidConfig, "a grace beyond the configured maximum call duration")
+
 	b, err := New(Config{})
 	require.NoError(t, err)
 	assert.Equal(t, DefaultMaxCallDuration, b.MaxCallDuration())
+	assert.False(t, b.AdmitsExpiredTokens())
 	assert.NotNil(t, b.Record())
 	assert.False(t, b.RecordShared())
 	assert.False(t, b.ClientsListed())
@@ -70,9 +78,11 @@ func TestAdmitExpiredToken(t *testing.T) {
 		session = "session-1"
 	)
 	started := time.Unix(1_800_000_000, 0)
-	expired := func(claims map[string]any) auth.ExpiredToken {
-		return auth.ExpiredToken{Claims: claims, ExpiredAt: started}
-	}
+	const grace = 59 * time.Minute
+	listed := []ExpiredTokenAdmission{{Issuer: "https://as.example.com", ClientID: "mecatl", Grace: grace}}
+	azpOnly := testClaims([]any{testEntry()})
+	azpOnly["azp"] = azpOnly["client_id"]
+	delete(azpOnly, "client_id")
 	listEntry := map[string]any{"type": toolcalldetails.Type, "server": "github", "method": "tools/list"}
 	request := func(method, sessionID string) *http.Request {
 		r := httptest.NewRequest(method, "/mcp", nil)
@@ -91,7 +101,13 @@ func TestAdmitExpiredToken(t *testing.T) {
 		now      time.Time
 		returned bool
 		record   Record
-		want     bool
+		// admission is the binding's ExpiredTokenAdmission list; nil means
+		// listed, and strict means none.
+		admission []ExpiredTokenAdmission
+		strict    bool
+		// expiredAt is the token's exp; zero means started.
+		expiredAt time.Time
+		want      bool
 	}{
 		{name: "cancellation or response on the call's session", claims: testClaims([]any{testEntry()}),
 			call: &Call{SessionID: session, RequestID: "7", Started: started}, r: request(http.MethodPost, session),
@@ -119,9 +135,29 @@ func TestAdmitExpiredToken(t *testing.T) {
 		{name: "call that returned on this replica", claims: testClaims([]any{testEntry()}),
 			call: &Call{SessionID: session, Started: started}, returned: true, r: request(http.MethodPost, session),
 			now: started.Add(time.Minute)},
-		{name: "call at the maximum call duration", claims: testClaims([]any{testEntry()}),
+		{name: "call at the maximum call duration, inside the grace", claims: testClaims([]any{testEntry()}),
 			call: &Call{SessionID: session, Started: started}, r: request(http.MethodPost, session),
-			now: started.Add(time.Hour)},
+			expiredAt: started.Add(30 * time.Minute), now: started.Add(time.Hour)},
+		{name: "just inside the entry's grace", claims: testClaims([]any{testEntry()}),
+			call: &Call{SessionID: session, RequestID: "7", Started: started}, r: request(http.MethodPost, session),
+			now: started.Add(grace - time.Second), want: true},
+		{name: "at the entry's grace", claims: testClaims([]any{testEntry()}),
+			call: &Call{SessionID: session, RequestID: "7", Started: started}, r: request(http.MethodPost, session),
+			now: started.Add(grace)},
+		{name: "no ExpiredTokenAdmission list", claims: testClaims([]any{testEntry()}), strict: true,
+			call: &Call{SessionID: session, RequestID: "7", Started: started}, r: request(http.MethodPost, session),
+			now: started.Add(time.Minute)},
+		{name: "issuer not listed", claims: testClaims([]any{testEntry()}),
+			admission: []ExpiredTokenAdmission{{Issuer: "https://other.example.com", ClientID: "mecatl", Grace: grace}},
+			call:      &Call{SessionID: session, RequestID: "7", Started: started}, r: request(http.MethodPost, session),
+			now: started.Add(time.Minute)},
+		{name: "client not listed", claims: testClaims([]any{testEntry()}),
+			admission: []ExpiredTokenAdmission{{Issuer: "https://as.example.com", ClientID: "other", Grace: grace}},
+			call:      &Call{SessionID: session, RequestID: "7", Started: started}, r: request(http.MethodPost, session),
+			now: started.Add(time.Minute)},
+		{name: "client named only in azp", claims: azpOnly,
+			call: &Call{SessionID: session, RequestID: "7", Started: started}, r: request(http.MethodPost, session),
+			now: started.Add(time.Minute)},
 		{name: "Modern call, without a session", claims: testClaims([]any{testEntry()}),
 			call: &Call{Started: started}, r: request(http.MethodPost, ""), now: started.Add(time.Minute)},
 		{name: "another session", claims: testClaims([]any{testEntry()}),
@@ -140,7 +176,14 @@ func TestAdmitExpiredToken(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			b, err := New(Config{MaxCallDuration: time.Hour, Record: tc.record})
+			admission := tc.admission
+			switch {
+			case tc.strict:
+				admission = nil
+			case admission == nil:
+				admission = listed
+			}
+			b, err := New(Config{MaxCallDuration: time.Hour, Record: tc.record, ExpiredTokenAdmission: admission})
 			require.NoError(t, err)
 			ctx := context.Background()
 			if tc.call != nil {
@@ -154,7 +197,13 @@ func TestAdmitExpiredToken(t *testing.T) {
 			if tc.returned {
 				b.returned.add(key, started.Add(24*time.Hour), started)
 			}
-			assert.Equal(t, tc.want, b.AdmitExpiredToken(tc.r, expired(tc.claims), tc.now))
+			expiredAt := tc.expiredAt
+			if expiredAt.IsZero() {
+				expiredAt = started
+			}
+			expired := auth.ExpiredToken{Claims: tc.claims, ExpiredAt: expiredAt}
+			assert.Equal(t, tc.want, b.AdmitExpiredToken(tc.r, expired, tc.now))
+			assert.Equal(t, !tc.strict, b.AdmitsExpiredTokens())
 		})
 	}
 }
@@ -227,4 +276,77 @@ func TestEndCallDefersToDispatch(t *testing.T) {
 		done()
 		assert.False(t, isOpen(t, b))
 	})
+}
+
+func TestValidateExpiredTokenAdmission(t *testing.T) {
+	t.Parallel()
+	entry := func(issuer, clientID string, grace time.Duration) ExpiredTokenAdmission {
+		return ExpiredTokenAdmission{Issuer: issuer, ClientID: clientID, Grace: grace}
+	}
+	tests := []struct {
+		name    string
+		entries []ExpiredTokenAdmission
+		max     time.Duration
+		wantErr string
+	}{
+		{name: "empty list"},
+		{name: "valid entries", entries: []ExpiredTokenAdmission{
+			entry("https://as.example.com", "a", time.Minute),
+			entry("https://as.example.com", "b", DefaultMaxCallDuration),
+			entry("https://other.example.com", "a", time.Second),
+		}},
+		{name: "empty issuer", entries: []ExpiredTokenAdmission{entry("", "a", time.Minute)},
+			wantErr: "issuer must not be empty"},
+		{name: "blank issuer", entries: []ExpiredTokenAdmission{entry("  ", "a", time.Minute)},
+			wantErr: "issuer must not be empty"},
+		{name: "empty client", entries: []ExpiredTokenAdmission{entry("i", "", time.Minute)},
+			wantErr: "clientId must not be empty"},
+		{name: "zero grace", entries: []ExpiredTokenAdmission{entry("i", "a", 0)},
+			wantErr: "grace must be positive"},
+		{name: "negative grace", entries: []ExpiredTokenAdmission{entry("i", "a", -time.Second)},
+			wantErr: "grace must be positive"},
+		{name: "grace beyond the default maximum call duration",
+			entries: []ExpiredTokenAdmission{entry("i", "a", DefaultMaxCallDuration+time.Second)},
+			wantErr: "exceeds the maximum call duration"},
+		{name: "grace beyond a configured maximum call duration", max: time.Minute,
+			entries: []ExpiredTokenAdmission{entry("i", "a", 2*time.Minute)},
+			wantErr: "exceeds the maximum call duration"},
+		{name: "duplicate issuer and client", entries: []ExpiredTokenAdmission{
+			entry("i", "a", time.Minute), entry("i", "a", 2*time.Minute),
+		}, wantErr: "already listed by entry 0"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateExpiredTokenAdmission(tc.entries, tc.max)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
+func TestWithinExpiredTokenGrace(t *testing.T) {
+	t.Parallel()
+	exp := time.Unix(1_800_000_000, 0)
+	b, err := New(Config{ExpiredTokenAdmission: []ExpiredTokenAdmission{
+		{Issuer: "https://as.example.com", ClientID: "mecatl", Grace: time.Minute},
+	}})
+	require.NoError(t, err)
+	claims := testClaims([]any{testEntry()})
+	assert.True(t, b.WithinExpiredTokenGrace(claims, exp, exp))
+	assert.True(t, b.WithinExpiredTokenGrace(claims, exp, exp.Add(time.Minute-time.Nanosecond)))
+	assert.False(t, b.WithinExpiredTokenGrace(claims, exp, exp.Add(time.Minute)))
+
+	azpOnly := testClaims([]any{testEntry()})
+	azpOnly["azp"] = azpOnly["client_id"]
+	delete(azpOnly, "client_id")
+	assert.False(t, b.WithinExpiredTokenGrace(azpOnly, exp, exp), "azp is not read")
+	assert.False(t, b.WithinExpiredTokenGrace(map[string]any{"client_id": "mecatl"}, exp, exp), "no iss")
+
+	strict, err := New(Config{})
+	require.NoError(t, err)
+	assert.False(t, strict.WithinExpiredTokenGrace(claims, exp, exp), "no list means strict exp")
 }

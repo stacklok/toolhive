@@ -159,11 +159,17 @@ with the reason, and the request is audited as `denied` with
 
 Two consequences are easy to miss. A token whose `authorization_details` claim is
 malformed is refused on every request, whatever its client, even one that never
-asked for call binding. And `exp` limits only when a call can start: a tool call that
-outlives its token keeps, on its session, its cancellation, elicitation answers, and
-GET and DELETE, until the call's request ends or the call has run for the maximum
-call duration (30 minutes by default). Anything else after `exp` gets 401. This needs
-the token validator to share the vMCP's call binding, as the `vmcp` command wires it.
+asked for call binding. And by default `exp` is strict: once a call-bound token
+expires, every request with it gets 401, even one that cancels or answers a call still
+running. An operator can opt in per issuer and client with
+`incomingAuth.expiredTokenAdmission` (on a `VirtualMCPServer`,
+`spec.incomingAuth.expiredTokenAdmission`), a list of `{issuer, clientId, grace}`
+entries matched against the token's `iss` and `client_id` claims (`azp` is not read).
+For a matching token, a tool call that outlives its token keeps, on its session, its
+cancellation, elicitation answers, and GET and DELETE, for the entry's `grace` after
+`exp` (at most 30 minutes, the maximum call duration), and only while the call is
+open. Anything else after `exp` gets 401. This needs the token validator to share the
+vMCP's call binding, as the `vmcp` command wires it.
 See
 [Call-bound access tokens](arch/10-virtual-mcp-architecture.md#call-bound-access-tokens).
 

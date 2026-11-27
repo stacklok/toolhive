@@ -2519,3 +2519,62 @@ func TestConvertExternalAuthConfigToStrategy_OBOUsesPerConfigSecretEnv(t *testin
 	assert.NotEqual(t, first.OBO.ClientSecretEnv, second.OBO.ClientSecretEnv)
 	assert.Empty(t, first.OBO.ClientSecret)
 }
+
+// TestConverter_ExpiredTokenAdmission checks that spec.incomingAuth's
+// expiredTokenAdmission list reaches the vMCP config, and that a list the vMCP
+// would refuse at startup fails conversion instead.
+func TestConverter_ExpiredTokenAdmission(t *testing.T) {
+	t.Parallel()
+
+	const oidcConfigName = "test-oidc"
+	entry := func(grace time.Duration) vmcpconfig.ExpiredTokenAdmissionConfig {
+		return vmcpconfig.ExpiredTokenAdmissionConfig{
+			Issuer: "https://as.example.com", ClientID: "agent", Grace: vmcpconfig.Duration(grace),
+		}
+	}
+	tests := []struct {
+		name    string
+		authTyp string
+		entries []vmcpconfig.ExpiredTokenAdmissionConfig
+		wantErr string
+	}{
+		{name: "copied", authTyp: "oidc", entries: []vmcpconfig.ExpiredTokenAdmissionConfig{entry(2 * time.Minute)}},
+		{name: "grace beyond the maximum call duration", authTyp: "oidc",
+			entries: []vmcpconfig.ExpiredTokenAdmissionConfig{entry(time.Hour)},
+			wantErr: "spec.incomingAuth.expiredTokenAdmission: entry 0: grace 1h0m0s exceeds"},
+		{name: "not OIDC", authTyp: "anonymous",
+			entries: []vmcpconfig.ExpiredTokenAdmissionConfig{entry(time.Minute)},
+			wantErr: "spec.incomingAuth.expiredTokenAdmission requires type oidc"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			incoming := &mcpv1beta1.IncomingAuthConfig{Type: tt.authTyp, ExpiredTokenAdmission: tt.entries}
+			var objects []client.Object
+			mockResolver := oidcmocks.NewMockResolver(gomock.NewController(t))
+			if tt.authTyp == "oidc" {
+				incoming.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "aud"}
+				objects = append(objects, newTestMCPOIDCConfigInline(&mcpv1beta1.InlineOIDCSharedConfig{
+					Issuer: "https://example.com", ClientID: "test-client",
+				}))
+				mockResolver.EXPECT().ResolveFromConfigRef(
+					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
+				).Return(&oidc.OIDCConfig{Issuer: "https://example.com", Audience: "aud"}, nil).AnyTimes()
+			}
+			vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPIncomingAuth(incoming),
+			)
+			converter := newTestConverterWithObjects(t, mockResolver, objects...)
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			config, _, err := converter.Convert(ctx, vmcpServer, nil)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, config.IncomingAuth)
+			assert.Equal(t, tt.entries, config.IncomingAuth.ExpiredTokenAdmission)
+		})
+	}
+}

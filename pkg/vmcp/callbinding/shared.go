@@ -21,16 +21,20 @@ import (
 )
 
 // Binding is one vMCP's call binding, built from a Config: the clients whose
-// tokens must carry an entry, the maximum call duration, the single-use record,
-// the 401 challenge, and the calls this replica has seen return.
+// tokens must carry an entry, the maximum call duration, the issuers and
+// clients whose tokens may send their call's messages after exp, the
+// single-use record, the 401 challenge, and the calls this replica has seen
+// return.
 //
 // The vMCP's call-binding check and its token validator share one Binding. Pass
 // it as the server's CallBinding, and give TokenValidatorOption to the token
 // validator in front of the vMCP (the vMCP's incoming auth factory does so when
-// given the Binding). The validator then accepts the messages that belong to a
-// call that outlives its token. Without it, they get the validator's 401 once
-// the token expires, and the vMCP logs a warning the first time a call-bound
-// tool call starts.
+// given the Binding). With Config.ExpiredTokenAdmission set, the validator then
+// accepts the messages that belong to a call that outlives its token, for the
+// matching entry's grace. Without the list, exp is strict. With the list but
+// without the option, those messages get the validator's 401 once the token
+// expires, and the vMCP logs a warning the first time a call-bound tool call
+// starts.
 //
 // Build a Binding with New only: its zero value is not usable.
 type Binding struct {
@@ -39,6 +43,9 @@ type Binding struct {
 	record          Record
 	recordShared    bool
 	challenge       auth.BearerChallenge
+	// admissions maps each ExpiredTokenAdmission's issuer and client to its
+	// grace. Empty means exp is strict.
+	admissions map[admissionKey]time.Duration
 
 	// returned holds the calls whose request has returned on this replica but
 	// that the record could not mark as ended.
@@ -55,14 +62,23 @@ type Binding struct {
 const endTimeout = 5 * time.Second
 
 // New validates cfg and returns the Binding it describes. It returns an error
-// wrapping vmcp.ErrInvalidConfig for a negative MaxCallDuration or an empty
-// client ID.
+// wrapping vmcp.ErrInvalidConfig for a negative MaxCallDuration, an empty
+// client ID, or an ExpiredTokenAdmission list that
+// ValidateExpiredTokenAdmission refuses.
 func New(cfg Config) (*Binding, error) {
 	if cfg.MaxCallDuration < 0 {
 		return nil, fmt.Errorf("%w: CallBinding.MaxCallDuration must not be negative", vmcp.ErrInvalidConfig)
 	}
 	if slices.Contains(cfg.Clients, "") {
 		return nil, fmt.Errorf("%w: CallBinding.Clients must not contain an empty client ID", vmcp.ErrInvalidConfig)
+	}
+	maxCallDuration := cmp.Or(cfg.MaxCallDuration, DefaultMaxCallDuration)
+	if err := ValidateExpiredTokenAdmission(cfg.ExpiredTokenAdmission, maxCallDuration); err != nil {
+		return nil, fmt.Errorf("%w: CallBinding.ExpiredTokenAdmission: %w", vmcp.ErrInvalidConfig, err)
+	}
+	admissions := make(map[admissionKey]time.Duration, len(cfg.ExpiredTokenAdmission))
+	for _, e := range cfg.ExpiredTokenAdmission {
+		admissions[admissionKey{issuer: e.Issuer, clientID: e.ClientID}] = e.Grace
 	}
 	required := make(map[string]struct{}, len(cfg.Clients))
 	for _, client := range cfg.Clients {
@@ -76,10 +92,11 @@ func New(cfg Config) (*Binding, error) {
 	challenge.Scopes = slices.Clone(challenge.Scopes)
 	return &Binding{
 		required:        required,
-		maxCallDuration: cmp.Or(cfg.MaxCallDuration, DefaultMaxCallDuration),
+		maxCallDuration: maxCallDuration,
 		record:          record,
 		recordShared:    cfg.Record != nil,
 		challenge:       challenge,
+		admissions:      admissions,
 	}, nil
 }
 
@@ -170,12 +187,17 @@ func (b *Binding) endInRecord(ctx context.Context, token *Token, expiry time.Tim
 	}
 }
 
-// TokenValidatorOption returns the token-validator option that accepts, after
-// a call-bound token expires, the requests AdmitExpiredToken admits, for up to
-// the maximum call duration after its exp. Give it to the validator in front
-// of the vMCP that serves this Binding.
+// TokenValidatorOption returns the token-validator option for this Binding.
+// Give it to the validator in front of the vMCP that serves this Binding.
+// Without an ExpiredTokenAdmission entry, it keeps exp strict
+// (auth.WithStrictExpiry). With one, it accepts, after a call-bound token
+// expires, the requests AdmitExpiredToken admits; the maximum call duration
+// bounds every entry's grace.
 func (b *Binding) TokenValidatorOption() auth.TokenValidatorOption {
 	b.validatorWired.Store(true)
+	if !b.AdmitsExpiredTokens() {
+		return auth.WithStrictExpiry()
+	}
 	return auth.WithExpiredTokenAdmission(b.maxCallDuration, func(r *http.Request, token auth.ExpiredToken) bool {
 		return b.AdmitExpiredToken(r, token, time.Now())
 	})
@@ -188,6 +210,8 @@ func (b *Binding) ValidatorWired() bool { return b.validatorWired.Load() }
 // token passed every check but exp, at now. It admits r only when all of these
 // hold:
 //   - the token carries an mcp_tool_call entry;
+//   - its iss and client_id match an ExpiredTokenAdmission entry, and now is
+//     less than that entry's grace after exp (see WithinExpiredTokenGrace);
 //   - its key has a call in the record, the call is open at now (see
 //     OpenCall), and the call has a session (a Modern call has none);
 //   - r names that session;
@@ -221,6 +245,9 @@ func (b *Binding) AdmitExpiredToken(r *http.Request, expired auth.ExpiredToken, 
 		return refused(reason)
 	case token == nil:
 		return refused("no_entry")
+	}
+	if err := b.withinGrace(expired.Claims, expired.ExpiredAt, now); err != nil {
+		return refused(err.Error())
 	}
 	switch r.Method {
 	case http.MethodPost, http.MethodGet, http.MethodDelete:

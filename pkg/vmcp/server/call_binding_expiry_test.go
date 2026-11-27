@@ -21,13 +21,28 @@ import (
 // cbExpiryServer is a call-binding test server whose token middleware stands
 // in for a validator given the binding's TokenValidatorOption, with a blocking
 // core, a settable clock, and a maximum call duration of three hours, longer
-// than the hour test tokens live.
+// than the hour test tokens live. The test issuer's tokens for cbClient may
+// send their call's messages for three hours after exp.
 func cbExpiryServer(t *testing.T) (*cbTestServer, *blockingCore, *cbClock) {
+	t.Helper()
+	return cbExpiryServerWith(t, cbAdmission(cbIssuer, cbClient, 3*time.Hour))
+}
+
+// cbAdmission is an ExpiredTokenAdmission list of one entry.
+func cbAdmission(issuer, clientID string, grace time.Duration) []callbinding.ExpiredTokenAdmission {
+	return []callbinding.ExpiredTokenAdmission{{Issuer: issuer, ClientID: clientID, Grace: grace}}
+}
+
+// cbExpiryServerWith is cbExpiryServer with the given ExpiredTokenAdmission
+// list; nil keeps exp strict.
+func cbExpiryServerWith(
+	t *testing.T, admission []callbinding.ExpiredTokenAdmission,
+) (*cbTestServer, *blockingCore, *cbClock) {
 	t.Helper()
 	bc := newBlockingCore()
 	clock := &cbClock{now: time.Now()}
 	s := newCallBindingTestServer(t, cbServerOptions{
-		binding: callbinding.Config{MaxCallDuration: 3 * time.Hour},
+		binding: callbinding.Config{MaxCallDuration: 3 * time.Hour, ExpiredTokenAdmission: admission},
 		wrap: func(fc *fakeCore) core.VMCP {
 			bc.fakeCore = fc
 			return bc
@@ -37,6 +52,124 @@ func cbExpiryServer(t *testing.T) (*cbTestServer, *blockingCore, *cbClock) {
 	})
 	t.Cleanup(bc.unblock)
 	return s, bc, clock
+}
+
+// tokenExpiry is the exp of the test token's claims.
+func tokenExpiry(t *testing.T, claims map[string]any) time.Time {
+	t.Helper()
+	exp, ok := claims["exp"].(float64)
+	require.True(t, ok, "claims carry no exp")
+	return time.Unix(int64(exp), 0)
+}
+
+// requireCallMessagesRefused checks that none of an open call's messages on
+// its session gets past the checks after exp: the stand-in validator refuses
+// them, and so does the call-binding check behind a validator that admits any
+// expired token.
+func requireCallMessagesRefused(t *testing.T, s *cbTestServer, token, session string) {
+	t.Helper()
+	send := func() []cbResponse {
+		return []cbResponse{
+			s.send(t, http.MethodPost, token, session, cancelBody("7"), nil),
+			s.send(t, http.MethodPost, token, session, elicitationReply, nil),
+			s.send(t, http.MethodGet, token, session, "", nil),
+			s.send(t, http.MethodDelete, token, session, "", nil),
+		}
+	}
+	s.tokens.setAdmitAll(false)
+	for _, resp := range send() {
+		requireValidatorRefused(t, resp)
+	}
+	s.tokens.setAdmitAll(true)
+	defer s.tokens.setAdmitAll(false)
+	for _, resp := range send() {
+		requireRefused(t, resp, callbinding.ReasonTokenExpired, nil)
+	}
+}
+
+// TestCallBinding_AfterExpiryStrictWithoutList checks that without an
+// ExpiredTokenAdmission list a call-bound token gets 401 on every request
+// once it expires, even its open call's cancellation, replies, GET and
+// DELETE.
+func TestCallBinding_AfterExpiryStrictWithoutList(t *testing.T) {
+	t.Parallel()
+	s, bc, clock := cbExpiryServerWith(t, nil)
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	session := s.session(t, token)
+
+	done := s.postAsync(t.Context(), token, session, toolCallBody(7, cbTool, "{}"))
+	bc.waitStarted(t)
+	clock.Advance(time.Hour + time.Second)
+	requireCallMessagesRefused(t, s, token, session)
+
+	bc.unblock()
+	awaitStatus(t, done)
+}
+
+// TestCallBinding_AfterExpiryGrace checks that a matching entry admits the
+// call's messages only for its grace after exp, while the call is still open
+// and well inside the maximum call duration.
+func TestCallBinding_AfterExpiryGrace(t *testing.T) {
+	t.Parallel()
+	const grace = 10 * time.Minute
+	s, bc, clock := cbExpiryServerWith(t, cbAdmission(cbIssuer, cbClient, grace))
+	claims := claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))})
+	token := s.tokens.add("bound", claims)
+	session := s.session(t, token)
+	exp := tokenExpiry(t, claims)
+
+	done := s.postAsync(t.Context(), token, session, toolCallBody(7, cbTool, "{}"))
+	bc.waitStarted(t)
+
+	clock.Set(exp.Add(grace - time.Second))
+	passedChecks(t, s.send(t, http.MethodPost, token, session, elicitationReply, nil))
+	passedChecks(t, s.send(t, http.MethodGet, token, session, "", nil))
+
+	clock.Set(exp.Add(grace))
+	requireCallMessagesRefused(t, s, token, session)
+
+	bc.unblock()
+	awaitStatus(t, done)
+}
+
+// TestCallBinding_AfterExpiryNotListed checks that an entry matches only the
+// token's iss and client_id: another issuer, another client, or a client named
+// only in azp gets 401 after exp.
+func TestCallBinding_AfterExpiryNotListed(t *testing.T) {
+	t.Parallel()
+	azpOnly := func(claims map[string]any) map[string]any {
+		claims["azp"] = claims["client_id"]
+		delete(claims, "client_id")
+		return claims
+	}
+	for _, tc := range []struct {
+		name      string
+		admission []callbinding.ExpiredTokenAdmission
+		claims    func(map[string]any) map[string]any
+	}{
+		{name: "another issuer", admission: cbAdmission("https://other-as.example.com", cbClient, time.Hour)},
+		{name: "another client", admission: cbAdmission(cbIssuer, "other-client", time.Hour)},
+		{name: "client only in azp", admission: cbAdmission(cbIssuer, cbClient, time.Hour), claims: azpOnly},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, bc, clock := cbExpiryServerWith(t, tc.admission)
+			claims := claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))})
+			if tc.claims != nil {
+				claims = tc.claims(claims)
+			}
+			token := s.tokens.add("bound", claims)
+			session := s.session(t, token)
+
+			done := s.postAsync(t.Context(), token, session, toolCallBody(7, cbTool, "{}"))
+			bc.waitStarted(t)
+			clock.Advance(time.Hour + time.Second)
+			requireCallMessagesRefused(t, s, token, session)
+
+			bc.unblock()
+			awaitStatus(t, done)
+		})
+	}
 }
 
 // requireValidatorRefused checks that the stand-in validator refused the
@@ -162,8 +295,8 @@ func TestCallBinding_AfterExpiryCancelAfterDroppedPost(t *testing.T) {
 }
 
 // TestCallBinding_AfterExpiryDelete checks that a DELETE on the open call's
-// session is accepted after exp. Terminating a session waits for its open
-// requests, so the DELETE completes once the call returns.
+// session is accepted after exp. Deleting a session cancels its open calls, so
+// the DELETE ends the session and the call, which never completes.
 func TestCallBinding_AfterExpiryDelete(t *testing.T) {
 	t.Parallel()
 	s, bc, clock := cbExpiryServer(t)
@@ -174,20 +307,12 @@ func TestCallBinding_AfterExpiryDelete(t *testing.T) {
 	bc.waitStarted(t)
 	clock.Advance(time.Hour + time.Second)
 
-	deleted := s.sendAsync(t.Context(), http.MethodDelete, token, session, "", nil)
-	// A refused DELETE is answered at once. One that passed the checks waits
-	// for the session's open call, so it is still waiting until the call
-	// returns.
-	select {
-	case status := <-deleted:
-		require.FailNow(t, "the DELETE returned while the call was open", "status %d", status)
-	case <-time.After(time.Second):
-	}
-	bc.unblock()
+	deleted := s.send(t, http.MethodDelete, token, session, "", nil)
+	assert.GreaterOrEqual(t, deleted.status, http.StatusOK, "body: %s", deleted.body)
+	assert.Less(t, deleted.status, http.StatusMultipleChoices,
+		"the DELETE passes the checks and ends the session: %s", deleted.body)
 	awaitStatus(t, done)
-	status := awaitStatus(t, deleted)
-	assert.GreaterOrEqual(t, status, http.StatusOK)
-	assert.Less(t, status, http.StatusMultipleChoices, "the DELETE passes the checks and ends the session")
+	assert.Zero(t, s.fc.callToolCalls.Load(), "deleting the session cancels the call")
 }
 
 // TestCallBinding_AfterExpiryMaxCallDuration checks that after exp the call's
@@ -259,7 +384,7 @@ func TestCallBinding_AfterExpiryModernCall(t *testing.T) {
 func TestCallBinding_AdmittedIdentityNeverStartsACall(t *testing.T) {
 	t.Parallel()
 	s, _, clock := cbExpiryServer(t)
-	s.tokens.admitAll = true
+	s.tokens.setAdmitAll(true)
 	bound := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
 	plain := s.tokens.add("plain", claimsFor("other-client", "jti-2", nil))
 	boundSession := s.session(t, bound)
@@ -277,8 +402,10 @@ func TestCallBinding_AdmittedIdentityNeverStartsACall(t *testing.T) {
 }
 
 // TestCallBinding_UnwiredValidatorWarnsOnce checks that the vMCP warns once
-// when call-bound tool calls start and the token validator was never given the
-// binding's option, and stays silent once it was.
+// when call-bound tool calls start, some tokens may send messages after exp,
+// and the token validator was never given the binding's option. It stays
+// silent once the validator was, and without an ExpiredTokenAdmission list,
+// as exp is then strict whether or not the validator was given it.
 // Not parallel: it swaps the process-global slog default.
 //
 //nolint:paralleltest // slog.SetDefault mutates process-global state
@@ -289,9 +416,11 @@ func TestCallBinding_UnwiredValidatorWarnsOnce(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	const warning = "the token validator was not given the call binding's TokenValidatorOption"
 
-	runTwoCalls := func(t *testing.T, wire bool) {
+	runTwoCalls := func(t *testing.T, wire bool, admission []callbinding.ExpiredTokenAdmission) {
 		t.Helper()
-		s := newCallBindingTestServer(t, cbServerOptions{})
+		s := newCallBindingTestServer(t, cbServerOptions{
+			binding: callbinding.Config{ExpiredTokenAdmission: admission},
+		})
 		if wire {
 			_ = s.srv.callBinding.binding.TokenValidatorOption()
 		}
@@ -301,8 +430,11 @@ func TestCallBinding_UnwiredValidatorWarnsOnce(t *testing.T) {
 		}
 	}
 
-	runTwoCalls(t, true)
+	listed := cbAdmission(cbIssuer, cbClient, time.Minute)
+	runTwoCalls(t, false, nil)
+	assert.NotContains(t, buf.String(), warning, "without a list, exp is strict and there is nothing to warn about")
+	runTwoCalls(t, true, listed)
 	assert.NotContains(t, buf.String(), warning, "a wired validator gives no warning")
-	runTwoCalls(t, false)
+	runTwoCalls(t, false, listed)
 	assert.Equal(t, 1, strings.Count(buf.String(), warning), "logged once: %s", buf.String())
 }

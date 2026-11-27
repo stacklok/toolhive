@@ -19,8 +19,13 @@ import (
 
 // The tests in this file run a call that outlives its access token through
 // the real chain: AS-2 issues access tokens that live chainShortLifespan, and
-// the vMCP's production OIDC validator shares the server's call binding.
-const chainShortLifespan = "2s"
+// the vMCP's production OIDC validator shares the server's call binding. Unless
+// a test says otherwise, the vMCP lets AS-2's tokens for chainAS2Client send
+// their call's messages for chainGrace after exp.
+const (
+	chainShortLifespan = "2s"
+	chainGrace         = time.Minute
+)
 
 // waitPastExp sleeps until token's exp has passed by a second.
 func waitPastExp(t *testing.T, token string) {
@@ -94,7 +99,9 @@ func (c *idJAGChain) chainElicitingSession(t *testing.T, token string) string {
 // cancellation reaches the call's handler.
 func TestCallBindingIDJAG_CancelAfterExpiry(t *testing.T) {
 	t.Parallel()
-	c := startIDJAGChainWith(t, chainOptions{accessTokenLifespan: chainShortLifespan, longCalls: true})
+	c := startIDJAGChainWith(t, chainOptions{
+		accessTokenLifespan: chainShortLifespan, longCalls: true, expiredTokenGrace: chainGrace,
+	})
 	token := c.accessToken(t, chainToolEntry(t, "alpha_wait", `{}`))
 	session := c.session(t, token)
 
@@ -134,7 +141,9 @@ func TestCallBindingIDJAG_CancelAfterExpiry(t *testing.T) {
 // reply is accepted and completes the call.
 func TestCallBindingIDJAG_ElicitationAfterExpiry(t *testing.T) {
 	t.Parallel()
-	c := startIDJAGChainWith(t, chainOptions{accessTokenLifespan: chainShortLifespan, longCalls: true})
+	c := startIDJAGChainWith(t, chainOptions{
+		accessTokenLifespan: chainShortLifespan, longCalls: true, expiredTokenGrace: chainGrace,
+	})
 	token := c.accessToken(t, chainToolEntry(t, "alpha_ask", `{}`))
 	session := c.chainElicitingSession(t, token)
 
@@ -201,4 +210,40 @@ func TestCallBindingIDJAG_ElicitationAfterExpiry(t *testing.T) {
 	result := chainAwait(t, done, "the call did not return")
 	assert.Equal(t, http.StatusText(http.StatusOK), result[0], "body: %s", result[1])
 	assert.Contains(t, result[1], "client said accept")
+}
+
+// TestCallBindingIDJAG_StrictExpiryWithoutList runs a tool call that outlives
+// its access token on a vMCP with no ExpiredTokenAdmission list: the
+// production validator keeps exp strict, so after exp even the open call's
+// cancellation, GET and DELETE get its own 401.
+func TestCallBindingIDJAG_StrictExpiryWithoutList(t *testing.T) {
+	t.Parallel()
+	c := startIDJAGChainWith(t, chainOptions{accessTokenLifespan: chainShortLifespan, longCalls: true})
+	token := c.accessToken(t, chainToolEntry(t, "alpha_wait", `{}`))
+	session := c.session(t, token)
+
+	ctx, closeCall := context.WithCancel(t.Context())
+	done := c.chainAsyncPost(ctx, token, session, cbToolCall(7, "alpha_wait", `{}`))
+	chainAwait(t, c.hooks.waitStarted, "the backend call did not start")
+	waitPastExp(t, token)
+
+	cancel := `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}`
+	status, body, _ := c.post(t, token, session, cancel, nil)
+	assert.Equal(t, http.StatusUnauthorized, status, "the cancellation after exp: %s", body)
+	assert.Contains(t, body, "token is expired", "the validator's own 401: %s", body)
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		req, err := http.NewRequestWithContext(t.Context(), method, c.vmcpURL+"/mcp", nil)
+		require.NoError(t, err)
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Mcp-Session-Id", session)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, "%s after exp", method)
+	}
+
+	// The client can still close the call's own request.
+	closeCall()
+	chainAwait[[2]string](t, done, "the call did not return")
 }

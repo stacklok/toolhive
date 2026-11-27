@@ -340,13 +340,17 @@ func renderListItems[T, W any](items []T, render func(T) (W, error)) ([]json.Raw
 //     notifications/cancelled for the call's ID, and a JSON-RPC response
 //     (such as an elicitation reply).
 //
-// After the token's exp, the token validator accepts a request only when the
-// binding admits it (callbinding.Binding.AdmitExpiredToken), and marks the
-// identity (auth.Identity.AdmittedAfterExpiry). Such a request may be only one
-// of the open call's own messages, on its session, while it is open and younger
-// than the maximum call duration: a GET or DELETE, a notifications/cancelled
-// for the call's ID, or, for a tool call, a JSON-RPC response (see
-// serveAfterExpiry). The token's exp limits only when a call can start.
+// After the token's exp, every request gets 401 unless the token's iss and
+// client_id match an entry of the binding's ExpiredTokenAdmission list, which
+// is empty by default. For a matching token, the token validator accepts a
+// request only when the binding admits it
+// (callbinding.Binding.AdmitExpiredToken), and marks the identity
+// (auth.Identity.AdmittedAfterExpiry). Such a request may be only one of the
+// open call's own messages, on its session, within the entry's grace after exp,
+// while the call is open and younger than the maximum call duration: a GET or
+// DELETE, a notifications/cancelled for the call's ID, or, for a tool call, a
+// JSON-RPC response (see serveAfterExpiry). For such a token, exp limits only
+// when a call can start.
 //
 // A token with a list-call entry may send the handshake, server/discover, ping,
 // GET and DELETE as above, and the list method its entry names once, answered
@@ -426,7 +430,7 @@ func (cb *callBinding) serveBound(
 	// A token the validator accepted after it expired, or one that expired
 	// between the validator and here, may send only its open call's messages.
 	if !identity.AdmittedAfterExpiry.IsZero() || !cb.now().Before(token.ExpiresAt.Add(callBindingLeeway)) {
-		cb.serveAfterExpiry(w, r, next, token, parsed)
+		cb.serveAfterExpiry(w, r, next, identity, token, parsed)
 		return
 	}
 	switch r.Method {
@@ -446,9 +450,11 @@ func (cb *callBinding) serveBound(
 }
 
 // serveAfterExpiry handles a request that the token validator accepted after
-// the token expired, because the binding admitted it. It admits only a message
-// of the call the token started, on that call's session, while the call is
-// open and younger than the maximum call duration: a GET or DELETE, a
+// the token expired, because the binding admitted it, or whose token expired
+// since the validator. It admits only a token whose iss and client_id match an
+// ExpiredTokenAdmission entry, within that entry's grace after exp, and only
+// a message of the call the token started, on that call's session, while the
+// call is open and younger than the maximum call duration: a GET or DELETE, a
 // notifications/cancelled for the call's ID, or, for a tool call, a JSON-RPC
 // response, such as an elicitation reply. A list call is recorded ended, so it
 // has none. The checks the binding made are made again, as the call may have
@@ -463,8 +469,14 @@ func (cb *callBinding) serveBound(
 // is before exp (see serveCallMessage).
 func (cb *callBinding) serveAfterExpiry(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
-	token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
+	identity *auth.Identity, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
 ) {
+	// The validator and this check are wired separately, so the list is
+	// checked here too: without a matching entry, exp is strict.
+	if !cb.binding.WithinExpiredTokenGrace(identity.Claims, token.ExpiresAt, cb.now()) {
+		cb.refuse(w, r, parsed, token, callbinding.ReasonTokenExpired)
+		return
+	}
 	call, open, err := cb.binding.OpenCall(r.Context(), token.Key, cb.now())
 	if err != nil {
 		cb.unavailable(w, r, parsed, token, "record", err)
@@ -890,11 +902,12 @@ func (cb *callBinding) dispatching(identity *auth.Identity) (done func()) {
 	return cb.binding.BeginDispatch(token)
 }
 
-// warnIfValidatorUnwired logs once when a call-bound tool call starts and the
-// token validator was never given the binding's option: the call's messages
-// then get the validator's 401 once the token expires.
+// warnIfValidatorUnwired logs once when a call-bound tool call starts, the
+// binding admits some tokens after exp, and the token validator was never
+// given the binding's option: the call's messages then get the validator's
+// 401 once the token expires, whatever the ExpiredTokenAdmission list says.
 func (cb *callBinding) warnIfValidatorUnwired(ctx context.Context) {
-	if cb.binding.ValidatorWired() {
+	if !cb.binding.AdmitsExpiredTokens() || cb.binding.ValidatorWired() {
 		return
 	}
 	cb.unwiredWarning.Do(func() {

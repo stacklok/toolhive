@@ -109,6 +109,10 @@ type chainOptions struct {
 	accessTokenLifespan string
 	// longCalls adds the alpha backend's long-running tools (chainHooks).
 	longCalls bool
+	// expiredTokenGrace, when set, lets AS-2's tokens for chainAS2Client send
+	// their call's messages for that long after exp (the vMCP's
+	// ExpiredTokenAdmission list). Unset keeps exp strict.
+	expiredTokenGrace time.Duration
 }
 
 func startIDJAGChain(t *testing.T) *idJAGChain {
@@ -158,7 +162,13 @@ func startIDJAGChainWith(t *testing.T, opts chainOptions) *idJAGChain {
 	chainServe(t, l1, as1.Handler())
 	chainServe(t, l2, as2.Handler())
 
-	c.vmcpURL = startChainVMCP(t, c.as2URL, c.toolCalls, c.hooks)
+	var admission []callbinding.ExpiredTokenAdmission
+	if opts.expiredTokenGrace > 0 {
+		admission = []callbinding.ExpiredTokenAdmission{
+			{Issuer: c.as2URL, ClientID: chainAS2Client, Grace: opts.expiredTokenGrace},
+		}
+	}
+	c.vmcpURL = startChainVMCP(t, c.as2URL, c.toolCalls, c.hooks, admission)
 	return c
 }
 
@@ -377,7 +387,10 @@ func addChainLongCalls(srv *mcpserver.MCPServer, id string, hooks *chainHooks) {
 // the OIDC validator for AS-2's access tokens for chainResource, and that
 // requires an entry from chainAS2Client's tokens. The validator and the
 // server share one call binding, as the vmcp command wires them.
-func startChainVMCP(t *testing.T, as2Issuer string, toolCalls *atomic.Int32, hooks *chainHooks) string {
+func startChainVMCP(
+	t *testing.T, as2Issuer string, toolCalls *atomic.Int32, hooks *chainHooks,
+	admission []callbinding.ExpiredTokenAdmission,
+) string {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	registry := mocks.NewMockBackendRegistry(ctrl)
@@ -405,7 +418,9 @@ func startChainVMCP(t *testing.T, as2Issuer string, toolCalls *atomic.Int32, hoo
 	resolver, err := aggregator.NewPriorityConflictResolver(chainBackends)
 	require.NoError(t, err)
 
-	binding, err := callbinding.New(callbinding.Config{Clients: []string{chainAS2Client}})
+	binding, err := callbinding.New(callbinding.Config{
+		Clients: []string{chainAS2Client}, ExpiredTokenAdmission: admission,
+	})
 	require.NoError(t, err)
 	authMw, _, _, err := authfactory.NewIncomingAuthMiddleware(t.Context(), &config.IncomingAuthConfig{
 		Type: config.IncomingAuthTypeOIDC,

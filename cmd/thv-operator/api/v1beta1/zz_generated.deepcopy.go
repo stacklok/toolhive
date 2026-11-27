@@ -23,6 +23,7 @@ package v1beta1
 import (
 	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/ratelimit/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -762,6 +763,11 @@ func (in *IncomingAuthConfig) DeepCopyInto(out *IncomingAuthConfig) {
 		in, out := &in.AuthzConfigRef, &out.AuthzConfigRef
 		*out = new(MCPAuthzConfigReference)
 		**out = **in
+	}
+	if in.ExpiredTokenAdmission != nil {
+		in, out := &in.ExpiredTokenAdmission, &out.ExpiredTokenAdmission
+		*out = make([]config.ExpiredTokenAdmissionConfig, len(*in))
+		copy(*out, *in)
 	}
 }
 

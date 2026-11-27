@@ -8,6 +8,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -221,8 +222,17 @@ func (c *Converter) convertIncomingAuth(
 	}
 
 	incoming := &vmcpconfig.IncomingAuthConfig{
-		Type: vmcp.Spec.IncomingAuth.Type,
-		OIDC: oidcConfig,
+		Type:                  vmcp.Spec.IncomingAuth.Type,
+		OIDC:                  oidcConfig,
+		ExpiredTokenAdmission: slices.Clone(vmcp.Spec.IncomingAuth.ExpiredTokenAdmission),
+	}
+	// The vMCP refuses an invalid list when it starts; refuse it here, so the
+	// error shows on the VirtualMCPServer instead of as a crash-looping pod.
+	if len(incoming.ExpiredTokenAdmission) > 0 && incoming.Type != vmcpconfig.IncomingAuthTypeOIDC {
+		return nil, fmt.Errorf("spec.incomingAuth.expiredTokenAdmission requires type oidc")
+	}
+	if err := vmcpconfig.ValidateExpiredTokenAdmission(incoming.ExpiredTokenAdmission); err != nil {
+		return nil, fmt.Errorf("spec.%w", err)
 	}
 
 	// Convert authorization configuration. The inline/configMap authzConfig and

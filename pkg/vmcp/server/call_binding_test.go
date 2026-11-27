@@ -73,6 +73,13 @@ type cbTokens struct {
 	admitAll bool
 }
 
+// setAdmitAll sets admitAll.
+func (c *cbTokens) setAdmitAll(admit bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.admitAll = admit
+}
+
 func (c *cbTokens) add(token string, claims map[string]any) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -85,6 +92,7 @@ func (c *cbTokens) middleware(next http.Handler) http.Handler {
 		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		c.mu.Lock()
 		claims, ok := c.claims[token]
+		admitAll := c.admitAll
 		c.mu.Unlock()
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -98,7 +106,7 @@ func (c *cbTokens) middleware(next http.Handler) http.Handler {
 		}
 		if exp, _ := claims["exp"].(float64); c.binding != nil && !c.clock.Now().Before(time.Unix(int64(exp), 0)) {
 			expired := auth.ExpiredToken{Claims: claims, ExpiredAt: time.Unix(int64(exp), 0)}
-			if !c.admitAll && !c.binding.AdmitExpiredToken(r, expired, c.clock.Now()) {
+			if !admitAll && !c.binding.AdmitExpiredToken(r, expired, c.clock.Now()) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}

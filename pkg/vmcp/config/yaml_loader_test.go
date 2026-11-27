@@ -6,6 +6,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +83,42 @@ aggregation:
 				}
 			},
 			wantErr: false,
+		},
+		{
+			name: "OIDC configuration with expiredTokenAdmission",
+			yaml: `
+name: test-vmcp
+groupRef: test-group
+
+incomingAuth:
+  type: oidc
+  oidc:
+    issuer: https://auth.example.com
+    audience: vmcp
+  expiredTokenAdmission:
+    - issuer: https://as.example.com
+      clientId: agent
+      grace: 2m
+
+outgoingAuth:
+  source: inline
+  default:
+    type: unauthenticated
+
+aggregation:
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
+`,
+			want: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				want := []ExpiredTokenAdmissionConfig{
+					{Issuer: "https://as.example.com", ClientID: "agent", Grace: Duration(2 * time.Minute)},
+				}
+				if !reflect.DeepEqual(cfg.IncomingAuth.ExpiredTokenAdmission, want) {
+					t.Errorf("IncomingAuth.ExpiredTokenAdmission = %+v, want %+v", cfg.IncomingAuth.ExpiredTokenAdmission, want)
+				}
+			},
 		},
 		{
 			name: "valid OIDC configuration with env vars",

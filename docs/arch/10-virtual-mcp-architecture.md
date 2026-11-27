@@ -1627,10 +1627,37 @@ one token, one call: a retried `tools/call`, such as the retry after a URL elici
 (Legacy `-32042`, Modern `input_required`), is a second call and is refused with
 `token_reused`. The client needs a fresh call-bound token for the retry.
 
-**After `exp`.** The token's `exp` limits only when a call can start. A tool call that
-outlives its token keeps its own messages, while the call is open and younger than
-the maximum call duration, on the call's session: a
-`notifications/cancelled` for the call's ID, a JSON-RPC response such as an
+**After `exp`.** By default `exp` is strict: once a call-bound token expires, every
+request with it gets 401, as RFC 7519 section 4.1.4 and RFC 9068 require, even one
+that cancels or answers a call still running. An operator opts in per issuer and
+client with `incomingAuth.expiredTokenAdmission`, a list of
+`{issuer, clientId, grace}` entries (`callbinding.Config.ExpiredTokenAdmission`):
+
+```yaml
+incomingAuth:
+  type: oidc
+  oidc: {issuer: https://as.example.com, audience: https://vmcp.example.com/mcp}
+  expiredTokenAdmission:
+    - issuer: https://as.example.com
+      clientId: agent-gateway
+      grace: 2m
+```
+
+An entry matches a token whose `iss` and `client_id` claims equal its `issuer` and
+`clientId` exactly; `azp` is not read. `client_id` names the client the token was
+issued to, not the one presenting it, so on an authorization server that several
+clients share, the list limits which tokens get the grace, not which clients can be
+issued a call entry; that is for the authorization server's grant policy. Each
+`grace` must be positive and at most the maximum call duration, and no two entries
+may name the same issuer and client; the vMCP refuses such a list at startup and the
+operator refuses it on the `VirtualMCPServer` (`spec.incomingAuth.expiredTokenAdmission`).
+When sender-constrained tokens (DPoP or mTLS) arrive, admission after `exp` is
+expected to require the proof as well, switched on in the same list.
+
+For a matching token, `exp` limits only when a call can start. A tool call that
+outlives its token keeps its own messages, for the entry's `grace` after `exp`,
+while the call is open and younger than the maximum call duration, on the call's
+session: a `notifications/cancelled` for the call's ID, a JSON-RPC response such as an
 elicitation answer, and a GET or DELETE. The GET lets a client whose stream dropped
 receive the call's messages again: the vMCP sends a backend's elicitation on the
 session's standalone stream. The DELETE ends the session. Neither starts anything.
@@ -1644,22 +1671,26 @@ The token validator refuses an expired JWT before this middleware runs, so the t
 share one `callbinding.Binding`, built by `callbinding.New` from the configuration:
 the embedder passes it as `ServerConfig.CallBinding` and to the incoming auth factory
 (`factory.WithCallBinding`), which gives the OIDC validator
-`Binding.TokenValidatorOption`. With that option (`auth.WithExpiredTokenAdmission`),
-the validator takes a JWT refused for its `exp` alone, checks it again on everything
-else (signature, `iss`, `aud`, `nbf`, subject restriction), requires its `exp` to be
-less than the maximum call duration in the past, and asks the binding
-(`Binding.AdmitExpiredToken`). The binding admits a POST, GET or DELETE only when the
-token carries an entry, its key has an open call in this replica's record, and the
-request names that call's session; it never reads the body. Anything else gets the
+`Binding.TokenValidatorOption`. Without an `expiredTokenAdmission` entry, that option
+is `auth.WithStrictExpiry`, so `exp` stays strict by construction. With one, it is
+`auth.WithExpiredTokenAdmission`: the validator takes a JWT refused for its `exp`
+alone, checks it again on everything else (signature, `iss`, `aud`, `nbf`, subject
+restriction), requires its `exp` to be less than the maximum call duration in the
+past, and asks the binding (`Binding.AdmitExpiredToken`). The binding admits a POST,
+GET or DELETE only when the token carries an entry, its `iss` and `client_id` match an
+`expiredTokenAdmission` entry and its `exp` is less than that entry's grace in the
+past, its key has an open call in this replica's record, and the request names that
+call's session; it never reads the body. Anything else gets the
 validator's usual 401, and opaque tokens never qualify. An admitted identity is marked
 (`auth.Identity.AdmittedAfterExpiry`) and gets no upstream tokens: its messages travel
-on the open call's backend connection. The middleware checks the call again, admits
-only the call's own messages, and refuses the rest with 401 `token_expired`;
+on the open call's backend connection. The middleware checks the list, the grace and the
+call again, since the validator and the server are wired separately, admits only the
+call's own messages, and refuses the rest with 401 `token_expired`;
 `core.CallTool` and the pre-dispatch gate refuse a marked identity as a backstop. The
 audit event of an admitted request carries `metadata.extra.admitted_after_expiry` and
-the entry's `operation_id`. Without the option every request after `exp` gets the
-validator's 401, and the vMCP warns once when a call-bound tool call starts; the
-`vmcp` command wires it. With the default in-memory record, a message sent to
+the entry's `operation_id`. With a list but without the option, every request after
+`exp` gets the validator's 401, and the vMCP warns once when a call-bound tool call
+starts; the `vmcp` command wires it. With the default in-memory record, a message sent to
 another replica after `exp` gets 401, so the window does not widen the single-use
 gap; with a shared `Record`, another replica admits it, as it does before `exp`.
 

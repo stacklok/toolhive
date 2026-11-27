@@ -825,9 +825,12 @@ func TestUserResolver_UnstampedWithoutSwapperLogsInfoOnce(t *testing.T) {
 	base := storage.NewMemoryStorage()
 	t.Cleanup(func() { require.NoError(t, base.Close()) })
 	ctx := context.Background()
-	for _, subject := range []string{"sub-1", "sub-2"} {
-		_, err := NewUserResolver(base).ResolveUser(ctx, provider, subject)
+	subjects := []string{"sub-1", "sub-2"}
+	var seededIDs []string
+	for _, subject := range subjects {
+		u, err := NewUserResolver(base).ResolveUser(ctx, provider, subject)
 		require.NoError(t, err)
+		seededIDs = append(seededIDs, u.ID)
 	}
 
 	var logs bytes.Buffer
@@ -836,24 +839,30 @@ func TestUserResolver_UnstampedWithoutSwapperLogsInfoOnce(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	r := NewUserResolver(nonSwappingUserStorage{UserStorage: base}, WithIdentityBinding(provider, issuer, claim))
-	infoLines := func() int {
+	linesAt := func(level, msg string) int {
 		n := 0
 		for _, line := range strings.Split(logs.String(), "\n") {
-			if strings.Contains(line, "level=INFO") && strings.Contains(line, "ProviderIdentitySwapper") {
+			if strings.Contains(line, "level="+level) && strings.Contains(line, msg) {
 				n++
 			}
 		}
 		return n
 	}
+	const infoMsg = "without the ProviderIdentitySwapper capability"
+	const debugMsg = "leaving it unstamped"
 
-	_, err := r.ResolveUser(ctx, provider, "sub-1")
+	_, err := r.ResolveUser(ctx, provider, subjects[0])
 	require.NoError(t, err)
-	assert.Equal(t, 1, infoLines())
+	assert.Equal(t, 1, linesAt("INFO", infoMsg))
+	assert.Equal(t, 0, linesAt("DEBUG", debugMsg))
 	assert.Contains(t, logs.String(), "provider_id=default")
-	assert.NotContains(t, logs.String(), "sub-1")
 
-	_, err = r.ResolveUser(ctx, provider, "sub-2")
+	_, err = r.ResolveUser(ctx, provider, subjects[1])
 	require.NoError(t, err)
-	assert.Equal(t, 1, infoLines(), "later unstamped sign-ins stay at DEBUG")
-	assert.Contains(t, logs.String(), "level=DEBUG")
+	assert.Equal(t, 1, linesAt("INFO", infoMsg), "later unstamped sign-ins stay at DEBUG")
+	assert.Equal(t, 1, linesAt("DEBUG", debugMsg))
+
+	for _, secret := range append(append([]string{}, subjects...), seededIDs...) {
+		assert.NotContains(t, logs.String(), secret)
+	}
 }

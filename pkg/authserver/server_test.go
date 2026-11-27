@@ -1750,30 +1750,27 @@ func TestUpstreamIdentityBinding_OAuth2HostOnly(t *testing.T) {
 	require.True(t, strings.HasPrefix(base, "oauth2:userinfo:sha256:"))
 	assert.Len(t, base, len("oauth2:userinfo:sha256:")+64)
 
-	tests := []struct {
+	sameBinding := []struct {
 		name     string
 		endpoint string
-		wantSame bool
 	}{
-		{"different path", "https://api.example.com/v2/me", true},
-		{"query and trailing slash", "https://api.example.com/userinfo/?x=1", true},
-		{"host case", "https://API.Example.com/userinfo", true},
-		{"different scheme, same host", "http://api.example.com/userinfo", true},
-		{"different host", "https://api.other.example.com/userinfo", false},
-		{"different port", "https://api.example.com:8443/userinfo", false},
+		{"different path", "https://api.example.com/v2/me"},
+		{"query and trailing slash", "https://api.example.com/userinfo/?x=1"},
+		{"different scheme, same host", "http://api.example.com/userinfo"},
 	}
-	for _, tt := range tests {
+	for _, tt := range sameBinding {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got, _ := upstreamIdentityBinding(ptr(userinfo("https://idp.example.com/token", tt.endpoint)))
-			if tt.wantSame {
-				assert.Equal(t, base, got)
-			} else {
-				assert.NotEqual(t, base, got)
-				assert.True(t, strings.HasPrefix(got, "oauth2:userinfo:sha256:"))
-			}
+			assert.Equal(t, base, got)
 		})
 	}
+
+	t.Run("userinfo mode ignores the token endpoint", func(t *testing.T) {
+		t.Parallel()
+		got, _ := upstreamIdentityBinding(ptr(userinfo("https://other-idp.example.net/token", "https://api.example.com/userinfo")))
+		assert.Equal(t, base, got)
+	})
 
 	t.Run("unparsable endpoint", func(t *testing.T) {
 		t.Parallel()

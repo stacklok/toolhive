@@ -44,17 +44,17 @@ func ValidateExpiredTokenAdmission(entries []ExpiredTokenAdmission, maxCallDurat
 	for i, e := range entries {
 		switch {
 		case strings.TrimSpace(e.Issuer) == "":
-			return fmt.Errorf("entry %d: issuer must not be empty", i)
+			return fmt.Errorf("entry %d: Issuer must not be empty", i)
 		case strings.TrimSpace(e.ClientID) == "":
-			return fmt.Errorf("entry %d: clientId must not be empty", i)
+			return fmt.Errorf("entry %d: ClientID must not be empty", i)
 		case e.Grace <= 0:
-			return fmt.Errorf("entry %d: grace must be positive", i)
+			return fmt.Errorf("entry %d: Grace must be positive", i)
 		case e.Grace > maxCallDuration:
-			return fmt.Errorf("entry %d: grace %s exceeds the maximum call duration %s", i, e.Grace, maxCallDuration)
+			return fmt.Errorf("entry %d: Grace %s exceeds the maximum call duration %s", i, e.Grace, maxCallDuration)
 		}
 		key := admissionKey{issuer: e.Issuer, clientID: e.ClientID}
 		if first, dup := seen[key]; dup {
-			return fmt.Errorf("entry %d: issuer %q and clientId %q are already listed by entry %d",
+			return fmt.Errorf("entry %d: Issuer %q and ClientID %q are already listed by entry %d",
 				i, e.Issuer, e.ClientID, first)
 		}
 		seen[key] = i

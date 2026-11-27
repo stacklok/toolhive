@@ -244,20 +244,6 @@ type IncomingAuthConfig struct {
 	// error because the vMCP runtime authz middleware is Cedar-only.
 	// +optional
 	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
-
-	// ExpiredTokenAdmission lists the token issuers and OAuth clients whose
-	// call-bound access tokens may still send their call's own messages after
-	// the token expires, and for how long. Empty by default: once a token
-	// expires, every request with it gets 401. For a token whose iss and
-	// client_id claims match an entry, the vMCP accepts, for the entry's grace
-	// after exp and while the call is open, only that call's cancellation,
-	// replies to its questions, and GET or DELETE on its session. Requires
-	// type oidc. Each grace must be positive and at most 30 minutes.
-	// +optional
-	// +listType=map
-	// +listMapKey=issuer
-	// +listMapKey=clientId
-	ExpiredTokenAdmission []config.ExpiredTokenAdmissionConfig `json:"expiredTokenAdmission,omitempty"`
 }
 
 // OutgoingAuthConfig configures authentication from Virtual MCP to backend resources.

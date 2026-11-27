@@ -3548,61 +3548,6 @@ spec:
                         required:
                         - type
                         type: object
-                      expiredTokenAdmission:
-                        description: |-
-                          ExpiredTokenAdmission lists the token issuers and OAuth clients whose
-                          call-bound access tokens may still send their call's own messages after
-                          the token expires, and for how long. A call-bound token carries an
-                          authorization_details entry of type https://toolhive.dev/mcp_tool_call
-                          and may start one call before it expires; that call can run longer than
-                          the token lives.
-
-                          Empty by default: once a token expires, every request with it gets 401,
-                          even one that cancels or answers a call still running. For a token whose
-                          iss and client_id claims match an entry, the vMCP accepts, for the entry's
-                          grace after the token's exp and while the call is open, only that call's
-                          own messages on its session: a cancellation of the call, a reply to a
-                          question the call asked (such as an elicitation), and a GET or DELETE.
-                          Nothing else, and a new call can still start only before exp.
-
-                          Requires type "oidc". Each grace must be positive and at most 30 minutes
-                          (the maximum call duration), and no two entries may name the same issuer
-                          and clientId.
-                        items:
-                          description: |-
-                            ExpiredTokenAdmissionConfig lets one issuer's call-bound tokens for one
-                            OAuth client send their call's own messages after the token expires. See
-                            IncomingAuthConfig.ExpiredTokenAdmission.
-                          properties:
-                            clientId:
-                              description: |-
-                                ClientID must equal the token's client_id claim exactly. The azp claim
-                                is not read, so a token that names its client only in azp never matches.
-                                client_id names the client the token was issued to, not the one
-                                presenting it.
-                              minLength: 1
-                              type: string
-                            grace:
-                              description: |-
-                                Grace is how long after the token's exp its call's messages are still
-                                accepted, such as "2m". It must be positive and at most 30 minutes.
-                              pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
-                              type: string
-                            issuer:
-                              description: Issuer must equal the token's iss claim
-                                exactly.
-                              minLength: 1
-                              type: string
-                          required:
-                          - clientId
-                          - grace
-                          - issuer
-                          type: object
-                        type: array
-                        x-kubernetes-list-map-keys:
-                        - issuer
-                        - clientId
-                        x-kubernetes-list-type: map
                       oidc:
                         description: OIDC contains OIDC configuration (when Type =
                           "oidc").
@@ -5149,50 +5094,6 @@ spec:
                     required:
                     - name
                     type: object
-                  expiredTokenAdmission:
-                    description: |-
-                      ExpiredTokenAdmission lists the token issuers and OAuth clients whose
-                      call-bound access tokens may still send their call's own messages after
-                      the token expires, and for how long. Empty by default: once a token
-                      expires, every request with it gets 401. For a token whose iss and
-                      client_id claims match an entry, the vMCP accepts, for the entry's grace
-                      after exp and while the call is open, only that call's cancellation,
-                      replies to its questions, and GET or DELETE on its session. Requires
-                      type oidc. Each grace must be positive and at most 30 minutes.
-                    items:
-                      description: |-
-                        ExpiredTokenAdmissionConfig lets one issuer's call-bound tokens for one
-                        OAuth client send their call's own messages after the token expires. See
-                        IncomingAuthConfig.ExpiredTokenAdmission.
-                      properties:
-                        clientId:
-                          description: |-
-                            ClientID must equal the token's client_id claim exactly. The azp claim
-                            is not read, so a token that names its client only in azp never matches.
-                            client_id names the client the token was issued to, not the one
-                            presenting it.
-                          minLength: 1
-                          type: string
-                        grace:
-                          description: |-
-                            Grace is how long after the token's exp its call's messages are still
-                            accepted, such as "2m". It must be positive and at most 30 minutes.
-                          pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
-                          type: string
-                        issuer:
-                          description: Issuer must equal the token's iss claim exactly.
-                          minLength: 1
-                          type: string
-                      required:
-                      - clientId
-                      - grace
-                      - issuer
-                      type: object
-                    type: array
-                    x-kubernetes-list-map-keys:
-                    - issuer
-                    - clientId
-                    x-kubernetes-list-type: map
                   oidcConfigRef:
                     description: |-
                       OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
@@ -9416,61 +9317,6 @@ spec:
                         required:
                         - type
                         type: object
-                      expiredTokenAdmission:
-                        description: |-
-                          ExpiredTokenAdmission lists the token issuers and OAuth clients whose
-                          call-bound access tokens may still send their call's own messages after
-                          the token expires, and for how long. A call-bound token carries an
-                          authorization_details entry of type https://toolhive.dev/mcp_tool_call
-                          and may start one call before it expires; that call can run longer than
-                          the token lives.
-
-                          Empty by default: once a token expires, every request with it gets 401,
-                          even one that cancels or answers a call still running. For a token whose
-                          iss and client_id claims match an entry, the vMCP accepts, for the entry's
-                          grace after the token's exp and while the call is open, only that call's
-                          own messages on its session: a cancellation of the call, a reply to a
-                          question the call asked (such as an elicitation), and a GET or DELETE.
-                          Nothing else, and a new call can still start only before exp.
-
-                          Requires type "oidc". Each grace must be positive and at most 30 minutes
-                          (the maximum call duration), and no two entries may name the same issuer
-                          and clientId.
-                        items:
-                          description: |-
-                            ExpiredTokenAdmissionConfig lets one issuer's call-bound tokens for one
-                            OAuth client send their call's own messages after the token expires. See
-                            IncomingAuthConfig.ExpiredTokenAdmission.
-                          properties:
-                            clientId:
-                              description: |-
-                                ClientID must equal the token's client_id claim exactly. The azp claim
-                                is not read, so a token that names its client only in azp never matches.
-                                client_id names the client the token was issued to, not the one
-                                presenting it.
-                              minLength: 1
-                              type: string
-                            grace:
-                              description: |-
-                                Grace is how long after the token's exp its call's messages are still
-                                accepted, such as "2m". It must be positive and at most 30 minutes.
-                              pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
-                              type: string
-                            issuer:
-                              description: Issuer must equal the token's iss claim
-                                exactly.
-                              minLength: 1
-                              type: string
-                          required:
-                          - clientId
-                          - grace
-                          - issuer
-                          type: object
-                        type: array
-                        x-kubernetes-list-map-keys:
-                        - issuer
-                        - clientId
-                        x-kubernetes-list-type: map
                       oidc:
                         description: OIDC contains OIDC configuration (when Type =
                           "oidc").
@@ -11017,50 +10863,6 @@ spec:
                     required:
                     - name
                     type: object
-                  expiredTokenAdmission:
-                    description: |-
-                      ExpiredTokenAdmission lists the token issuers and OAuth clients whose
-                      call-bound access tokens may still send their call's own messages after
-                      the token expires, and for how long. Empty by default: once a token
-                      expires, every request with it gets 401. For a token whose iss and
-                      client_id claims match an entry, the vMCP accepts, for the entry's grace
-                      after exp and while the call is open, only that call's cancellation,
-                      replies to its questions, and GET or DELETE on its session. Requires
-                      type oidc. Each grace must be positive and at most 30 minutes.
-                    items:
-                      description: |-
-                        ExpiredTokenAdmissionConfig lets one issuer's call-bound tokens for one
-                        OAuth client send their call's own messages after the token expires. See
-                        IncomingAuthConfig.ExpiredTokenAdmission.
-                      properties:
-                        clientId:
-                          description: |-
-                            ClientID must equal the token's client_id claim exactly. The azp claim
-                            is not read, so a token that names its client only in azp never matches.
-                            client_id names the client the token was issued to, not the one
-                            presenting it.
-                          minLength: 1
-                          type: string
-                        grace:
-                          description: |-
-                            Grace is how long after the token's exp its call's messages are still
-                            accepted, such as "2m". It must be positive and at most 30 minutes.
-                          pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
-                          type: string
-                        issuer:
-                          description: Issuer must equal the token's iss claim exactly.
-                          minLength: 1
-                          type: string
-                      required:
-                      - clientId
-                      - grace
-                      - issuer
-                      type: object
-                    type: array
-                    x-kubernetes-list-map-keys:
-                    - issuer
-                    - clientId
-                    x-kubernetes-list-type: map
                   oidcConfigRef:
                     description: |-
                       OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.

@@ -89,14 +89,9 @@ func (c *idJAGChain) chainElicitingSession(t *testing.T, token string) string {
 
 // TestCallBindingIDJAG_CancelAfterExpiry runs a tool call that outlives its
 // access token: after exp the token cannot start another call or list tools,
-// but its cancellation for the open call is accepted. Once the call has ended,
-// the token gets the validator's own 401.
-//
-// Whether the vMCP then delivers the cancellation to the backend is not
-// asserted here: that delivery is intermittent before exp too, so it is not
-// part of what admission after exp decides. The server's
-// TestCallBinding_AfterExpiryCancellationStopsCall checks that the
-// cancellation reaches the call's handler.
+// but its cancellation for the open call is accepted and reaches the backend
+// before the call's own deadline. Once the call has ended, within the grace, a
+// repeated cancellation is ignored with 202 and a GET gets 403 no_open_call.
 func TestCallBindingIDJAG_CancelAfterExpiry(t *testing.T) {
 	t.Parallel()
 	c := startIDJAGChainWith(t, chainOptions{
@@ -121,18 +116,29 @@ func TestCallBindingIDJAG_CancelAfterExpiry(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, status, "the cancellation after exp: %s", body)
 	select {
 	case <-c.hooks.waitCancelled:
-	case <-time.After(5 * time.Second):
-		t.Log("the backend did not see the cancellation; the call ends at its own limit")
+	case <-time.After(chainWaitLimit):
+		require.FailNow(t, "the backend did not see the cancellation before the call's own deadline")
 	}
 	result := chainAwait[[2]string](t, done, "the call did not return")
 	t.Logf("the call returned %s", result[0])
 
+	// Once the call has ended, within the grace, nothing reaches it, and the
+	// answers keep a go-sdk client's connection: 202 for a cancellation, 403
+	// no_open_call with a JSON-RPC error for a GET.
 	require.Eventually(t, func() bool {
-		status, _, _ := c.post(t, token, session, cancel, nil)
-		return status == http.StatusUnauthorized
-	}, 10*time.Second, 50*time.Millisecond, "once the call has ended, its messages are refused")
-	_, body, _ = c.post(t, token, session, cancel, nil)
-	assert.Contains(t, body, "token is expired", "the validator's own 401: %s", body)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.vmcpURL+"/mcp", nil)
+		require.NoError(t, err)
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Mcp-Session-Id", session)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusForbidden && strings.Contains(string(raw), "no_open_call")
+	}, 10*time.Second, 50*time.Millisecond, "once the call has ended, a GET gets 403 no_open_call")
+	status, body, _ = c.post(t, token, session, cancel, nil)
+	assert.Equal(t, http.StatusAccepted, status, "a cancellation of the ended call is ignored: %s", body)
 }
 
 // TestCallBindingIDJAG_ElicitationAfterExpiry runs a tool call whose backend

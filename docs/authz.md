@@ -159,18 +159,20 @@ with the reason, and the request is audited as `denied` with
 
 Two consequences are easy to miss. A token whose `authorization_details` claim is
 malformed is refused on every request, whatever its client, even one that never
-asked for call binding. And by default `exp` is strict: once a call-bound token
-expires, every request with it gets 401, even one that cancels or answers a call still
-running. An operator can opt in per issuer and client with
-`incomingAuth.expiredTokenAdmission` (on a `VirtualMCPServer`,
-`spec.incomingAuth.expiredTokenAdmission`), a list of `{issuer, clientId, grace}`
-entries matched against the token's `iss` and `client_id` claims (`azp` is not read).
-For a matching token, a tool call that outlives its token keeps, on its session, its
-cancellation, elicitation answers, and GET and DELETE, for the entry's `grace` after
-`exp`, and only until the call ends (its request has returned and its dispatch has
-finished) or has run for the maximum call duration (30 minutes, which no `grace` may
-exceed). Anything else after `exp` gets 401. This needs the token validator to share the
-vMCP's call binding, as the `vmcp` command wires it.
+asked for call binding. And `exp` is strict: once a call-bound token expires, every
+request with it gets 401, even one that cancels or answers a call still running.
+`vmcp serve` and the operator have no setting to change that. A Go embedder can opt
+in per issuer and client with `callbinding.Config.ExpiredTokenAdmission`, a list of
+`{Issuer, ClientID, Grace}` entries matched against the token's `iss` and `client_id`
+claims (`azp` is not read). For a matching token, a tool call that outlives its token
+keeps, on its session, its cancellation, elicitation answers, and GET and DELETE, for
+the entry's `Grace` after `exp`, and only until the call ends (its request has
+returned and its dispatch has finished) or has run for the maximum call duration (30
+minutes by default, which no `Grace` may exceed). Within the grace, a message for a
+call that has ended is answered without being dispatched: 202 for its cancellation or
+a response, 403 `no_open_call` for a GET or DELETE. Anything else after `exp` gets
+401. This needs the token validator to share the vMCP's call binding
+(`factory.WithCallBinding`).
 See
 [Call-bound access tokens](arch/10-virtual-mcp-architecture.md#call-bound-access-tokens).
 

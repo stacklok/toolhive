@@ -253,16 +253,36 @@ func TestCallBinding_AfterExpiry(t *testing.T) {
 	assert.Equal(t, http.StatusAccepted, cancel.status, "body: %s", cancel.body)
 	awaitStatus(t, done)
 
-	// Once the call has ended, nothing is accepted.
+	// Once the call has ended, nothing reaches it: within the grace, a
+	// cancellation or response is ignored with 202, and a GET or DELETE gets
+	// 403 no_open_call (see TestCallBinding_AfterExpiryEndedCall).
 	key := cbIssuer + "\x00jti-1"
 	require.Eventually(t, func() bool {
 		call, found, err := s.srv.callBinding.binding.Record().Lookup(context.Background(), key)
 		return err == nil && found && call.Ended
 	}, 10*time.Second, 10*time.Millisecond)
-	requireValidatorRefused(t, s.send(t, http.MethodPost, token, session, cancelBody("7"), nil))
-	requireValidatorRefused(t, s.send(t, http.MethodPost, token, session, elicitationReply, nil))
-	requireValidatorRefused(t, s.send(t, http.MethodGet, token, session, "", nil))
-	requireValidatorRefused(t, s.send(t, http.MethodDelete, token, session, "", nil))
+	requireEndedCallAnswers(t, s, token, session)
+}
+
+// requireEndedCallAnswers checks the answers, after exp and within the grace,
+// to the messages of a tool call that has ended on session: 202 for its
+// cancellation and for a response, 403 no_open_call for a GET or DELETE, and
+// 401 token_expired for anything else. None of them reaches the core.
+func requireEndedCallAnswers(t *testing.T, s *cbTestServer, token, session string) {
+	t.Helper()
+	calls := s.fc.callToolCalls.Load()
+	cancel := s.send(t, http.MethodPost, token, session, cancelBody("7"), nil)
+	assert.Equal(t, http.StatusAccepted, cancel.status, "the ended call's cancellation: %s", cancel.body)
+	reply := s.send(t, http.MethodPost, token, session, elicitationReply, nil)
+	assert.Equal(t, http.StatusAccepted, reply.status, "a response: %s", reply.body)
+	requireRefused(t, s.send(t, http.MethodGet, token, session, "", nil), callbinding.ReasonNoOpenCall, nil)
+	requireRefused(t, s.send(t, http.MethodDelete, token, session, "", nil), callbinding.ReasonNoOpenCall, nil)
+	requireRefused(t, s.send(t, http.MethodPost, token, session, cancelBody("8"), nil), callbinding.ReasonTokenExpired, nil)
+	requireRefused(t, s.send(t, http.MethodPost, token, session, toolCallBody(9, cbTool, "{}"), nil),
+		callbinding.ReasonTokenExpired, nil)
+	requireRefused(t, s.send(t, http.MethodPost, token, session, `{"jsonrpc":"2.0","id":10,"method":"ping"}`, nil),
+		callbinding.ReasonTokenExpired, nil)
+	assert.Equal(t, calls, s.fc.callToolCalls.Load(), "nothing is dispatched for an ended call")
 }
 
 // TestCallBinding_AfterExpiryCancellationStopsCall checks that a cancellation
@@ -305,7 +325,8 @@ func TestCallBinding_AfterExpiryCancelAfterDroppedPost(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, cancel.status, "body: %s", cancel.body)
 	requireCallEnded(t, s.srv.callBinding.binding.Record(), true)
 	assert.Zero(t, s.fc.callToolCalls.Load(), "the cancelled call must not complete")
-	requireValidatorRefused(t, s.send(t, http.MethodPost, token, session, cancelBody("7"), nil))
+	repeat := s.send(t, http.MethodPost, token, session, cancelBody("7"), nil)
+	assert.Equal(t, http.StatusAccepted, repeat.status, "a repeated cancellation is ignored: %s", repeat.body)
 }
 
 // TestCallBinding_AfterExpiryDelete checks that a DELETE on the open call's
@@ -330,8 +351,9 @@ func TestCallBinding_AfterExpiryDelete(t *testing.T) {
 }
 
 // TestCallBinding_AfterExpiryMaxCallDuration checks that after exp the call's
-// messages are accepted only until the call has run for the maximum call
-// duration, even while its request is still open.
+// messages reach it only until the call has run for the maximum call
+// duration, even while its request is still open: from then on, within the
+// grace, it is answered as a call that has ended.
 func TestCallBinding_AfterExpiryMaxCallDuration(t *testing.T) {
 	t.Parallel()
 	s, bc, clock := cbExpiryServer(t)
@@ -342,11 +364,13 @@ func TestCallBinding_AfterExpiryMaxCallDuration(t *testing.T) {
 	bc.waitStarted(t)
 
 	clock.Advance(3*time.Hour - time.Second)
-	passedChecks(t, s.send(t, http.MethodPost, token, session, elicitationReply, nil))
+	passedChecks(t, s.send(t, http.MethodGet, token, session, "", nil))
 	clock.Advance(time.Second)
-	requireValidatorRefused(t, s.send(t, http.MethodPost, token, session, elicitationReply, nil))
-	requireValidatorRefused(t, s.send(t, http.MethodPost, token, session, cancelBody("7"), nil))
-	requireValidatorRefused(t, s.send(t, http.MethodGet, token, session, "", nil))
+	requireRefused(t, s.send(t, http.MethodGet, token, session, "", nil), callbinding.ReasonNoOpenCall, nil)
+	requireRefused(t, s.send(t, http.MethodDelete, token, session, "", nil), callbinding.ReasonNoOpenCall, nil)
+	cancel := s.send(t, http.MethodPost, token, session, cancelBody("7"), nil)
+	assert.Equal(t, http.StatusAccepted, cancel.status, "body: %s", cancel.body)
+	assert.False(t, bc.cancelled(), "the cancellation is ignored once the call is past the maximum call duration")
 
 	bc.unblock()
 	awaitStatus(t, done)
@@ -534,4 +558,43 @@ func TestCallBinding_AfterExpiryStreamOpenIsAudited(t *testing.T) {
 
 	bc.unblock()
 	awaitStatus(t, done)
+}
+
+// TestCallBinding_AfterExpiryEndedCall checks the answers, after exp and
+// within the grace, on the session of a call that has ended: nothing is
+// dispatched, a cancellation of the call or a response gets 202, a GET or
+// DELETE 403 no_open_call, and everything else 401. Another session, a list
+// call, and the same messages past the grace still get the validator's 401.
+func TestCallBinding_AfterExpiryEndedCall(t *testing.T) {
+	t.Parallel()
+	const grace = 10 * time.Minute
+	s, bc, clock := cbExpiryServerWith(t, cbAdmission(cbIssuer, cbClient, grace))
+	claims := claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))})
+	token := s.tokens.add("bound", claims)
+	session := s.session(t, token)
+	otherSession := s.session(t, token)
+	exp := tokenExpiry(t, claims)
+
+	done := s.postAsync(t.Context(), token, session, toolCallBody(7, cbTool, "{}"))
+	bc.waitStarted(t)
+	bc.unblock()
+	awaitStatus(t, done)
+	requireCallEnded(t, s.srv.callBinding.binding.Record(), true)
+
+	clock.Set(exp.Add(time.Second))
+	requireEndedCallAnswers(t, s, token, session)
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		requireValidatorRefused(t, s.send(t, method, token, otherSession, "", nil))
+	}
+	requireValidatorRefused(t, s.send(t, http.MethodPost, token, otherSession, cancelBody("7"), nil))
+
+	clock.Set(exp.Add(grace))
+	for _, resp := range []cbResponse{
+		s.send(t, http.MethodPost, token, session, cancelBody("7"), nil),
+		s.send(t, http.MethodPost, token, session, elicitationReply, nil),
+		s.send(t, http.MethodGet, token, session, "", nil),
+		s.send(t, http.MethodDelete, token, session, "", nil),
+	} {
+		requireValidatorRefused(t, resp)
+	}
 }

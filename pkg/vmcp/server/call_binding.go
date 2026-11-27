@@ -453,8 +453,9 @@ func (cb *callBinding) serveBound(
 // the token expired, because the binding admitted it, or whose token expired
 // since the validator. It admits only a token whose iss and client_id match an
 // ExpiredTokenAdmission entry, within that entry's grace after exp, and only
-// a message of the call the token started, on that call's session, while the
-// call is open and younger than the maximum call duration: a GET or DELETE, a
+// on the session of the tool call the token started. Once that call has ended
+// or reached the maximum call duration, see serveEndedCallAfterExpiry. While it
+// is open, it admits only the call's own messages: a GET or DELETE, a
 // notifications/cancelled for the call's ID, or, for a tool call, a JSON-RPC
 // response, such as an elicitation reply. A list call is recorded ended, so it
 // has none. The checks the binding made are made again, as the call may have
@@ -482,7 +483,14 @@ func (cb *callBinding) serveAfterExpiry(
 		cb.unavailable(w, r, parsed, token, "record", err)
 		return
 	}
-	if !open || !belongsToCall(r, call, "") || !isCallMessageAfterExpiry(r, token, parsed, call) {
+	switch {
+	case !belongsToCall(r, call, "") || token.Entry.IsList():
+		cb.refuse(w, r, parsed, token, callbinding.ReasonTokenExpired)
+		return
+	case !open:
+		cb.serveEndedCallAfterExpiry(w, r, token, parsed, call)
+		return
+	case !isCallMessageAfterExpiry(r, token, parsed, call):
 		cb.refuse(w, r, parsed, token, callbinding.ReasonTokenExpired)
 		return
 	}
@@ -493,6 +501,38 @@ func (cb *callBinding) serveAfterExpiry(
 	slog.DebugContext(r.Context(), "call binding: admitted a message of an open call after its token expired",
 		"jti", token.JTI, "operation_id", token.Entry.OperationID, "http_method", r.Method, "mcp_method", mcpMethod)
 	next.ServeHTTP(w, r)
+}
+
+// serveEndedCallAfterExpiry answers, after exp and within the grace, a request
+// on the session of a tool call that has ended, as before exp, and never
+// dispatches it. A cancellation of the call and a JSON-RPC response get 202:
+// a receiver may ignore a cancellation for a finished request, and a response
+// no request waits for, and go-sdk clients fail the connection on any other
+// answer to a message without an ID. A GET or DELETE gets 403 no_open_call
+// with a JSON-RPC error. Anything else gets 401 token_expired, as when the
+// call is open.
+func (cb *callBinding) serveEndedCallAfterExpiry(
+	w http.ResponseWriter, r *http.Request,
+	token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest, call callbinding.Call,
+) {
+	switch r.Method {
+	case http.MethodGet, http.MethodDelete:
+		cb.refuse(w, r, parsed, token, callbinding.ReasonNoOpenCall)
+		return
+	case http.MethodPost:
+		ignored := parsed == nil // a JSON-RPC response (see serveBound)
+		if !ignored && parsed.Method == "notifications/cancelled" {
+			requestID, ok := cancelledRequestID(parsed.Params)
+			ignored = ok && requestID == call.RequestID
+		}
+		if ignored {
+			slog.DebugContext(r.Context(), "call binding: ignored a message for a call that has ended",
+				"jti", token.JTI, "operation_id", token.Entry.OperationID)
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+	}
+	cb.refuse(w, r, parsed, token, callbinding.ReasonTokenExpired)
 }
 
 // isCallMessageAfterExpiry reports whether r, on call's session, is one of

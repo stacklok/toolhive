@@ -483,7 +483,6 @@ _Appears in:_
 - [vmcp.config.CircuitBreakerConfig](#vmcpconfigcircuitbreakerconfig)
 - [vmcp.config.CodeModeConfig](#vmcpconfigcodemodeconfig)
 - [vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig)
-- [vmcp.config.ExpiredTokenAdmissionConfig](#vmcpconfigexpiredtokenadmissionconfig)
 - [vmcp.config.FailureHandlingConfig](#vmcpconfigfailurehandlingconfig)
 - [vmcp.config.OptimizerConfig](#vmcpconfigoptimizerconfig)
 - [vmcp.config.StepErrorHandling](#vmcpconfigsteperrorhandling)
@@ -509,27 +508,6 @@ _Appears in:_
 | `action` _string_ | Action defines the action to take when the user declines or cancels<br />- skip_remaining: Skip remaining steps in the workflow<br />- abort: Abort the entire workflow execution<br />- continue: Continue to the next step | abort | Enum: [skip_remaining abort continue] <br />Optional: \{\} <br /> |
 
 
-
-
-#### vmcp.config.ExpiredTokenAdmissionConfig
-
-
-
-ExpiredTokenAdmissionConfig lets one issuer's call-bound tokens for one
-OAuth client send their call's own messages after the token expires. See
-IncomingAuthConfig.ExpiredTokenAdmission.
-
-
-
-_Appears in:_
-- [api.v1beta1.IncomingAuthConfig](#apiv1beta1incomingauthconfig)
-- [vmcp.config.IncomingAuthConfig](#vmcpconfigincomingauthconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `issuer` _string_ | Issuer must equal the token's iss claim exactly. |  | MinLength: 1 <br /> |
-| `clientId` _string_ | ClientID must equal the token's client_id claim exactly. The azp claim<br />is not read, so a token that names its client only in azp never matches.<br />client_id names the client the token was issued to, not the one<br />presenting it. |  | MinLength: 1 <br /> |
-| `grace` _[vmcp.config.Duration](#vmcpconfigduration)_ | Grace is how long after the token's exp its call's messages are still<br />accepted, such as "2m". It must be positive and at most 30 minutes. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
 
 
 #### vmcp.config.FailureHandlingConfig
@@ -576,7 +554,6 @@ _Appears in:_
 | `type` _string_ | Type is the auth type: "oidc", "local", "anonymous" |  |  |
 | `oidc` _[vmcp.config.OIDCConfig](#vmcpconfigoidcconfig)_ | OIDC contains OIDC configuration (when Type = "oidc"). |  |  |
 | `authz` _[vmcp.config.AuthzConfig](#vmcpconfigauthzconfig)_ | Authz contains authorization configuration (optional). |  |  |
-| `expiredTokenAdmission` _[vmcp.config.ExpiredTokenAdmissionConfig](#vmcpconfigexpiredtokenadmissionconfig) array_ | ExpiredTokenAdmission lists the token issuers and OAuth clients whose<br />call-bound access tokens may still send their call's own messages after<br />the token expires, and for how long. A call-bound token carries an<br />authorization_details entry of type https://toolhive.dev/mcp_tool_call<br />and may start one call before it expires; that call can run longer than<br />the token lives.<br />Empty by default: once a token expires, every request with it gets 401,<br />even one that cancels or answers a call still running. For a token whose<br />iss and client_id claims match an entry, the vMCP accepts, for the entry's<br />grace after the token's exp and while the call is open, only that call's<br />own messages on its session: a cancellation of the call, a reply to a<br />question the call asked (such as an elicitation), and a GET or DELETE.<br />Nothing else, and a new call can still start only before exp.<br />Requires type "oidc". Each grace must be positive and at most 30 minutes<br />(the maximum call duration), and no two entries may name the same issuer<br />and clientId. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.ListChangedConfig
@@ -2489,7 +2466,6 @@ _Appears in:_
 | `oidcConfigRef` _[api.v1beta1.MCPOIDCConfigReference](#apiv1beta1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. |  | Optional: \{\} <br /> |
 | `authzConfig` _[api.v1beta1.AuthzConfigRef](#apiv1beta1authzconfigref)_ | AuthzConfig defines authorization policy configuration.<br />Reuses MCPServer authz patterns.<br />AuthzConfig and AuthzConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
 | `authzConfigRef` _[api.v1beta1.MCPAuthzConfigReference](#apiv1beta1mcpauthzconfigreference)_ | AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.<br />The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.<br />Mutually exclusive with authzConfig.<br />Only cedarv1 MCPAuthzConfig resources are supported for VirtualMCPServer<br />today; referencing a non-Cedar config fails reconciliation with a clear<br />error because the vMCP runtime authz middleware is Cedar-only. |  | Optional: \{\} <br /> |
-| `expiredTokenAdmission` _[vmcp.config.ExpiredTokenAdmissionConfig](#vmcpconfigexpiredtokenadmissionconfig) array_ | ExpiredTokenAdmission lists the token issuers and OAuth clients whose<br />call-bound access tokens may still send their call's own messages after<br />the token expires, and for how long. Empty by default: once a token<br />expires, every request with it gets 401. For a token whose iss and<br />client_id claims match an entry, the vMCP accepts, for the entry's grace<br />after exp and while the call is open, only that call's cancellation,<br />replies to its questions, and GET or DELETE on its session. Requires<br />type oidc. Each grace must be positive and at most 30 minutes. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.InlineAuthzConfig

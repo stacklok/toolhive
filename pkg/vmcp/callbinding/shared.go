@@ -209,17 +209,21 @@ func (b *Binding) ValidatorWired() bool { return b.validatorWired.Load() }
 // AdmitExpiredToken reports whether the token validator may accept r, whose
 // token passed every check but exp, at now. It admits r only when all of these
 // hold:
-//   - the token carries an mcp_tool_call entry;
+//   - the token carries an mcp_tool_call entry for a tool call;
 //   - its iss and client_id match an ExpiredTokenAdmission entry, and now is
 //     less than that entry's grace after exp (see WithinExpiredTokenGrace);
-//   - its key has a call in the record, the call is open at now (see
-//     OpenCall), and the call has a session (a Modern call has none);
+//   - its key has a call in the record, and the call has a session (a Modern
+//     call has none);
 //   - r names that session;
 //   - r is a POST, a GET or a DELETE.
 //
-// A list-call token is never admitted: its call is recorded ended, and the
-// entry type is checked as well, as that end is a second write a shared record
-// may miss. The vMCP's call-binding check then admits only the call's own
+// The call need not be open: the vMCP's call-binding check answers a message
+// for a call that has ended without dispatching it, as a client that races the
+// call's end must not see a 401, which go-sdk clients treat as a broken
+// connection.
+//
+// A list-call token is never admitted: a list call has no messages after exp.
+// The vMCP's call-binding check then admits only the open call's own
 // messages: a notifications/cancelled for the call's ID, a JSON-RPC response
 // for a tool call, and a GET or DELETE on the call's session. It refuses
 // anything else with 401, as the validator refuses an expired token.
@@ -257,7 +261,7 @@ func (b *Binding) AdmitExpiredToken(r *http.Request, expired auth.ExpiredToken, 
 	default:
 		return refused(ReasonMethodNotAllowed)
 	}
-	call, open, err := b.OpenCall(ctx, token.Key, now)
+	call, found, err := b.record.Lookup(ctx, token.Key)
 	switch {
 	case err != nil:
 		// DEBUG, as every refusal here: a caller with an expired token sets
@@ -266,7 +270,7 @@ func (b *Binding) AdmitExpiredToken(r *http.Request, expired auth.ExpiredToken, 
 		slog.DebugContext(ctx, "call binding: an expired token was not admitted: the record failed",
 			"jti", token.JTI, "error", err)
 		return false
-	case !open:
+	case !found:
 		return refused(ReasonNoOpenCall)
 	case !OnCallSession(r, call):
 		return refused(ReasonSessionMismatch)

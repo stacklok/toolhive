@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -149,6 +150,8 @@ type blockingCore struct {
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
+	// wasCancelled records that a blocked call's context was cancelled.
+	wasCancelled atomic.Bool
 }
 
 func newBlockingCore() *blockingCore {
@@ -168,10 +171,14 @@ func (b *blockingCore) CallTool(
 	select {
 	case <-b.release:
 	case <-ctx.Done():
+		b.wasCancelled.Store(true)
 		return nil, ctx.Err()
 	}
 	return b.fakeCore.CallTool(ctx, identity, name, args, meta)
 }
+
+// cancelled reports whether a blocked call's context was cancelled.
+func (b *blockingCore) cancelled() bool { return b.wasCancelled.Load() }
 
 // waitStarted waits until the blocked core has started a call.
 func (b *blockingCore) waitStarted(t *testing.T) {

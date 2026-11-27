@@ -4,13 +4,25 @@
 package cedar
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	cedar "github.com/cedar-policy/cedar-go"
+
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
+
+// countPolicies returns the number of policies in ps.
+func countPolicies(ps *cedar.PolicySet) int {
+	n := 0
+	for range ps.All() {
+		n++
+	}
+	return n
+}
 
 // listsWeather reports whether the weather tool is listed on tools/list under policies.
 func listsWeather(t *testing.T, policies ...string) bool {
@@ -111,6 +123,13 @@ func TestToolRead_ReadToolPolicies(t *testing.T) {
 			},
 			want: true,
 		},
+		{
+			name: "action in read_tool scope grants visibility",
+			policies: []string{
+				`permit(principal, action in Action::"read_tool", resource);`,
+			},
+			want: true,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -172,4 +191,67 @@ func TestToolRead_AnswersToolReadNatively(t *testing.T) {
 	native, ok := authorizers.Authorizer(a).(authorizers.ToolReadNative)
 	require.True(t, ok, "the Cedar authorizer must implement ToolReadNative")
 	assert.True(t, native.AnswersToolRead())
+}
+
+// A Cedar error on either check fails closed: the tool is not listed and the error is returned.
+func TestToolRead_CedarErrorsFailClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		policies []string
+	}{
+		{
+			name: "error on the call check",
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource) when { context.missing == "x" };`,
+			},
+		},
+		{
+			name: "error on the read check",
+			policies: []string{
+				`permit(principal, action == Action::"read_tool", resource) when { context.missing == "x" };`,
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ok, err := authorizeWithClaims(t, tc.policies, nil,
+				authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
+			assert.False(t, ok)
+			assert.Error(t, err)
+		})
+	}
+}
+
+// A nil policy set yields an empty read set, and a forbid that only mentions read_tool in
+// its conditions is left out of it.
+func TestReadToolPolicySet_Filtering(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, 0, countPolicies(readToolPolicySet(nil)))
+
+	ps, err := parsePolicySet([]string{
+		`forbid(principal, action, resource) when { action == Action::"read_tool" };`,
+		`permit(principal, action == Action::"read_tool", resource);`,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, countPolicies(readToolPolicySet(ps)))
+}
+
+// No identity on a call-side check: the error surfaces through authorizeToolCall.
+func TestAuthorizer_CallWithoutIdentityErrors(t *testing.T) {
+	t.Parallel()
+
+	a, err := NewCedarAuthorizer(ConfigOptions{
+		Policies:     []string{"permit(principal, action, resource);"},
+		EntitiesJSON: "[]",
+	}, "")
+	require.NoError(t, err)
+
+	ok, err := a.AuthorizeWithJWTClaims(
+		context.Background(), authorizers.MCPFeatureTool, authorizers.MCPOperationCall, "weather", nil)
+	assert.False(t, ok)
+	assert.Error(t, err)
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // legacySession is a ClientSession that reports a negotiated protocol version
@@ -106,6 +107,65 @@ func TestLegacyToolCallError_URLElicitationRequired(t *testing.T) {
 		{"mode": "url", "elicitationId": "github", "url": "https://connect.example.com/github", "message": "Reconnect GitHub"},
 		{"mode": "url", "elicitationId": "jira", "url": "https://connect.example.com/jira", "message": "Reconnect Jira"}
 	]}`, string(wireErr.Data))
+}
+
+func TestLegacyToolCallError_DelegatedCredentials(t *testing.T) {
+	t.Parallel()
+
+	authReq := authtypes.NewDelegatedAuthRequiredError("github", errors.New("private cause"))
+	unavailable := authtypes.ErrDelegatedCredentialUnavailable
+	answer := twoURLAnswer(t)
+	for _, tc := range []struct {
+		name     string
+		session  server.ClientSession
+		err      error
+		wantText string
+		wantCode int
+		wantData bool
+	}{
+		{name: "authorization required", err: authReq, wantText: `provider "github" requires upstream authorization`},
+		{name: "unavailable", err: unavailable, wantText: "upstream credential unavailable", wantCode: -32603},
+		{name: "authorization required wins over unavailable", err: errors.Join(unavailable, authReq), wantText: authReq.Error()},
+		{
+			name: "URL elicitation wins over authorization required", err: errors.Join(unavailable, authReq, answer),
+			wantText: "URL elicitation required", wantCode: -32042, wantData: true,
+		},
+		{
+			name: "URL elicitation fallback wins over authorization required", session: &legacySession{},
+			err: errors.Join(authReq, answer), wantText: answer.Message(),
+		},
+		{
+			name: "URL elicitation wins over unavailable", err: errors.Join(unavailable, answer),
+			wantText: "URL elicitation required", wantCode: -32042, wantData: true,
+		},
+		{name: "denial wins over authorization required", err: errors.Join(vmcp.ErrAuthorizationFailed, authReq), wantText: vmcp.DenyMessageToolCall},
+		{name: "denial wins over unavailable", err: errors.Join(vmcp.ErrAuthorizationFailed, unavailable), wantText: vmcp.DenyMessageToolCall},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			session := tc.session
+			if session == nil {
+				session = urlDeclaringSession()
+			}
+			res, err := legacyToolCallError(session, fmt.Errorf("calling legacy-x: %w", tc.err))
+			if tc.wantCode != 0 {
+				require.Nil(t, res)
+				wireErr, ok := err.(*jsonrpc.Error)
+				require.True(t, ok, "expected a bare *jsonrpc.Error, got %T", err)
+				assert.EqualValues(t, tc.wantCode, wireErr.Code)
+				assert.Equal(t, tc.wantText, wireErr.Message)
+				assert.Equal(t, tc.wantData, len(wireErr.Data) > 0)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, res)
+			assert.True(t, res.IsError)
+			require.Len(t, res.Content, 1)
+			text, ok := res.Content[0].(mcp.TextContent)
+			require.True(t, ok)
+			assert.Equal(t, tc.wantText, text.Text)
+		})
+	}
 }
 
 func TestLegacyRender_DenialOutranksURLElicitation(t *testing.T) {

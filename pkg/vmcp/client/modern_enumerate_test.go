@@ -4,9 +4,12 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -17,6 +20,7 @@ import (
 
 	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // modernReq decodes a Modern JSON-RPC request, reading the body exactly once
@@ -547,4 +551,61 @@ func TestModernEnumerate_MethodNotFoundIsNotUnavailable(t *testing.T) {
 	assert.NotEmpty(t, list.Tools)
 	assert.Empty(t, list.Prompts)
 	assert.Empty(t, list.UnavailableLists, "a list the backend does not implement is not unavailable")
+}
+
+// failingTransport fails every request with err before any network I/O, as an
+// outgoing auth round tripper does when the strategy cannot read a credential.
+type failingTransport struct{ err error }
+
+func (f failingTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, f.err }
+
+// TestModernListOptional_NamesDelegatedCredentialFailure pins that an optional
+// list whose request fails on a delegated credential read still degrades to an
+// empty list, as any transient send failure does, but logs the credential
+// failure rather than reporting the list as transiently unavailable.
+//
+//nolint:paralleltest // slog.SetDefault mutates process-global state
+func TestModernListOptional_NamesDelegatedCredentialFailure(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantLog []string
+	}{
+		{
+			name:    "authorization required",
+			err:     authtypes.NewDelegatedAuthRequiredError("github", nil),
+			wantLog: []string{"failed on a delegated credential read", `provider \"github\" requires upstream authorization`},
+		},
+		{
+			name:    "unavailable",
+			err:     authtypes.ErrDelegatedCredentialUnavailable,
+			wantLog: []string{"failed on a delegated credential read", "upstream credential unavailable"},
+		},
+		{
+			name:    "other send failure",
+			err:     errors.New("connection refused"),
+			wantLog: []string{"transiently unavailable", "connection refused"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			hc := &http.Client{Transport: failingTransport{
+				err: fmt.Errorf("authentication failed for backend b: %w", tt.err),
+			}}
+			got, unavailable, err := modernListOptional[mcpmcp.Prompt](
+				t.Context(), hc, "http://backend.example/mcp", "prompts/list", "prompts", "b", true,
+			)
+			require.NoError(t, err, "the list degrades as before")
+			assert.Empty(t, got)
+			assert.True(t, unavailable, "the items are unknown, not absent")
+			for _, want := range tt.wantLog {
+				assert.Contains(t, buf.String(), want)
+			}
+		})
+	}
 }

@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1131,6 +1132,171 @@ func TestResolveAuthStrategy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHTTPBackendClient_DelegatedCredentialErrors(t *testing.T) {
+	t.Parallel()
+
+	// Authentication fails before any network I/O. The port and workload name
+	// can both trigger mcpcompat's string-based transport error classification.
+	target := &vmcp.BackendTarget{
+		BaseURL: "http://backend.example:8401/mcp", WorkloadID: "legacy-x", WorkloadName: "legacy-x",
+		TransportType: "streamable-http",
+	}
+	operations := map[string]func(context.Context, vmcp.BackendClient) error{
+		"ListCapabilities": func(ctx context.Context, c vmcp.BackendClient) error {
+			_, err := c.ListCapabilities(ctx, target)
+			return err
+		},
+		"CallTool": func(ctx context.Context, c vmcp.BackendClient) error {
+			_, err := c.CallTool(ctx, target, "fetch", nil, nil, nil)
+			return err
+		},
+		"ReadResource": func(ctx context.Context, c vmcp.BackendClient) error {
+			_, err := c.ReadResource(ctx, target, "file://doc")
+			return err
+		},
+		"GetPrompt": func(ctx context.Context, c vmcp.BackendClient) error {
+			_, err := c.GetPrompt(ctx, target, "review", nil)
+			return err
+		},
+		"Complete": func(ctx context.Context, c vmcp.BackendClient) error {
+			ref := vmcp.CompletionRef{Type: vmcp.CompletionRefTypePrompt, Name: "review"}
+			_, err := c.Complete(ctx, target, ref, "arg", "", nil)
+			return err
+		},
+	}
+	for name, want := range delegatedCredentialTestErrors() {
+		for _, rev := range []mcpparser.Revision{mcpparser.RevisionLegacy, mcpparser.RevisionModern} {
+			for op, call := range operations {
+				t.Run(name+"/"+rev.String()+"/"+op, func(t *testing.T) {
+					t.Parallel()
+					h := newDelegatedFailureClient(t, want)
+					h.setRevision(target.WorkloadID, rev)
+
+					assertBareDelegatedCredentialError(t, call(t.Context(), h), want, target.BaseURL, target.WorkloadID)
+				})
+			}
+		}
+		t.Run(name+"/uncached probe", func(t *testing.T) {
+			t.Parallel()
+			strategy := authmocks.NewMockStrategy(gomock.NewController(t))
+			strategy.EXPECT().Name().Return(authtypes.StrategyTypeUnauthenticated).AnyTimes()
+			strategy.EXPECT().Validate(gomock.Any()).Return(nil).AnyTimes()
+			// A failed probe must return without another Authenticate on the Legacy path.
+			strategy.EXPECT().Authenticate(gomock.Any(), gomock.Any(), gomock.Any()).Return(want).Times(1)
+			registry := auth.NewDefaultOutgoingAuthRegistry()
+			require.NoError(t, registry.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, strategy))
+			backend, err := NewHTTPBackendClient(registry)
+			require.NoError(t, err)
+
+			assertBareDelegatedCredentialError(t, operations["CallTool"](t.Context(), backend), want, target.BaseURL, target.WorkloadID)
+		})
+	}
+}
+
+func TestWrapBackendError_DelegatedCredentialsTakePriority(t *testing.T) {
+	t.Parallel()
+
+	const endpoint = "http://backend.example:8401/mcp"
+	const workload = "legacy-x"
+	for name, want := range delegatedCredentialTestErrors() {
+		for _, transportErr := range []error{transport.ErrUnauthorized, transport.ErrLegacySSEServer} {
+			t.Run(name+"/"+transportErr.Error(), func(t *testing.T) {
+				t.Parallel()
+				wrapped := fmt.Errorf("authentication failed for backend %s: %w", workload, want)
+				err := &url.Error{Op: "Post", URL: endpoint, Err: errors.Join(transportErr, wrapped)}
+				got := wrapBackendError(err, workload, "initialize")
+				assertBareDelegatedCredentialError(t, got, want, endpoint, workload)
+			})
+		}
+	}
+}
+
+// TestDelegatedCredentialErrors_OutrankedChainsSurviveTheClient pins that a
+// chain carrying a delegated credential error together with a URL elicitation
+// answer or an authorization denial reaches the caller with the higher-ranked
+// error intact through wrapBackendError.
+func TestDelegatedCredentialErrors_OutrankedChainsSurviveTheClient(t *testing.T) {
+	t.Parallel()
+
+	elicitation, err := vmcp.NewURLElicitation("github", "https://connect.example.com/github", "Reconnect GitHub")
+	require.NoError(t, err)
+	answer, err := vmcp.NewURLElicitationRequiredError(elicitation)
+	require.NoError(t, err)
+	authReq := authtypes.NewDelegatedAuthRequiredError("github", nil)
+
+	chains := map[string]struct {
+		err    error
+		assert func(t *testing.T, got error)
+	}{
+		"URL elicitation and authorization required": {
+			err: errors.Join(authReq, answer),
+			assert: func(t *testing.T, got error) {
+				t.Helper()
+				gotAnswer, ok := vmcp.URLElicitationFromError(got)
+				require.True(t, ok, "the URL elicitation answer must survive, got %v", got)
+				assert.Same(t, answer, gotAnswer)
+			},
+		},
+		"denial and unavailable": {
+			err: errors.Join(vmcp.ErrAuthorizationFailed, authtypes.ErrDelegatedCredentialUnavailable),
+			assert: func(t *testing.T, got error) {
+				t.Helper()
+				assert.ErrorIs(t, got, vmcp.ErrAuthorizationFailed)
+			},
+		},
+	}
+
+	target := &vmcp.BackendTarget{
+		BaseURL: "http://backend.example:8401/mcp", WorkloadID: "legacy-x", WorkloadName: "legacy-x",
+		TransportType: "streamable-http",
+	}
+	for name, chain := range chains {
+		t.Run(name+"/wrapBackendError", func(t *testing.T) {
+			t.Parallel()
+			wrapped := fmt.Errorf("authentication failed for backend %s: %w", target.WorkloadID, chain.err)
+			err := &url.Error{Op: "Post", URL: target.BaseURL, Err: errors.Join(transport.ErrUnauthorized, wrapped)}
+			got := wrapBackendError(err, target.WorkloadID, "initialize")
+			chain.assert(t, got)
+			assert.NotErrorIs(t, got, vmcp.ErrAuthenticationFailed, "the chain must not be reclassified")
+		})
+	}
+}
+
+// newDelegatedFailureClient returns a backend client whose outgoing auth
+// strategy fails every request with authErr, before any network I/O.
+func newDelegatedFailureClient(t *testing.T, authErr error) *httpBackendClient {
+	t.Helper()
+	strategy := authmocks.NewMockStrategy(gomock.NewController(t))
+	strategy.EXPECT().Name().Return(authtypes.StrategyTypeUnauthenticated).AnyTimes()
+	strategy.EXPECT().Validate(gomock.Any()).Return(nil).AnyTimes()
+	strategy.EXPECT().Authenticate(gomock.Any(), gomock.Any(), gomock.Any()).Return(authErr).MinTimes(1)
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	require.NoError(t, registry.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, strategy))
+	backend, err := NewHTTPBackendClient(registry)
+	require.NoError(t, err)
+	return backend.(*httpBackendClient)
+}
+
+func delegatedCredentialTestErrors() map[string]error {
+	return map[string]error{
+		"authorization required": authtypes.NewDelegatedAuthRequiredError("github", errors.New("private cause")),
+		"unavailable":            authtypes.ErrDelegatedCredentialUnavailable,
+	}
+}
+
+func assertBareDelegatedCredentialError(t *testing.T, got, want error, endpoint, workload string) {
+	t.Helper()
+
+	require.ErrorIs(t, got, want)
+	assert.Same(t, want, got)
+	assert.Error(t, got)
+	assert.NotErrorIs(t, got, vmcp.ErrAuthenticationFailed)
+	assert.NotErrorIs(t, got, vmcp.ErrBackendUnavailable)
+	assert.NotContains(t, got.Error(), endpoint)
+	assert.NotContains(t, got.Error(), workload)
+	assert.NotContains(t, got.Error(), "private cause")
 }
 
 // TestWrapBackendError verifies that wrapBackendError maps mcp-go transport sentinel

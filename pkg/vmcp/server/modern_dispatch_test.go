@@ -22,6 +22,7 @@ import (
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 )
 
@@ -718,6 +719,64 @@ func TestDispatchModern_AuthzGate(t *testing.T) {
 			assert.Contains(t, result, c.wantKey)
 			assert.False(t, fc.checkCalled, "Check* must not run when authzGateEnabled is false")
 			assert.True(t, fc.callCalled)
+		})
+	}
+}
+
+func TestDispatchModern_DelegatedCredentials(t *testing.T) {
+	t.Parallel()
+
+	authReq := authtypes.NewDelegatedAuthRequiredError("github", errors.New("private cause"))
+	unavailable := authtypes.ErrDelegatedCredentialUnavailable
+	answer := twoURLAnswer(t)
+	for _, tc := range []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   int
+		wantText   string
+	}{
+		{"authorization required", fmt.Errorf("calling legacy-x: %w", authReq), http.StatusOK, 0,
+			`provider "github" requires upstream authorization`},
+		{"unavailable", unavailable, http.StatusOK, -32603, "upstream credential unavailable"},
+		{"wrapped unavailable", fmt.Errorf("calling legacy-x at https://backend.example: %w", unavailable),
+			http.StatusOK, -32603, "upstream credential unavailable"},
+		{"authorization required wins over unavailable", errors.Join(unavailable, authReq),
+			http.StatusOK, 0, authReq.Error()},
+		// The request declares no elicitation.url, so the answer renders as -32021.
+		{"URL elicitation wins over authorization required", errors.Join(unavailable, authReq, answer),
+			http.StatusBadRequest, -32021, ""},
+		{"URL elicitation wins over unavailable", errors.Join(answer, unavailable),
+			http.StatusBadRequest, -32021, ""},
+		{"denial wins over authorization required", errors.Join(vmcp.ErrAuthorizationFailed, authReq),
+			http.StatusForbidden, 403, vmcp.DenyMessageToolCall},
+		{"denial wins over unavailable", errors.Join(vmcp.ErrAuthorizationFailed, unavailable),
+			http.StatusForbidden, 403, vmcp.DenyMessageToolCall},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			parsed := &mcpparser.ParsedMCPRequest{Method: "tools/call", ResourceID: "echo", IsRequest: true, ID: "1"}
+			rec, body := dispatchModernTest(t.Context(), t, &modernFakeCore{callToolErr: tc.err}, true, parsed)
+
+			assert.Equal(t, tc.wantStatus, rec.Code)
+			if tc.wantCode != 0 {
+				assert.NotContains(t, body, "result")
+				errObj, ok := body["error"].(map[string]any)
+				require.True(t, ok, "got %v", body)
+				assert.Equal(t, float64(tc.wantCode), errObj["code"])
+				if tc.wantText != "" {
+					assert.Equal(t, tc.wantText, errObj["message"])
+				} else {
+					assert.Contains(t, errObj["message"], answer.Message())
+				}
+				return
+			}
+			assert.NotContains(t, body, "error")
+			result, ok := body["result"].(map[string]any)
+			require.True(t, ok, "got %v", body)
+			assert.Equal(t, "complete", result["resultType"])
+			assert.Equal(t, true, result["isError"])
+			assert.Equal(t, []any{map[string]any{"type": "text", "text": tc.wantText}}, result["content"])
 		})
 	}
 }

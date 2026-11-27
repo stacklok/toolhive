@@ -211,8 +211,8 @@ func (s *Server) optimizerFindToolHandler(sessionID string, opt optimizer.Optimi
 // inner tool name. The core admission seam authorizes the inner target there; a
 // denial surfaces as coreToolHandler's generic "call denied by authorization
 // policy" result (the optimizer returns it verbatim), so no authorizer detail
-// leaks. The MCP result from the optimizer is returned as-is, and so is the inner
-// handler's -32042 URL elicitation error (legacyToolCallError).
+// leaks. The MCP result from the optimizer is returned as-is, as are the inner
+// handler's -32042 URL elicitation and -32603 internal errors (legacyToolCallError).
 func (s *Server) optimizerCallToolHandler(sessionID string, opt optimizer.Optimizer) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		caller, _ := auth.IdentityFromContext(ctx)
@@ -234,10 +234,11 @@ func (s *Server) optimizerCallToolHandler(sessionID string, opt optimizer.Optimi
 
 		result, err := opt.CallTool(ctx, input)
 		if err != nil {
-			// The inner tool's handler (coreToolHandler) renders a URL
-			// elicitation answer as -32042 for a session that accepts URL
-			// mode. Return it unwrapped (package wireerr says why).
+			// Keep the inner handler's JSON-RPC errors as wire errors, not tool results.
 			if wireErr := wireerr.FindURLElicitationRequired(err); wireErr != nil {
+				return nil, wireErr
+			}
+			if wireErr := wireerr.FindInternalError(err); wireErr != nil {
 				return nil, wireErr
 			}
 			return conversion.ErrorToToolResult(fmt.Errorf("call_tool failed: %w", err)), nil

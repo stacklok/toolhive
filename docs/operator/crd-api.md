@@ -115,6 +115,8 @@ _Appears in:_
 | `xaa` _[auth.types.XAAConfig](#authtypesxaaconfig)_ | XAA contains configuration for XAA (Cross-Application Access) auth strategy.<br />Used when Type = "xaa". |  |  |
 
 
+
+
 #### auth.types.HeaderInjectionConfig
 
 

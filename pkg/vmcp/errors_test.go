@@ -5,9 +5,13 @@ package vmcp
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // TestIsAuthenticationError pins IsAuthenticationError's exact matching
@@ -159,6 +163,42 @@ func TestIsAuthenticationError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tt.want, IsAuthenticationError(tt.err))
+		})
+	}
+}
+
+func TestDelegatedCredentialFailure(t *testing.T) {
+	t.Parallel()
+
+	elicitation, err := NewURLElicitation("github", "https://connect.example.com/github", "Reconnect GitHub")
+	require.NoError(t, err)
+	answer, err := NewURLElicitationRequiredError(elicitation)
+	require.NoError(t, err)
+	authReq := authtypes.NewDelegatedAuthRequiredError("github", errors.New("private cause"))
+	unavailable := authtypes.ErrDelegatedCredentialUnavailable
+
+	tests := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "nil", err: nil, want: nil},
+		{name: "unrelated error", err: errors.New("boom"), want: nil},
+		{name: "wrapped authorization required", err: fmt.Errorf("step s1: %w", authReq), want: authReq},
+		{name: "wrapped unavailable", err: fmt.Errorf("step s1: %w", unavailable), want: unavailable},
+		{name: "authorization required wins over unavailable", err: errors.Join(unavailable, authReq), want: authReq},
+		{name: "URL elicitation outranks it", err: errors.Join(authReq, answer), want: nil},
+		{name: "denial outranks it", err: errors.Join(ErrAuthorizationFailed, unavailable), want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := DelegatedCredentialFailure(tt.err)
+			if tt.want == nil {
+				assert.NoError(t, got)
+				return
+			}
+			assert.Same(t, tt.want, got, "the bare delegated error, without the wrapping context")
 		})
 	}
 }

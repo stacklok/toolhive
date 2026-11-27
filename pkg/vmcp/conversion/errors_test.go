@@ -13,6 +13,7 @@ import (
 
 	sdkmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
 
@@ -21,6 +22,23 @@ type codedErr struct{}
 func (codedErr) Error() string        { return "rate limited" }
 func (codedErr) Code() int64          { return -32029 }
 func (codedErr) Data() map[string]any { return map[string]any{"retryAfterSeconds": 3} }
+
+func TestURLElicitationOutranksDelegatedAuthorizationInToolResult(t *testing.T) {
+	t.Parallel()
+
+	elicitation, err := vmcp.NewURLElicitation("github", "https://connect.example.com/github", "Reconnect GitHub")
+	require.NoError(t, err)
+	answer, err := vmcp.NewURLElicitationRequiredError(elicitation)
+	require.NoError(t, err)
+	authReq := authtypes.NewDelegatedAuthRequiredError("github", nil)
+
+	got := conversion.ErrorToToolResult(errors.Join(authReq, answer))
+	assert.True(t, got.IsError)
+	require.Len(t, got.Content, 1)
+	text, ok := got.Content[0].(sdkmcp.TextContent)
+	require.True(t, ok)
+	assert.Equal(t, answer.LegacyFallback(), text.Text)
+}
 
 func TestErrorToToolResult(t *testing.T) {
 	t.Parallel()
@@ -36,6 +54,7 @@ func TestErrorToToolResult(t *testing.T) {
 	withFallback, err := one.WithLegacyFallback("Reconnect GitHub from the Connectors page")
 	require.NoError(t, err)
 
+	authReq := authtypes.NewDelegatedAuthRequiredError("github", errors.New("private cause"))
 	tests := []struct {
 		name           string
 		err            error
@@ -65,6 +84,16 @@ func TestErrorToToolResult(t *testing.T) {
 		{
 			name:     "denial outranks the URL elicitation answer",
 			err:      fmt.Errorf("%w: %w", vmcp.ErrAuthorizationFailed, one),
+			wantText: vmcp.DenyMessageToolCall,
+		},
+		{
+			name:     "delegated authorization names only the provider",
+			err:      fmt.Errorf("calling legacy-x at https://backend.example:8401: %w", authReq),
+			wantText: `provider "github" requires upstream authorization`,
+		},
+		{
+			name:     "denial outranks delegated authorization",
+			err:      errors.Join(vmcp.ErrAuthorizationFailed, authReq),
 			wantText: vmcp.DenyMessageToolCall,
 		},
 		{

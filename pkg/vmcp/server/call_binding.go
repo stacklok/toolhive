@@ -502,7 +502,10 @@ func isCallMessageAfterExpiry(
 ) bool {
 	switch r.Method {
 	case http.MethodGet, http.MethodDelete:
-		return true
+		// A list call has no messages after exp. It is recorded ended, but
+		// with a second write that a shared record may miss, so the entry
+		// type decides.
+		return !token.Entry.IsList()
 	case http.MethodPost:
 		if parsed == nil {
 			// A JSON-RPC response (see serveBound). A list call asks the

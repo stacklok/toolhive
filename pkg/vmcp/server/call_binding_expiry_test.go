@@ -4,9 +4,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 )
@@ -39,10 +44,19 @@ func cbExpiryServerWith(
 	t *testing.T, admission []callbinding.ExpiredTokenAdmission,
 ) (*cbTestServer, *blockingCore, *cbClock) {
 	t.Helper()
+	return cbExpiryServerOpts(t, cbServerOptions{
+		binding: callbinding.Config{MaxCallDuration: 3 * time.Hour, ExpiredTokenAdmission: admission},
+	})
+}
+
+// cbExpiryServerOpts is cbExpiryServer with opts' binding and audit file.
+func cbExpiryServerOpts(t *testing.T, opts cbServerOptions) (*cbTestServer, *blockingCore, *cbClock) {
+	t.Helper()
 	bc := newBlockingCore()
 	clock := &cbClock{now: time.Now()}
 	s := newCallBindingTestServer(t, cbServerOptions{
-		binding: callbinding.Config{MaxCallDuration: 3 * time.Hour, ExpiredTokenAdmission: admission},
+		binding:   opts.binding,
+		auditFile: opts.auditFile,
 		wrap: func(fc *fakeCore) core.VMCP {
 			bc.fakeCore = fc
 			return bc
@@ -437,4 +451,87 @@ func TestCallBinding_UnwiredValidatorWarnsOnce(t *testing.T) {
 	assert.NotContains(t, buf.String(), warning, "a wired validator gives no warning")
 	runTwoCalls(t, false, listed)
 	assert.Equal(t, 1, strings.Count(buf.String(), warning), "logged once: %s", buf.String())
+}
+
+// TestCallBinding_AfterExpiryListCallEndNotRecorded checks that a list call
+// has no messages after exp even when the record could not mark it ended: a
+// replica sharing the record sees the call open, and still refuses a GET or
+// DELETE on its session.
+func TestCallBinding_AfterExpiryListCallEndNotRecorded(t *testing.T) {
+	t.Parallel()
+	record := &spyRecord{Record: callbinding.NewMemoryRecord(), failEnd: true}
+	binding := callbinding.Config{
+		MaxCallDuration: 3 * time.Hour, Record: record,
+		ExpiredTokenAdmission: cbAdmission(cbIssuer, cbClient, 3*time.Hour),
+	}
+	answering, _, answeringClock := cbExpiryServerOpts(t, cbServerOptions{binding: binding})
+	other, _, otherClock := cbExpiryServerOpts(t, cbServerOptions{binding: binding})
+	claims := claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")})
+	token := answering.tokens.add("list", claims)
+	other.tokens.add("list", claims)
+	session := answering.session(t, token)
+	list := answering.send(t, http.MethodPost, token, session, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, nil)
+	require.Equal(t, http.StatusOK, list.status, "body: %s", list.body)
+	call, found, err := record.Lookup(context.Background(), cbIssuer+"\x00jti-1")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.False(t, call.Ended, "the record could not mark the list call ended")
+
+	answeringClock.Advance(time.Hour + time.Second)
+	otherClock.Advance(time.Hour + time.Second)
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		requireValidatorRefused(t, other.send(t, method, token, session, "", nil))
+	}
+	other.tokens.setAdmitAll(true)
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		requireRefused(t, other.send(t, method, token, session, "", nil), callbinding.ReasonTokenExpired, nil)
+	}
+}
+
+// TestCallBinding_AfterExpiryStreamOpenIsAudited checks that a GET admitted
+// after exp, which opens the session's stream, is audited as a stream open
+// carrying admitted_after_expiry and the call's operation_id.
+func TestCallBinding_AfterExpiryStreamOpenIsAudited(t *testing.T) {
+	t.Parallel()
+	auditPath := filepath.Join(t.TempDir(), "audit.log")
+	s, bc, clock := cbExpiryServerOpts(t, cbServerOptions{
+		binding: callbinding.Config{
+			MaxCallDuration: 3 * time.Hour, ExpiredTokenAdmission: cbAdmission(cbIssuer, cbClient, 3*time.Hour),
+		},
+		auditFile: auditPath,
+	})
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	session := s.session(t, token)
+
+	done := s.postAsync(t.Context(), token, session, toolCallBody(7, cbTool, "{}"))
+	bc.waitStarted(t)
+	clock.Advance(time.Hour + time.Second)
+	passedChecks(t, s.send(t, http.MethodGet, token, session, "", nil))
+
+	var extra map[string]any
+	require.Eventually(t, func() bool {
+		raw, err := os.ReadFile(auditPath)
+		if err != nil {
+			return false
+		}
+		for _, line := range bytes.Split(raw, []byte("\n")) {
+			var event struct {
+				Type     string `json:"type"`
+				Metadata struct {
+					Extra map[string]any `json:"extra"`
+				} `json:"metadata"`
+			}
+			if json.Unmarshal(line, &event) == nil && event.Type == audit.EventTypeSSEConnection &&
+				event.Metadata.Extra[audit.MetadataExtraKeyAdmittedAfterExpiry] != nil {
+				extra = event.Metadata.Extra
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond, "a stream-open event marked admitted_after_expiry")
+	assert.Equal(t, true, extra[audit.MetadataExtraKeyAdmittedAfterExpiry])
+	assert.Equal(t, "op-1", extra[audit.MetadataExtraKeyOperationID])
+
+	bc.unblock()
+	awaitStatus(t, done)
 }

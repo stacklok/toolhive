@@ -169,6 +169,9 @@ func TestAdmitExpiredToken(t *testing.T) {
 		{name: "list call, recorded ended", claims: testClaims([]any{listEntry}),
 			call: &Call{SessionID: session, RequestID: "2", Started: started}, ended: true,
 			r: request(http.MethodGet, session), now: started.Add(time.Minute)},
+		{name: "list call whose end was not recorded", claims: testClaims([]any{listEntry}),
+			call: &Call{SessionID: session, RequestID: "2", Started: started},
+			r:    request(http.MethodGet, session), now: started.Add(time.Minute)},
 		{name: "record failure", claims: testClaims([]any{testEntry()}),
 			r: request(http.MethodPost, session), now: started.Add(time.Minute),
 			record: failingLookupRecord{NewMemoryRecord()}},
@@ -185,6 +188,12 @@ func TestAdmitExpiredToken(t *testing.T) {
 			}
 			b, err := New(Config{MaxCallDuration: time.Hour, Record: tc.record, ExpiredTokenAdmission: admission})
 			require.NoError(t, err)
+			// The record's expiry is checked on its own clock: set it to the
+			// time the admission check is given, so the fixed times never
+			// fall behind the real clock.
+			if record, ok := b.Record().(*MemoryRecord); ok {
+				record.now = func() time.Time { return tc.now }
+			}
 			ctx := context.Background()
 			if tc.call != nil {
 				ok, err := b.Record().Start(ctx, key, *tc.call, started.Add(24*time.Hour))

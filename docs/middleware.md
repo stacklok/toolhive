@@ -759,7 +759,7 @@ Audit events are logged as structured JSON objects:
   - `response_size_bytes`: Response body size (when capturing response data)
   - `trace_id`, `span_id`: W3C trace and span IDs of the request (present only when the request carries a valid span context, such as an inbound `traceparent` with tracing enabled)
   - `denial_reason`: Why an inner check refused the request, when it names a reason (for example a vMCP call-binding refusal: `token_reused` or `token_expired`, answered with 401, or `arguments_mismatch`, answered with 403). A fixed string that never carries request data. Present only on denied events, including the `sse_connection` event of a refused stream-opening GET
-  - `admitted_after_expiry`: `true` when the token validator accepted the request's access token after it expired, as a message of a vMCP call that outlived its token. Present only on such events, whether the vMCP then admitted or refused the request
+  - `admitted_after_expiry`: `true` when the token validator accepted the request's access token after it expired, as a message of a vMCP call that outlived its token. Present only on such events, whether the vMCP then admitted or refused the request, including the stream-open (`sse_connection`) event of a GET
   - `operation_id`: on an `admitted_after_expiry` event, the operation ID from the token's `mcp_tool_call` entry, which names the call the message belongs to
 - `data`: Captured request/response data (only present if enabled)
   - `request`: Request body (parsed as JSON if possible, otherwise string)

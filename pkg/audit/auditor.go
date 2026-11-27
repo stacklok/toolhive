@@ -907,6 +907,7 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request, statusCode int) {
 	if denialReason != "" {
 		event.Metadata.Extra[MetadataExtraKeyDenialReason] = denialReason
 	}
+	stampAdmittedAfterExpiry(r, event)
 	stampTraceContext(r.Context(), event)
 
 	// Log the event

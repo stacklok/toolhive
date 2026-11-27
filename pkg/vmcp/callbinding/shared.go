@@ -217,8 +217,9 @@ func (b *Binding) ValidatorWired() bool { return b.validatorWired.Load() }
 //   - r names that session;
 //   - r is a POST, a GET or a DELETE.
 //
-// A list call is recorded ended, so no request of a list-call token is ever
-// admitted. The vMCP's call-binding check then admits only the call's own
+// A list-call token is never admitted: its call is recorded ended, and the
+// entry type is checked as well, as that end is a second write a shared record
+// may miss. The vMCP's call-binding check then admits only the call's own
 // messages: a notifications/cancelled for the call's ID, a JSON-RPC response
 // for a tool call, and a GET or DELETE on the call's session. It refuses
 // anything else with 401, as the validator refuses an expired token.
@@ -245,6 +246,8 @@ func (b *Binding) AdmitExpiredToken(r *http.Request, expired auth.ExpiredToken, 
 		return refused(reason)
 	case token == nil:
 		return refused("no_entry")
+	case token.Entry.IsList():
+		return refused("list_call")
 	}
 	if err := b.withinGrace(expired.Claims, expired.ExpiredAt, now); err != nil {
 		return refused(err.Error())

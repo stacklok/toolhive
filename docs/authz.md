@@ -167,8 +167,9 @@ running. An operator can opt in per issuer and client with
 entries matched against the token's `iss` and `client_id` claims (`azp` is not read).
 For a matching token, a tool call that outlives its token keeps, on its session, its
 cancellation, elicitation answers, and GET and DELETE, for the entry's `grace` after
-`exp` (at most 30 minutes, the maximum call duration), and only while the call is
-open. Anything else after `exp` gets 401. This needs the token validator to share the
+`exp`, and only until the call ends (its request has returned and its dispatch has
+finished) or has run for the maximum call duration (30 minutes, which no `grace` may
+exceed). Anything else after `exp` gets 401. This needs the token validator to share the
 vMCP's call binding, as the `vmcp` command wires it.
 See
 [Call-bound access tokens](arch/10-virtual-mcp-architecture.md#call-bound-access-tokens).

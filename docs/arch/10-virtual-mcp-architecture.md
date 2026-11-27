@@ -1662,8 +1662,9 @@ elicitation answer, and a GET or DELETE. The GET lets a client whose stream drop
 receive the call's messages again: the vMCP sends a backend's elicitation on the
 session's standalone stream. The DELETE ends the session. Neither starts anything.
 Nothing else is accepted after `exp`: no new call, list, handshake or `ping`. A list
-call is recorded ended and a Modern call has no session, so neither has messages
-after `exp`. A stream is checked only when it opens: one opened before `exp`, or
+call has no messages after `exp`: it is recorded ended, and the entry type is checked
+as well, since that end is a second write a shared record may miss. A Modern call has
+no session, so it has none either. A stream is checked only when it opens: one opened before `exp`, or
 by a GET admitted after it, keeps running after the call ends, until the client or
 the session closes it.
 

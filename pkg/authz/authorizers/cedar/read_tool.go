@@ -19,6 +19,9 @@ import (
 // without allowing the tool to be called.
 const readToolActionEntity = "Action::read_tool"
 
+// readToolActionQuoted is how cedar-go writes the read_tool action in a policy's text.
+const readToolActionQuoted = `Action::"read_tool"`
+
 // callToolActionEntity is the Cedar action that allows a tool to be called.
 const callToolActionEntity = "Action::call_tool"
 
@@ -65,13 +68,22 @@ func readToolPolicySet(ps *cedar.PolicySet) *cedar.PolicySet {
 			out.Add(id, p)
 			continue
 		}
-		if p.Effect() == cedar.Forbid && strings.Contains(string(p.MarshalCedar()), readToolActionEntity) {
+		if mentionsReadToolOutsideScope(p) {
 			slog.Warn("cedar forbid mentions Action::\"read_tool\" without naming it in its action scope; "+
 				"it does not hide tools from tools/list",
 				"policy", id)
 		}
 	}
 	return out
+}
+
+// mentionsReadToolOutsideScope reports whether a forbid refers to Action::"read_tool"
+// in its text while its action scope does not name it. Such a forbid is left out of the
+// read set, so the author should know it does not hide tools from tools/list.
+func mentionsReadToolOutsideScope(p *cedar.Policy) bool {
+	return p.Effect() == cedar.Forbid &&
+		!actionScopeNamesReadTool(p) &&
+		strings.Contains(string(p.MarshalCedar()), readToolActionQuoted)
 }
 
 // authorizeToolRead decides whether a tool is listed on tools/list.

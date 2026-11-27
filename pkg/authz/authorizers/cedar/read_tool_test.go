@@ -120,6 +120,47 @@ func TestToolRead_ReadToolPolicies(t *testing.T) {
 	}
 }
 
+func TestMentionsReadToolOutsideScope(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		policy string
+		want   bool
+	}{
+		{
+			name:   "unscoped forbid whose condition names read_tool is flagged",
+			policy: `forbid(principal, action, resource) when { action == Action::"read_tool" };`,
+			want:   true,
+		},
+		{
+			name:   "forbid scoped to read_tool is not flagged",
+			policy: `forbid(principal, action == Action::"read_tool", resource);`,
+			want:   false,
+		},
+		{
+			name:   "unrelated forbid is not flagged",
+			policy: `forbid(principal, action == Action::"call_tool", resource);`,
+			want:   false,
+		},
+		{
+			name:   "permit mentioning read_tool in conditions is not flagged",
+			policy: `permit(principal, action, resource) when { action == Action::"read_tool" };`,
+			want:   false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ps, err := parsePolicySet([]string{tc.policy})
+			require.NoError(t, err)
+			for _, p := range ps.Map() {
+				assert.Equal(t, tc.want, mentionsReadToolOutsideScope(p))
+			}
+		})
+	}
+}
+
 func TestToolRead_AnswersToolReadNatively(t *testing.T) {
 	t.Parallel()
 

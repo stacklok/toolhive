@@ -112,9 +112,11 @@ type BackendCapabilitiesLookup interface {
 	// backend, that aggregation decides every outcome. Otherwise any other
 	// outcome is decided from an aggregation of the whole registry, as
 	// ListBackends aggregates it. So, for a given registry and health state,
-	// every error above runs the same aggregations whatever its reason;
-	// admission still runs over the named backend's items, so its cost grows
-	// with how many items that backend has.
+	// every vmcp.ErrNotFound and vmcp.ErrBackendUnavailable runs the same
+	// aggregations and, in each, runs admission over every item once, as the
+	// lists do, whatever backendID it names: its time does not tell an unknown
+	// name from a backend identity cannot see. A backend that is answered has
+	// only its own items run through admission.
 	LookupBackendCapabilities(
 		ctx context.Context, identity *auth.Identity, backendID string,
 	) (*AdmittedBackendCapabilities, error)

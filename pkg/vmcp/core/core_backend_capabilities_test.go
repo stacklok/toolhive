@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 )
@@ -389,4 +391,133 @@ func TestLookupBackendCapabilities_MonitorDecides(t *testing.T) {
 	caps, err := c.LookupBackendCapabilities(context.Background(), cedarIdentity(), "b2")
 	require.NoError(t, err, "the monitor says degraded, whatever the registry says")
 	assert.Equal(t, []vmcp.Tool{toolOn("t2", "b2")}, caps.Tools)
+}
+
+// decided returns authorizer's calls as "feature operation resource" keys,
+// sorted, so two lookups' admission work can be compared call for call.
+func decided(authorizer *mockAuthorizer) []string {
+	keys := make([]string, 0, len(authorizer.calls))
+	for _, call := range authorizer.calls {
+		keys = append(keys, fmt.Sprintf("%s %s %s", call.feature, call.operation, call.resourceID))
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// TestLookupBackendCapabilities_RefusalsCheckEveryItem proves that every
+// refusal makes the same authorizer calls, whichever backend it names: an
+// unknown name, a hidden backend, healthy or unhealthy, and an unhealthy one in
+// identity's view (the health refusal) each run admission over every item of
+// each aggregation they are decided from once, with the calls the lists make
+// filtering that whole view. So the time a refusal takes does not grow with
+// the named backend's items. An answer checks only that backend's items.
+func TestLookupBackendCapabilities_RefusalsCheckEveryItem(t *testing.T) {
+	t.Parallel()
+	view := twoBackendView()
+	view.Tools = append(view.Tools, toolOn("t3", "b3"), toolOn("t4", "b4"))
+	// The caller can see b2, and unhealthy b3 through t3; b1 and unhealthy b4
+	// are hidden from it.
+	allowed := []string{"t2", "res://b2", "tmpl://b2/{x}", "p2", "t3"}
+	for _, tc := range []struct {
+		name     string
+		backends []vmcp.Backend
+		sweeps   int
+	}{
+		{name: "all healthy", sweeps: 1, backends: []vmcp.Backend{
+			{ID: "b1"}, {ID: "b2"}, {ID: "b3"}, {ID: "b4"},
+		}},
+		{name: "two unhealthy", sweeps: 2, backends: []vmcp.Backend{
+			{ID: "b1"}, {ID: "b2"},
+			{ID: "b3", HealthStatus: vmcp.BackendUnhealthy}, {ID: "b4", HealthStatus: vmcp.BackendUnhealthy},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			lookup := func(backendID string) ([]string, error) {
+				c, m, authorizer := newBackendCapabilitiesCore(t, tc.backends, allowed...)
+				recordAggregations(m, view, nil)
+				_, err := c.LookupBackendCapabilities(context.Background(), cedarIdentity(), backendID)
+				return decided(authorizer), err
+			}
+
+			// What the lists' admission makes, filtering the whole view once.
+			c, m, authorizer := newBackendCapabilitiesCore(t, tc.backends, allowed...)
+			recordAggregations(m, view, nil)
+			ctx, id := context.Background(), cedarIdentity()
+			_, err := c.ListTools(ctx, id)
+			require.NoError(t, err)
+			_, err = c.ListResources(ctx, id)
+			require.NoError(t, err)
+			_, err = c.ListResourceTemplates(ctx, id)
+			require.NoError(t, err)
+			_, err = c.ListPrompts(ctx, id)
+			require.NoError(t, err)
+			var wholeView []string
+			for range tc.sweeps {
+				wholeView = append(wholeView, decided(authorizer)...)
+			}
+			slices.Sort(wholeView)
+
+			refusals := map[string]error{"missing": vmcp.ErrNotFound, "b1": vmcp.ErrNotFound, "b4": vmcp.ErrNotFound}
+			if tc.sweeps == 2 {
+				refusals["b3"] = vmcp.ErrBackendUnavailable
+			}
+			for backendID, want := range refusals {
+				calls, err := lookup(backendID)
+				require.ErrorIs(t, err, want, backendID)
+				assert.Equal(t, wholeView, calls,
+					"refusing %q checks every item of each aggregation once, as the lists do", backendID)
+			}
+
+			calls, err := lookup("b2")
+			require.NoError(t, err)
+			assert.Equal(t, []string{"p2", "res://b2", "t2", "tmpl://b2/{x}"}, resourceIDs(calls),
+				"an answer checks only its backend's items")
+		})
+	}
+}
+
+// resourceIDs returns the distinct resources of decided's keys, sorted.
+func resourceIDs(keys []string) []string {
+	ids := make([]string, 0, len(keys))
+	for _, key := range keys {
+		ids = append(ids, strings.SplitN(key, " ", 3)[2])
+	}
+	slices.Sort(ids)
+	return slices.Compact(ids)
+}
+
+// cancellingAuthorizer ends a request's context when it is asked about one
+// resource, as a client that goes away during admission does.
+type cancellingAuthorizer struct {
+	*mockAuthorizer
+	at     string
+	cancel context.CancelFunc
+}
+
+func (a *cancellingAuthorizer) AuthorizeWithJWTClaims(
+	ctx context.Context, feature authorizers.MCPFeature, operation authorizers.MCPOperation,
+	resourceID string, args map[string]any,
+) (bool, error) {
+	if resourceID == a.at {
+		a.cancel()
+	}
+	return a.mockAuthorizer.AuthorizeWithJWTClaims(ctx, feature, operation, resourceID, args)
+}
+
+// TestLookupBackendCapabilities_PaddingStopsWhenCancelled proves that the
+// admission a refusal runs over the other backends' items stops once the
+// request's context ends, and does not change the refusal.
+func TestLookupBackendCapabilities_PaddingStopsWhenCancelled(t *testing.T) {
+	t.Parallel()
+	c, m, authorizer := newBackendCapabilitiesCore(t, []vmcp.Backend{{ID: "b1"}, {ID: "b2"}})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	c.admission = newCedarAdmission(&cancellingAuthorizer{mockAuthorizer: authorizer, at: "t1", cancel: cancel})
+	recordAggregations(m, twoBackendView(), nil)
+
+	_, err := c.LookupBackendCapabilities(ctx, cedarIdentity(), "missing")
+	require.ErrorIs(t, err, vmcp.ErrNotFound, "the refusal is unchanged")
+	assert.Equal(t, []string{"t1"}, resourceIDs(decided(authorizer)),
+		"nothing after the item the request went away on is checked")
 }

@@ -1589,10 +1589,12 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   when the core offers `core.BackendCapabilitiesLookup`, so they cannot disagree. That
   interface is separate from `core.VMCP`, so a decorator that only embeds `core.VMCP`
   does not promote it; the list call then falls back to the decorator's own
-  `LookupBackend` and `List*` answers, from separate aggregations. Every 403
-  `server_not_found` and every health 503 runs the same aggregations, but admission
-  runs over the named backend's items, so a refusal's time can grow with how many
-  items that backend has. A list call that
+  `LookupBackend` and `List*` answers, from separate aggregations. A list call that
+  is answered runs admission over its backend's items only. Every 403
+  `server_not_found` and every health 503 runs the same aggregations and, in each,
+  admission over every item once, as the lists do (the items of the other backends
+  are checked and the results discarded), so its time does not tell an unknown
+  `server` from a hidden backend with many items. A list call that
   carries a cursor is refused with `invalid_params`. A `tools/call` or another list
   method is refused with `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
   a tool-call entry: it uses up the token. It is recorded only once its answer is

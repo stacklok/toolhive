@@ -611,15 +611,20 @@ func (c *coreVMCP) LookupBackend(
 // every backendID is first looked up in one aggregation of the backends the
 // lists include, so conflict resolution matches the lists; a backend the lists
 // include that offers identity something there is answered from that
-// aggregation alone. When the lists include every backend, that aggregation
-// is the whole registry's too and decides every other outcome, including its
-// error. Otherwise every other outcome (unknown name, hidden, nothing
-// admitted, failed discovery, left out for its health) is decided from an
-// aggregation of the whole registry, as ListBackends aggregates it. So, for a
-// given registry and health state, every refusal runs the same aggregations,
-// and an aggregation error's 503 does not tell an unknown name from a backend
-// identity cannot see. When no backend in the whole registry answers, every
-// name gets that error, which a list call answers with 503.
+// aggregation alone, after admission of its own items only. When the lists
+// include every backend, that aggregation is the whole registry's too and
+// decides every other outcome, including its error. Otherwise every other
+// outcome (unknown name, hidden, nothing admitted, failed discovery, left out
+// for its health) is decided from an aggregation of the whole registry, as
+// ListBackends aggregates it.
+//
+// So, for a given registry and health state, every refusal (vmcp.ErrNotFound
+// or vmcp.ErrBackendUnavailable) runs the same aggregations, and in each of them
+// runs admission over every item once (padRefusal), as filtering the whole view
+// does, whichever backendID it names: neither its time nor an aggregation
+// error's 503 tells an unknown name from a backend identity cannot see. When no
+// backend in the whole registry answers, every name gets that error, which a
+// list call answers with 503.
 func (c *coreVMCP) LookupBackendCapabilities(
 	ctx context.Context, identity *auth.Identity, backendID string,
 ) (*AdmittedBackendCapabilities, error) {
@@ -631,7 +636,7 @@ func (c *coreVMCP) LookupBackendCapabilities(
 	}
 	healthy := filterHealthyBackends(all, c.health)
 
-	caps, err := c.admittedIn(ctx, identity, healthy, backendID)
+	caps, agg, err := c.admittedIn(ctx, identity, healthy, backendID)
 	if len(healthy) == len(all) {
 		// healthy is all of the registry: a second aggregation of the same
 		// backends could only disagree with this one.
@@ -639,6 +644,7 @@ func (c *coreVMCP) LookupBackendCapabilities(
 		case err != nil:
 			return nil, err
 		case caps == nil || !hasBackend(all, backendID):
+			c.padRefusal(ctx, identity, agg, backendID)
 			return nil, backendNotFound(backendID)
 		}
 		return caps, nil
@@ -649,6 +655,7 @@ func (c *coreVMCP) LookupBackendCapabilities(
 	if caps != nil && hasBackend(healthy, backendID) {
 		return caps, nil
 	}
+	c.padRefusal(ctx, identity, agg, backendID)
 	return nil, c.refuseFromRegistry(ctx, identity, all, healthy, backendID)
 }
 
@@ -659,10 +666,12 @@ func (c *coreVMCP) LookupBackendCapabilities(
 func (c *coreVMCP) refuseFromRegistry(
 	ctx context.Context, identity *auth.Identity, all, healthy []vmcp.Backend, backendID string,
 ) error {
-	visible, err := c.admittedIn(ctx, identity, all, backendID)
-	switch {
-	case err != nil:
+	visible, agg, err := c.admittedIn(ctx, identity, all, backendID)
+	if err != nil {
 		return err
+	}
+	c.padRefusal(ctx, identity, agg, backendID)
+	switch {
 	case visible == nil || !hasBackend(all, backendID):
 		return backendNotFound(backendID)
 	case hasBackend(healthy, backendID):
@@ -674,6 +683,23 @@ func (c *coreVMCP) refuseFromRegistry(
 	}
 	return fmt.Errorf("%w: backend %q is left out of the lists for its health status",
 		vmcp.ErrBackendUnavailable, backendID)
+}
+
+// padRefusal runs admission over agg's items of every backend but backendID,
+// whose items admittedIn has checked already, and discards the result. So a
+// refusal decided from agg checks every item in agg once, with the same
+// authorizer calls the lists make, whichever backendID it names: an unknown
+// name costs what a hidden backend with many items costs. Nothing it does
+// changes the refusal: no item it admits is returned, an error it meets is
+// dropped, and it stops once ctx ends. A nil agg, from an aggregation in which
+// no backend answered, has no items to check.
+func (c *coreVMCP) padRefusal(
+	ctx context.Context, identity *auth.Identity, agg *aggregator.AggregatedCapabilities, backendID string,
+) {
+	if agg == nil {
+		return
+	}
+	_, _ = c.admitted(ctx, identity, agg, func(id string) bool { return id != backendID })
 }
 
 // hasBackend reports whether backends holds a backend with the non-empty id.
@@ -688,23 +714,24 @@ func backendNotFound(id string) error {
 
 // admittedIn aggregates backends and returns what identity is admitted to on
 // backendID there, with an error for each of backendID's transiently
-// unavailable lists, or nil when it offers identity nothing. A failed
-// aggregation, including one in which no backend answered
-// (aggregator.ErrNoBackendCapabilities), returns its error.
+// unavailable lists, or nil when it offers identity nothing, along with the
+// aggregation. A failed aggregation, including one in which no backend
+// answered (aggregator.ErrNoBackendCapabilities), returns its error and no
+// aggregation.
 func (c *coreVMCP) admittedIn(
 	ctx context.Context, identity *auth.Identity, backends []vmcp.Backend, backendID string,
-) (*AdmittedBackendCapabilities, error) {
+) (*AdmittedBackendCapabilities, *aggregator.AggregatedCapabilities, error) {
 	agg, err := c.aggregateBackends(ctx, backends)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	caps, err := c.admittedBackendCapabilities(ctx, identity, agg, backendID)
+	caps, err := c.admitted(ctx, identity, agg, func(id string) bool { return id == backendID })
 	if err != nil {
-		return nil, err
+		return nil, agg, err
 	}
 	if len(caps.Tools) == 0 && len(caps.Resources) == 0 &&
 		len(caps.ResourceTemplates) == 0 && len(caps.Prompts) == 0 {
-		return nil, nil
+		return nil, agg, nil
 	}
 	for _, method := range agg.UnavailableLists[backendID] {
 		if caps.ListErrors == nil {
@@ -713,31 +740,41 @@ func (c *coreVMCP) admittedIn(
 		caps.ListErrors[method] = fmt.Errorf("%w: backend %q could not list %s now",
 			vmcp.ErrBackendUnavailable, backendID, method)
 	}
-	return caps, nil
+	return caps, agg, nil
 }
 
-// admittedBackendCapabilities runs admission over backendID's items in agg only,
-// with the same filters the List* methods apply. Composite tools are not in
+// admitted runs admission over agg's items whose backend keep accepts, with
+// the same filters the List* methods apply, and returns what it lets through.
+// It stops between kinds of item once ctx ends. Composite tools are not in
 // agg.Tools: they have no backend.
-func (c *coreVMCP) admittedBackendCapabilities(
-	ctx context.Context, identity *auth.Identity, agg *aggregator.AggregatedCapabilities, backendID string,
+func (c *coreVMCP) admitted(
+	ctx context.Context, identity *auth.Identity, agg *aggregator.AggregatedCapabilities, keep func(string) bool,
 ) (*AdmittedBackendCapabilities, error) {
-	tools, err := c.admission.FilterTools(ctx, identity, ofBackend(agg.Tools, backendID,
+	tools, err := c.admission.FilterTools(ctx, identity, ofBackend(agg.Tools, keep,
 		func(t vmcp.Tool) string { return t.BackendID }))
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		return nil, err
 	}
-	resources, err := c.admission.FilterResources(ctx, identity, ofBackend(agg.Resources, backendID,
+	resources, err := c.admission.FilterResources(ctx, identity, ofBackend(agg.Resources, keep,
 		func(r vmcp.Resource) string { return r.BackendID }))
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		return nil, err
 	}
-	templates, err := c.filterResourceTemplates(ctx, identity, ofBackend(agg.ResourceTemplates, backendID,
+	templates, err := c.filterResourceTemplates(ctx, identity, ofBackend(agg.ResourceTemplates, keep,
 		func(t vmcp.ResourceTemplate) string { return t.BackendID }))
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		return nil, err
 	}
-	prompts, err := c.admission.FilterPrompts(ctx, identity, ofBackend(agg.Prompts, backendID,
+	prompts, err := c.admission.FilterPrompts(ctx, identity, ofBackend(agg.Prompts, keep,
 		func(p vmcp.Prompt) string { return p.BackendID }))
 	if err != nil {
 		return nil, err
@@ -747,11 +784,11 @@ func (c *coreVMCP) admittedBackendCapabilities(
 	}, nil
 }
 
-// ofBackend returns a new slice of the items whose backend is backendID, in order.
-func ofBackend[T any](items []T, backendID string, backend func(T) string) []T {
+// ofBackend returns a new slice of the items whose backend keep accepts, in order.
+func ofBackend[T any](items []T, keep func(string) bool, backend func(T) string) []T {
 	out := make([]T, 0)
 	for _, item := range items {
-		if backend(item) == backendID {
+		if keep(backend(item)) {
 			out = append(out, item)
 		}
 	}

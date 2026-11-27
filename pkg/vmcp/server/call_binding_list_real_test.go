@@ -512,3 +512,38 @@ func BenchmarkCallBindingReal_ListCallCedar(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkCallBindingReal_ListCallRefusalCedar measures, with Cedar
+// admitting only beta's 1,000 tools, a list call refused for alpha, hidden
+// with 9,000 tools, for an unknown name, and one answered for beta. Every
+// token has a subject of its own, so each call aggregates afresh. The two
+// refusals should take the same time: each checks every tool once.
+func BenchmarkCallBindingReal_ListCallRefusalCedar(b *testing.B) {
+	names := func(prefix string, n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("%s_%05d", prefix, i)
+		}
+		return out
+	}
+	s := newLCServer(b, map[string]*lcModernBackend{
+		"alpha": {tools: names("alpha", 9000)},
+		"beta":  {tools: names("beta", 1000)},
+	}, `permit(principal, action == Action::"call_tool", resource in Backend::"beta");`)
+
+	for _, tc := range []struct {
+		name, server string
+		status       int
+	}{
+		{name: "hidden", server: "alpha", status: http.StatusForbidden},
+		{name: "unknown", server: "missing", status: http.StatusForbidden},
+		{name: "answered", server: "beta", status: http.StatusOK},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			for b.Loop() {
+				status, body := s.list(b, s.listToken(tc.server, "tools/list"), "tools/list")
+				require.Equal(b, tc.status, status, "body: %.200s", body)
+			}
+		})
+	}
+}

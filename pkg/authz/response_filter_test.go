@@ -48,7 +48,7 @@ func runFindToolResponseFilter(
 ) *httptest.ResponseRecorder {
 	t.Helper()
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(
+	rfw := newTestFilteringWriter(
 		rr,
 		authorizer,
 		newParsedUser1Request(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call"}`),
@@ -522,7 +522,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 			rr := httptest.NewRecorder()
 
 			// Create the response filtering writer
-			filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, tc.method, nil, nil)
+			filteringWriter := newTestFilteringWriter(rr, authorizer, req, tc.method, nil, nil)
 			filteringWriter.ResponseWriter.Header().Set("Content-Type", "application/json")
 
 			// Write the response data
@@ -693,7 +693,7 @@ func TestResponseFilteringWriter_ListsPreserveResultMembers(t *testing.T) {
 					}}
 					annotationCache := NewAnnotationCache()
 					rr := httptest.NewRecorder()
-					rfw := NewResponseFilteringWriter(rr, authorizer, newUser1Request(t), m.method, annotationCache, nil)
+					rfw := newTestFilteringWriter(rr, authorizer, newUser1Request(t), m.method, annotationCache, nil)
 					rfw.ResponseWriter.Header().Set("Content-Type", contentType)
 					rfw.ResponseWriter.Header().Set("Cache-Control", "public, max-age=60")
 					if contentType == "text/event-stream" {
@@ -876,7 +876,7 @@ func TestResponseFilteringWriter_LegacyListsRejectMalformedOrAmbiguousResults(t 
 				cachedAnnotations := &authorizers.ToolAnnotations{}
 				annotationCache.Set("previously-cached-tool", cachedAnnotations)
 				rr := httptest.NewRecorder()
-				rfw := NewResponseFilteringWriter(
+				rfw := newTestFilteringWriter(
 					rr, authorizer, newUser1Request(t), method.method, annotationCache, nil,
 				)
 				rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
@@ -983,7 +983,7 @@ func TestResponseFilteringWriter_ToolsListRejectsAmbiguousAnnotations(t *testing
 			cachedAnnotations := &authorizers.ToolAnnotations{}
 			annotationCache.Set("previously-cached-tool", cachedAnnotations)
 			rr := httptest.NewRecorder()
-			rfw := NewResponseFilteringWriter(
+			rfw := newTestFilteringWriter(
 				rr, authorizer, newUser1Request(t), string(mcp.MethodToolsList), annotationCache, nil,
 			)
 			rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
@@ -1042,7 +1042,7 @@ func TestResponseFilteringWriter_ToolsListAuthorizesAnnotationsAndForwardsRawDes
 
 	annotationCache := NewAnnotationCache()
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(
+	rfw := newTestFilteringWriter(
 		rr, authorizer, newUser1Request(t), string(mcp.MethodToolsList), annotationCache, nil,
 	)
 	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
@@ -1158,7 +1158,7 @@ func TestResponseFilteringWriter_ResourceTemplatesList(t *testing.T) {
 	require.NoError(t, err)
 
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(
+	rfw := newTestFilteringWriter(
 		rr,
 		authorizer,
 		newUser1Request(t),
@@ -1225,7 +1225,7 @@ func TestResponseFilteringWriter_ResourceTemplatesList_SSEForcesPrivateCaching(t
 		allowedTemplate: {authorized: true},
 	}}
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(
+	rfw := newTestFilteringWriter(
 		rr,
 		authorizer,
 		newUser1Request(t),
@@ -1331,7 +1331,7 @@ func TestResponseFilteringWriter_ResourceTemplatesList_RejectsAmbiguousResultMem
 				deniedTemplate:  {authorized: false},
 			}}
 			rr := httptest.NewRecorder()
-			rfw := NewResponseFilteringWriter(
+			rfw := newTestFilteringWriter(
 				rr,
 				authorizer,
 				newParsedUser1Request(t, `{"jsonrpc":"2.0","id":101,"method":"resources/templates/list"}`),
@@ -1391,7 +1391,7 @@ func TestResponseFilteringWriter_ResourceTemplatesList_RejectsDescriptorAliasesA
 				"file:///private/{name}": {authorized: false},
 			}}
 			rr := httptest.NewRecorder()
-			rfw := NewResponseFilteringWriter(
+			rfw := newTestFilteringWriter(
 				rr,
 				authorizer,
 				newParsedUser1Request(t, `{"jsonrpc":"2.0","id":102,"method":"resources/templates/list"}`),
@@ -1436,7 +1436,7 @@ func TestResponseFilteringWriter_ResourceTemplatesList_MalformedDescriptorFailsC
 	require.NoError(t, err)
 
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(
+	rfw := newTestFilteringWriter(
 		rr,
 		authorizer,
 		newParsedUser1Request(t, `{"jsonrpc":"2.0","id":99,"method":"resources/templates/list"}`),
@@ -1513,7 +1513,7 @@ func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	// Create the response filtering writer for a non-list operation
-	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/call", nil, nil)
+	filteringWriter := newTestFilteringWriter(rr, authorizer, req, "tools/call", nil, nil)
 
 	// Write the response data
 	_, err = filteringWriter.Write(responseBytes)
@@ -1556,7 +1556,7 @@ func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	// Create the response filtering writer
-	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil, nil)
+	filteringWriter := newTestFilteringWriter(rr, authorizer, req, "tools/list", nil, nil)
 	filteringWriter.ResponseWriter.Header().Set("Content-Type", "application/json")
 
 	// Write the response data
@@ -1653,7 +1653,7 @@ func TestResponseFilteringWriter_ContentLengthMismatch(t *testing.T) {
 
 		// Wrap the real ResponseWriter with ResponseFilteringWriter,
 		// exactly as the authz middleware does in middleware.go.
-		filteringWriter := NewResponseFilteringWriter(w, authorizer, r, string(mcp.MethodToolsList), nil, nil)
+		filteringWriter := newTestFilteringWriter(w, authorizer, r, string(mcp.MethodToolsList), nil, nil)
 
 		// Proxy to the backend. ReverseProxy will call w.Header() to copy
 		// the backend's Content-Length into the response header map. Since
@@ -1837,7 +1837,7 @@ func TestOptimizerPassThroughToolsInResponseFilter(t *testing.T) {
 		t.Parallel()
 
 		rr := httptest.NewRecorder()
-		fw := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil, passThroughTools)
+		fw := newTestFilteringWriter(rr, authorizer, req, "tools/list", nil, passThroughTools)
 		fw.ResponseWriter.Header().Set("Content-Type", "application/json")
 
 		_, err := fw.Write(responseBytes)
@@ -1858,7 +1858,7 @@ func TestOptimizerPassThroughToolsInResponseFilter(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 		// nil passThroughTools = no pass-through, standard Cedar filtering.
-		fw := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil, nil)
+		fw := newTestFilteringWriter(rr, authorizer, req, "tools/list", nil, nil)
 		fw.ResponseWriter.Header().Set("Content-Type", "application/json")
 
 		_, err := fw.Write(responseBytes)
@@ -1896,7 +1896,7 @@ func TestOptimizerPassThroughToolsInResponseFilter(t *testing.T) {
 		require.NoError(t, err)
 
 		rr := httptest.NewRecorder()
-		fw := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil, passThroughTools)
+		fw := newTestFilteringWriter(rr, authorizer, req, "tools/list", nil, passThroughTools)
 		fw.ResponseWriter.Header().Set("Content-Type", "application/json")
 
 		_, err = fw.Write(mixedResponseBytes)
@@ -2227,7 +2227,7 @@ func TestResponseFilteringWriter_SSE_PerEventFallthrough(t *testing.T) {
 				req := newUser1Request(t)
 
 				rr := httptest.NewRecorder()
-				rfw := NewResponseFilteringWriter(rr, authorizer, req, mc.method, nil, nil)
+				rfw := newTestFilteringWriter(rr, authorizer, req, mc.method, nil, nil)
 				rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 				// A blank line separates plc.line and mc.respLine into two
@@ -2347,7 +2347,7 @@ func TestResponseFilteringWriter_SSE_DisguisedResponseFrame(t *testing.T) {
 			parsedReq := newParsedUser1Request(t, `{"jsonrpc":"2.0","id":99,"method":"tools/list"}`)
 
 			rr := httptest.NewRecorder()
-			rfw := NewResponseFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
+			rfw := newTestFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
 			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 			// A blank line separates the disguised frame from the genuine
@@ -2396,7 +2396,7 @@ func TestResponseFilteringWriter_SSE_FailClosedDropsEventName(t *testing.T) {
 	parsedReq := newParsedUser1Request(t, `{"jsonrpc":"2.0","id":99,"method":"tools/list"}`)
 
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
+	rfw := newTestFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
 	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 	// A method+result frame that fails closed (see
@@ -2453,7 +2453,7 @@ func TestResponseFilteringWriter_SSE_ConcatenatedEventBypass(t *testing.T) {
 	req := newParsedUser1Request(t, `{"jsonrpc":"2.0","id":99,"method":"tools/list"}`)
 
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 	// No blank line between the two data: lines: one event, two fields.
@@ -2496,7 +2496,7 @@ func TestResponseFilteringWriter_SSE_MixedSeparatorsBypass(t *testing.T) {
 	req := newUser1Request(t)
 
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 	resultJSON, err := json.Marshal(mcp.ListToolsResult{
@@ -2538,7 +2538,7 @@ func TestResponseFilteringWriter_SSE_LeadingBOMBypass(t *testing.T) {
 	req := newUser1Request(t)
 
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 	resultJSON, err := json.Marshal(mcp.ListToolsResult{
@@ -2584,7 +2584,7 @@ func TestResponseFilteringWriter_JSON_LeadingBOMBypass(t *testing.T) {
 
 	run := func(contentType string) string {
 		rr := httptest.NewRecorder()
-		rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+		rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 		rfw.ResponseWriter.Header().Set("Content-Type", contentType)
 		_, err := rfw.Write([]byte(body))
 		require.NoError(t, err)
@@ -2619,7 +2619,7 @@ func TestResponseFilteringWriter_BOMFallbackPassthroughClearsContentLength(t *te
 	authorizer := newWeatherOnlyAuthorizer(t)
 	req := newUser1Request(t)
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 	body := append(append([]byte{}, mcpparser.UTF8BOM...), []byte("not a JSON-RPC response")...)
 	rfw.ResponseWriter.Header().Set("Content-Type", "text/plain")
 	rfw.ResponseWriter.Header().Set("Content-Length", strconv.Itoa(len(body)))
@@ -2652,7 +2652,7 @@ func TestResponseFilteringWriter_Sniff_SSE_LeadingBOMBypass(t *testing.T) {
 	body := "\xEF\xBB\xBF" + `data: {"jsonrpc":"2.0","id":1,"result":` + string(resultJSON) + "}\n\n"
 
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 	rfw.ResponseWriter.Header().Set("Content-Type", "application/x-unknown")
 
 	_, err = rfw.Write([]byte(body))
@@ -2719,7 +2719,7 @@ func TestResponseFilteringWriter_SSE_ErrorAndResultBypass(t *testing.T) {
 			req := newUser1Request(t)
 
 			rr := httptest.NewRecorder()
-			rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+			rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 			_, err := rfw.Write([]byte(tc.body))
@@ -2799,7 +2799,7 @@ func TestResponseFilteringWriter_JSON_DisguisedResponseFrame(t *testing.T) {
 			parsedReq := newParsedUser1Request(t, reqBody)
 
 			rr := httptest.NewRecorder()
-			rfw := NewResponseFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
+			rfw := newTestFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
 			rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
 
 			_, err := rfw.Write([]byte(smuggled))
@@ -2863,7 +2863,7 @@ func TestErrorResponseBody(t *testing.T) {
 			t.Parallel()
 
 			req := newUser1Request(t)
-			rfw := NewResponseFilteringWriter(httptest.NewRecorder(), authorizer, req, string(mcp.MethodToolsList), nil, nil)
+			rfw := newTestFilteringWriter(httptest.NewRecorder(), authorizer, req, string(mcp.MethodToolsList), nil, nil)
 			body := rfw.errorResponseBody(tc.id, wrapped)
 
 			var decoded map[string]any
@@ -2935,7 +2935,7 @@ func TestResponseFilteringWriter_SSE_SplitPayloadAcrossDataLines(t *testing.T) {
 	req := newUser1Request(t)
 
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 	_, err = rfw.Write([]byte(body))
@@ -2982,7 +2982,7 @@ func TestResponseFilteringWriter_SSE_MultiEventBody(t *testing.T) {
 	req := newUser1Request(t)
 
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 	_, err = rfw.Write([]byte(body))
@@ -3039,7 +3039,7 @@ func TestResponseFilteringWriter_SSE_StructuralRoundTrip(t *testing.T) {
 			req := newUser1Request(t)
 
 			rr := httptest.NewRecorder()
-			rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+			rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 			_, err := rfw.Write([]byte(tc.body))
@@ -3083,7 +3083,7 @@ func TestResponseFilteringWriter_SSE_FilteredEventTerminators(t *testing.T) {
 
 		req := newUser1Request(t)
 		rr := httptest.NewRecorder()
-		rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+		rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 		rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 		body := "data: " + string(encoded) + "\r\n\r\n"
@@ -3112,7 +3112,7 @@ func TestResponseFilteringWriter_SSE_FilteredEventTerminators(t *testing.T) {
 
 		req := newUser1Request(t)
 		rr := httptest.NewRecorder()
-		rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+		rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 		rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 		// No trailing terminator at all: the backend closed the stream
@@ -3254,7 +3254,7 @@ func TestResponseFilteringWriter_FilterBypassAttempts(t *testing.T) {
 			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
 			rr := httptest.NewRecorder()
-			fw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+			fw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 			if tc.contentType != "" {
 				fw.ResponseWriter.Header().Set("Content-Type", tc.contentType)
 			}
@@ -3325,7 +3325,7 @@ func TestResponseFilteringWriter_SSE_LeadingNonJSONWhitespaceStillFiltered(t *te
 
 			req := newUser1Request(t)
 			rr := httptest.NewRecorder()
-			rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+			rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 			body := "data: " + tc.prefix + string(encoded) + "\n\n"
@@ -3399,7 +3399,7 @@ func TestResponseFilteringWriter_SSE_PerValueProbeCatchesConcatenatedGarbage(t *
 
 			parsedReq := newParsedUser1Request(t, `{"jsonrpc":"2.0","id":99,"method":"tools/list"}`)
 			rr := httptest.NewRecorder()
-			rfw := NewResponseFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
+			rfw := newTestFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
 			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 			// One event, two data: lines with no blank line between them, so
@@ -3446,7 +3446,7 @@ func TestResponseFilteringWriter_SSE_InteriorBareCRNotALineBreak(t *testing.T) {
 	req := newUser1Request(t)
 
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 	// A bare "\r" sits between "id":1, and "result", inside what a
@@ -3529,7 +3529,7 @@ func TestResponseFilteringWriter_SSE_InteriorExoticWhitespaceAcrossDataLines(t *
 			req := newUser1Request(t)
 
 			rr := httptest.NewRecorder()
-			rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+			rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 			// Two data: lines, no blank line between them, so they belong to
@@ -3580,7 +3580,7 @@ func TestResponseFilteringWriter_SSE_FailClosedDoesNotLeakSubsequentEvents(t *te
 
 	req := newUser1Request(t)
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw := newTestFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 	_, err := rfw.Write([]byte(stream))
@@ -3682,7 +3682,7 @@ func TestParseSSEStream_DeliversOnlyDispatchedEvents(t *testing.T) {
 	parsedReq := newParsedUser1Request(t, `{"jsonrpc":"2.0","id":99,"method":"tools/list"}`)
 
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
+	rfw := newTestFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
 	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 	body := `data: {"jsonrpc":"2.0","method":"notifications/initialized","id":1,` +
@@ -3710,7 +3710,7 @@ func TestParseSSEStream_RejectsBareJSONWithoutDataPrefix(t *testing.T) {
 
 	authorizer := newWeatherOnlyAuthorizer(t)
 	req := newUser1Request(t)
-	rfw := NewResponseFilteringWriter(httptest.NewRecorder(), authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw := newTestFilteringWriter(httptest.NewRecorder(), authorizer, req, string(mcp.MethodToolsList), nil, nil)
 
 	bareBody := rfw.errorResponseBody(jsonrpc2.Int64ID(1), errors.New("x"))
 
@@ -3730,4 +3730,46 @@ func TestParseSSEStream_RejectsBareJSONWithoutDataPrefix(t *testing.T) {
 			assert.Empty(t, events, "a bare JSON envelope with no data: prefix must never dispatch as an SSE event")
 		})
 	}
+}
+
+// newTestFilteringWriter builds a ResponseFilteringWriter the way production does:
+// Middleware wraps the authorizer once, so tool:call implies tool:read.
+func newTestFilteringWriter(
+	w http.ResponseWriter, authorizer authorizers.Authorizer, r *http.Request, method string,
+	annotationCache *AnnotationCache, passThroughTools map[string]struct{},
+) *ResponseFilteringWriter {
+	return NewResponseFilteringWriter(
+		w, authorizers.WithToolCallImpliesRead(authorizer), r, method, annotationCache, passThroughTools)
+}
+
+// TestFindToolResponseFilter_ListsToolWithReadGrant checks that the optimizer's
+// find_tool responses are filtered by tool:read, so a tool the caller can read but not
+// call stays visible, and a tool with neither grant is removed from the whole response.
+func TestFindToolResponseFilter_ListsToolWithReadGrant(t *testing.T) {
+	t.Parallel()
+
+	const protectedName = "protected-find-tool-sentinel"
+	const output = `{"tools":[` +
+		`{"name":"weather","description":"Get weather","annotations":{"readOnlyHint":true}},` +
+		`{"name":"` + protectedName + `","description":"restricted",` +
+		`"annotations":{"readOnlyHint":true}}],` +
+		`"token_metrics":{"baseline_tokens":20,"returned_tokens":10,"savings_percent":50}}`
+	escapedOutput, err := json.Marshal(output)
+	require.NoError(t, err)
+	result := `{"content":[{"type":"text","text":` + string(escapedOutput) + `}],` +
+		`"structuredContent":` + output + `}`
+
+	authorizer := &mockAuthorizer{
+		readByResource: map[string]bool{"weather": true, protectedName: false},
+		callByResource: map[string]bool{"weather": false, protectedName: false},
+	}
+	rr := runFindToolResponseFilter(t, findToolJSONRPCResponse(t, result), authorizer, NewAnnotationCache())
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.NotContains(t, rr.Body.String(), protectedName,
+		"a tool with neither tool:read nor tool:call must be removed from the whole wire response")
+	assert.Contains(t, rr.Body.String(), "weather",
+		"a tool the caller can read must stay visible even when tool:call is denied")
+	decoded := decodeFindToolResultMap(t, rr.Body.Bytes())
+	assert.NotNil(t, decoded["content"])
 }

@@ -35,6 +35,12 @@ type ConfigOptions struct {
 	// - "mpe": Uses MPE-specific m-prefixed claims (mroles, mgroups, mclearance, mannotations)
 	// - "standard": Uses standard OIDC claim names (roles, groups)
 	ClaimMapping string `json:"claim_mapping,omitempty" yaml:"claim_mapping,omitempty"`
+
+	// ForwardToolRead asks the PDP for mcp:tool:read when deciding tools/list visibility.
+	// Default false: the PDP is asked only mcp:tool:call, so a call-only forbid keeps
+	// hiding its tool. When true, the PDP owns the rule that call implies read, and a
+	// tool:read deny does not fall back to a tool:call check.
+	ForwardToolRead bool `json:"forward_tool_read,omitempty" yaml:"forward_tool_read,omitempty"`
 }
 
 // ContextConfig configures what context information is included in the PORC.

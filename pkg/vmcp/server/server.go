@@ -572,8 +572,9 @@ func New(
 
 	// Wrap the aggregator in a per-identity caching decorator: the core re-derives the
 	// advertised view on every call, so without this the Serve path re-sweeps every backend's
-	// tools/list per tool call. The cache is keyed on identity + forwarded credentials, so it
-	// never serves one caller's capability view to another.
+	// tools/list per tool call. The cache is keyed on the session binding, platform user ID,
+	// forwarded headers and backend IDs, so it does not serve one caller's view to a caller with
+	// a different issuer, subject or delegated client. It does not key on the caller's tokens.
 	cachedAgg := aggregator.NewCachingAggregator(cfg.Aggregator, capabilityCacheTTL)
 
 	// Code mode telemetry is built before the core, so a failure here has

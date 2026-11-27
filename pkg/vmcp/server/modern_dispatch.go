@@ -252,14 +252,13 @@ func (s *Server) dispatchModernPromptsList(
 // this is ungated: there is no separate Check* for discover, since it leaks
 // no more than tools/list already does.
 //
-// This runs ONE backend fan-out per call via core.Discover (aggregatedView is
-// uncached, so calling ListTools/ListResources/ListResourceTemplates/
-// ListPrompts independently here used to cost four -- and those four weren't
-// even a consistent snapshot of the aggregated view). A single fan-out per
-// request is fine for now, but a probe the spec expects to be cheap across
-// requests too. There is no cross-request cache; add a short-TTL per-identity
-// capability cache only if profiling shows the per-request fan-out cost
-// matters (#5761, tracked separately, not blocking here).
+// This derives the view ONCE per call via core.Discover (calling ListTools/
+// ListResources/ListResourceTemplates/ListPrompts independently here used to
+// cost four fan-outs -- and those four weren't even a consistent snapshot of
+// the aggregated view). The aggregator server.New installs caches that view
+// per identity for 30s, keyed on the session binding, platform user ID,
+// forwarded headers and backend IDs; an identity that cannot be bound is
+// swept on every call (#5761).
 func (s *Server) dispatchModernDiscover(
 	ctx context.Context, w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, identity *auth.Identity,
 ) {

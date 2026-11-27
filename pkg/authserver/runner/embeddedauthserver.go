@@ -25,7 +25,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
-	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
@@ -773,7 +772,7 @@ func (e *EmbeddedAuthServer) RegisterHandlers(mux *http.ServeMux) {
 }
 
 func validateConsentPolicyForRunConfig(cfg *authserver.RunConfig, options embeddedAuthServerOptions) error {
-	return consentpolicy.Validate(
+	return authserver.ValidateConsentPolicy(
 		options.consentExemptClientIDs,
 		cfg.AuthorizationEndpointBaseURL,
 		cfg.Issuer,

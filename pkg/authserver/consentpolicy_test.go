@@ -29,6 +29,15 @@ func validConsentPolicyConfig() Config {
 	}
 }
 
+func TestValidateConsentPolicyNegativeUpstreamCount(t *testing.T) {
+	t.Parallel()
+
+	const base = "https://auth.example.com"
+	require.NoError(t, ValidateConsentPolicy(nil, base, base, -1))
+	err := ValidateConsentPolicy([]string{"desktop-client"}, base, base, -1)
+	require.ErrorContains(t, err, "at least one configured upstream")
+}
+
 func TestConfigValidateConsentExemptClientIDs(t *testing.T) {
 	t.Parallel()
 

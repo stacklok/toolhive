@@ -80,7 +80,9 @@ differently:
   `provider "github" requires upstream authorization`, or
   `upstream authorization required` if no provider is named.
 - **The credential is unavailable.** `tools/call` returns JSON-RPC `-32603`
-  with the fixed message `upstream credential unavailable`.
+  with the fixed message `upstream credential unavailable`. Causes include a
+  missing reader, a reader that does not read user-keyed storage, and storage
+  or refresh failures.
 
 Both revisions (Legacy 2025-11-25 and Modern 2026-07-28) answer the same way,
 for a direct call, through the Legacy optimizer's `call_tool`, and for a
@@ -133,6 +135,18 @@ out of the tool list, so a call to one of its tools reports that the tool was
 not found. On a Modern backend, when the read fails on an optional list
 (resources, resource templates, or prompts) after the tool list succeeded,
 that list is empty and vMCP logs a warning that names the credential failure.
+
+A never-connected user who calls an omitted tool gets an unknown-tool error
+(JSON-RPC `-32602`: `unknown tool` on Modern, `tool "<name>" not found` on
+Legacy), not a result naming the provider. If no backend returns
+capabilities, discovery itself fails instead of producing a tool list.
+
+After the user connects the provider, Modern requests can still see the old
+view until the capability cache TTL expires (30 seconds by default). On Legacy,
+the reliable way to pick up newly visible tools is a fresh session started
+after the cache expires. A `list_changed` resync triggered by a notification
+from an eligible backend can also update a live session, but connecting a
+provider does not trigger one.
 
 In code mode, a script's tool call (`execute_tool_script`) does not go through
 these renderers. The script receives the error text, which is the same text

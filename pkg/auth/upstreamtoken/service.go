@@ -8,14 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/authserver/identity"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto/oautherr"
 )
 
 const (
@@ -548,7 +551,7 @@ func (s *InProcessService) recordAbandonedIDTokenFailure(
 	// No session ID: on the per-user path it is derived from the user ID.
 	slog.WarnContext(ctx, "upstream ID token refresh failed after the caller left",
 		"provider", providerName,
-		"error", err,
+		"reason", refreshFailureReason(err),
 	)
 }
 
@@ -646,8 +649,8 @@ func (s *InProcessService) refreshForIDToken(
 		(errors.Is(readErr, storage.ErrInvalidBinding) || errors.Is(readErr, ErrInvalidBinding)) {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidBinding, readErr)
 	}
+	// No session ID: on the per-user path it is derived from the user ID.
 	slog.DebugContext(ctx, "returning stored upstream tokens after failed refresh for expired ID token",
-		"session_id", sessionID,
 		"provider", providerName,
 	)
 	if !warnOnFailure {
@@ -656,7 +659,7 @@ func (s *InProcessService) refreshForIDToken(
 		// No session ID: on the per-user path it is derived from the user ID.
 		slog.WarnContext(ctx, "upstream ID token refresh failed; returning the stored credential",
 			"provider", providerName,
-			"error", err,
+			"reason", refreshFailureReason(err),
 		)
 	}
 	s.recordIDTokenRefreshFailure(ctx, sessionID, providerName, tokens)
@@ -795,6 +798,25 @@ func usableUserCredential(cred *UpstreamCredential, err error) (*UpstreamCredent
 		return nil, needsAuthorization(ErrSessionNotFound)
 	}
 	return cred, nil
+}
+
+// refreshFailureReason names the category of a refresh failure for logs. Error
+// text can carry provider-supplied detail (an OAuth error_description), so
+// callers log this instead of the error.
+func refreshFailureReason(err error) string {
+	switch {
+	case errors.Is(err, upstream.ErrGrantRejected), oautherr.IsRejectedRefreshGrant(err):
+		return "grant_rejected"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "network_or_timeout"
+	}
+	if _, ok := errors.AsType[net.Error](err); ok {
+		return "network_or_timeout"
+	}
+	if _, ok := errors.AsType[*oauth2.RetrieveError](err); ok {
+		return "token_endpoint_error"
+	}
+	return "refresh_failed"
 }
 
 // classifyUserReadError maps a storage read failure to the per-user read's

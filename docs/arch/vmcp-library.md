@@ -145,6 +145,41 @@ in front of the vMCP put the entry into that client's access tokens; otherwise e
 call from it is refused. See
 [Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
 
+### Delegated upstream credentials
+
+If you build your own outgoing auth registry with
+`vmcpauth.NewDefaultOutgoingAuthRegistry()`, construct and register the
+`upstream_inject` strategy with an `upstreamtoken.UserCredentialReader`:
+
+```go
+registry := vmcpauth.NewDefaultOutgoingAuthRegistry()
+strategy := strategies.NewUpstreamInjectStrategy(strategies.WithUserCredentialReader(reader))
+if err := registry.RegisterStrategy(authtypes.StrategyTypeUpstreamInject, strategy); err != nil {
+	return fmt.Errorf("register upstream_inject strategy: %w", err)
+}
+```
+
+`factory.NewOutgoingAuthRegistry`, and therefore the stock `thv vmcp serve`,
+does not pass a reader yet, so delegated requests to `upstream_inject` backends
+fail closed there. You cannot patch the factory's registry afterwards, because
+`RegisterStrategy` rejects a name that is already registered. Build the registry
+with `NewDefaultOutgoingAuthRegistry` instead.
+
+On `AdmissionRouteDelegated`, a nil reader fails closed with `upstream
+credential unavailable`; the strategy does not fall back to credentials on
+`Identity.UpstreamTokens`. Interactive and unspecified routes still use
+`Identity.UpstreamTokens`.
+
+The reader must read user-keyed storage, because the strategy looks credentials
+up by platform user ID. ToolHive's in-process reader over storage that is not
+user-keyed is refused when you pass it to `WithUserCredentialReader`, and
+delegated requests then fail closed with `upstream credential unavailable`. A
+reader you write yourself must read by user ID; the strategy cannot check this
+unless the reader implements `upstreamtoken.UserKeyedReader`. When using
+ToolHive's in-process reader over user-keyed storage, follow the [incoming validator startup requirements](11-auth-server-storage.md#validator-rule-for-embedded-issuer-tokens).
+See [delegated credential failures](../error-handling.md#vmcp-delegated-credential-failures)
+for how missing or unavailable credentials affect discovery and tool calls.
+
 ## `pkg/vmcp/` Stability Table
 
 The table below maps every sub-package to its stability level per RFC THV-0059. Verify against the merged RFC if there is a discrepancy.

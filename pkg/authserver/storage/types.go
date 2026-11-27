@@ -1592,6 +1592,16 @@ type UserStorage interface {
 // absent, sign-in leaves unstamped rows unstamped and refuses a stamped
 // mismatch with the handlers package's ErrIdentityBindingMismatch.
 //
+// A storage wrapper that sits over real provider-identity rows should forward
+// this capability. A plain struct{ storage.Storage } embed does not forward it,
+// and ProviderIdentitySwapperFor follows Unwrap only through types that carry
+// the package's decorator marker, so an outside wrapper must implement the
+// method itself. Storage that serves identity rows itself (for example one
+// that builds each row from a directory service and refuses writes) should
+// leave it unimplemented. It must not fill in Issuer or SubjectClaim on the
+// rows it returns unless it computes them exactly as the auth server does,
+// because a differing value is refused as a binding mismatch.
+//
 // Unlike AssertionJWTConsumer, it is not forwarded through each decorator:
 // absence is a legitimate state here, and the resolver handles it deliberately.
 type ProviderIdentitySwapper interface {

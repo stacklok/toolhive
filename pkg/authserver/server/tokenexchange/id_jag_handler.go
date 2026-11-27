@@ -206,7 +206,6 @@ func newIDJAGIssuanceHandler(
 			"have the IdP use the token endpoint as aud, or stop listing the issuer in allowed_audiences",
 			"issuer", asIssuer)
 	}
-	warnSubjectResolutionDisabled(logger, h.policies)
 	return h, nil
 }
 
@@ -232,8 +231,7 @@ func (*IDJAGHandler) CanSkipClientAuth(ctx context.Context, requester fosite.Acc
 
 // HandleTokenEndpointRequest validates the ID-JAG assertion, its client
 // binding, and per-issuer policy, then prepares a bounded access-token
-// session. After the subject-mode gate, a resolve issuer's subject is resolved
-// to a local user.
+// session. A resolve issuer's subject is resolved to a local user.
 func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester fosite.AccessRequester) error {
 	if !h.CanHandleTokenEndpointRequest(ctx, requester) {
 		return errorsx.WithStack(fosite.ErrUnknownRequest)
@@ -274,13 +272,6 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 		return err
 	}
 	if err := h.checkActorIssuer(ctx, claims, policy, requester.GetClient().GetID()); err != nil {
-		return err
-	}
-	// Closed until delegated access is enabled; see delegatedAccessEnabled.
-	// Today resolution and the actor policy, which runs after it, are tested
-	// through idJAGRedemption and redeemer.complete; full-handler tests with
-	// the gate open belong with the change that opens it.
-	if err := checkSubjectModeGate(policy); err != nil {
 		return err
 	}
 	if err := h.completeRedemption(ctx, requester, claims, policy, resource); err != nil {
@@ -357,8 +348,7 @@ func (h *IDJAGHandler) checkIDJAGPolicy(
 	// resource per subject. The resource is bounded by the resource claim
 	// (governed resources) and by checkClientAudience. checkClientAudience does
 	// not narrow a DCR or CIMD client that is not resource-scoped, so such a
-	// client is refused when the subject is resolved, after the gate, in
-	// idJAGRedemption.
+	// client is refused when the subject is resolved, in idJAGRedemption.
 	if policy.SubjectMode == SubjectModeResolve {
 		return resource, nil
 	}

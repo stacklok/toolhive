@@ -347,26 +347,6 @@ func TestIDJAGIssuanceFactory_SubjectResolution(t *testing.T) {
 	})
 }
 
-func TestIDJAGHandler_GateRunsBeforeResolution(t *testing.T) {
-	t.Parallel()
-
-	resolver := mocks.NewMockResolver(gomock.NewController(t))
-	resolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Times(0)
-
-	claims := resolveClaims(validUpstreamSubject())
-	// The handler built here governs no resources, so with the claim present the
-	// request would be refused earlier as an ungoverned resource and never reach
-	// the gate.
-	delete(claims.Extra, "resource")
-
-	req, consumer, _, err := actorRedeemRequest(t, resolvePolicyWithActors(), claims,
-		func(h *IDJAGHandler) { h.resolver = resolver })
-
-	requireRefusal(t, err, "access_denied", descSubjectUnknown)
-	assert.Empty(t, consumer.key, "the ID-JAG must stay unused")
-	assert.Empty(t, req.GetSession().GetSubject(), "no session is installed")
-}
-
 func TestIDJAGResolve_NamespacedSession(t *testing.T) {
 	t.Parallel()
 

@@ -65,7 +65,6 @@ const (
 //
 //nolint:paralleltest,tparallel // sequential subtests share one fixture
 func TestDelegatedAccessResolvedUserCallsGitHub(t *testing.T) {
-	skipWhileSubjectResolutionIsClosed(t)
 	t.Parallel()
 	f := startDelegatedFixture(t, "memory")
 	aliceGrant := f.openGrant(t, f.login(t, f.as1Issuer, chainLoginAud, delegatedAlice, f.idp.Issuer()))
@@ -248,7 +247,6 @@ func TestDelegatedAccessResolvedUserCallsGitHub(t *testing.T) {
 // refusal, or a resolver and a credential reader over different stores, would
 // fail it.
 func TestDelegatedAccessFirstConnect(t *testing.T) {
-	skipWhileSubjectResolutionIsClosed(t)
 	t.Parallel()
 	f := startDelegatedFixture(t, "memory")
 	jag := f.mint(t, 0, f.openGrant(t, f.login(t, f.as1Issuer, chainLoginAud, delegatedAlice, f.idp.Issuer())), "agent-1")
@@ -281,7 +279,6 @@ func TestDelegatedAccessFirstConnect(t *testing.T) {
 // Identity.UpstreamTokens stays empty; the interactive login token, which does
 // both, is the control. It runs on memory and on Redis storage.
 func TestDelegatedAccessRefreshesExpiredGitHubRow(t *testing.T) {
-	skipWhileSubjectResolutionIsClosed(t)
 	t.Parallel()
 	for _, backend := range []string{"memory", "redis"} {
 		t.Run(backend, func(t *testing.T) {
@@ -359,15 +356,6 @@ func TestDelegatedAccessRefreshesExpiredGitHubRow(t *testing.T) {
 			requireRow(delegatedGitToken+"-r2", delegatedGitRefresh+"-r2")
 		})
 	}
-}
-
-// skipWhileSubjectResolutionIsClosed skips a test that needs a redemption from a
-// resolve issuer. Those redemptions are refused until "Delegated access: turn on
-// subject resolution at ID-JAG redemption" (#7247) lands, and that change
-// removes this helper and its calls.
-func skipWhileSubjectResolutionIsClosed(t *testing.T) {
-	t.Helper()
-	t.Skip("subject resolution at ID-JAG redemption is not turned on yet")
 }
 
 func requireNoGitHubCall(t *testing.T, backend *credentialBackend) {

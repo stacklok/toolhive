@@ -321,17 +321,23 @@ func TestIDJAGRedemptionRefusesResourceTheClaimDoesNotCover(t *testing.T) {
 
 // TestIDJAGRedemptionFromResolveIssuerChecksActor proves a resolve issuer
 // accepts the act.iss AS-1's real issuance puts in the ID-JAG (not AS-1's own
-// issuer) when actor_issuers lists it, and that the redemption then reaches the
-// gate; with it unlisted, the actor check refuses first.
+// issuer) when actor_issuers lists it, so the redemption goes on to subject
+// resolution; with it unlisted, the actor check refuses first. AS-1 here adds
+// no upstream_subject claim, so a listed issuer's redemption ends at
+// resolution as an invalid assertion.
 func TestIDJAGRedemptionFromResolveIssuerChecksActor(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name         string
 		actorIssuers []string
+		wantError    string
 		wantReason   string
 	}{
-		{"actor issuer listed", []string{actorTestActIssuer}, "subject_unknown"},
-		{"actor issuer not listed", []string{"https://other-agents.example.com"}, "actor_denied"},
+		{
+			"actor issuer listed", []string{actorTestActIssuer}, "invalid_grant",
+			"invalid_assertion: The ID-JAG assertion has a missing or malformed upstream_subject claim.",
+		},
+		{"actor issuer not listed", []string{"https://other-agents.example.com"}, "access_denied", "actor_denied"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -362,7 +368,7 @@ func TestIDJAGRedemptionFromResolveIssuerChecksActor(t *testing.T) {
 
 			res := h.as2.redeem(t, h.as2.client, idJAG)
 			assert.Equal(t, http.StatusBadRequest, res.status, res.body)
-			assert.Equal(t, "access_denied", res.body["error"])
+			assert.Equal(t, tc.wantError, res.body["error"])
 			assert.Equal(t, tc.wantReason, res.body["error_description"])
 			assert.NotContains(t, res.body, "access_token")
 		})

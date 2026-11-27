@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -1171,12 +1172,16 @@ func newSubjectResolver(cfg Config, store subjectresolver.IdentityStore) (subjec
 		return nil, errors.New(
 			"subject_mode resolve needs an OIDC identity provider as the first upstream")
 	}
-	resolver, err := subjectresolver.New(map[string]subjectresolver.Provider{
+	providers := map[string]subjectresolver.Provider{
 		signIn.issuer: {
 			Name:         ResolveUpstreamName(cfg.Upstreams[0].Name),
 			SubjectClaim: signIn.subjectClaim,
 		},
-	}, store)
+	}
+	if err := validateSingleIssuerPerProvider(providers); err != nil {
+		return nil, err
+	}
+	resolver, err := subjectresolver.New(providers, store)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create subject resolver: %w", err)
 	}
@@ -1184,6 +1189,29 @@ func newSubjectResolver(cfg Config, store subjectresolver.IdentityStore) (subjec
 		slog.Warn(warning, "issuer", signIn.issuer, "subject_claim", signIn.subjectClaim)
 	}
 	return resolver, nil
+}
+
+// validateSingleIssuerPerProvider refuses a resolver mapping in which one
+// provider name has more than one issuer. Rows are stamped with the sign-in
+// issuer and the resolver compares them with the token's issuer, so a second
+// issuer for the same provider would never match its rows.
+func validateSingleIssuerPerProvider(providers map[string]subjectresolver.Provider) error {
+	issuersByProvider := make(map[string][]string, len(providers))
+	for issuer, p := range providers {
+		issuersByProvider[p.Name] = append(issuersByProvider[p.Name], issuer)
+	}
+	for _, name := range slices.Sorted(maps.Keys(issuersByProvider)) {
+		issuers := issuersByProvider[name]
+		if len(issuers) < 2 {
+			continue
+		}
+		slices.Sort(issuers)
+		return fmt.Errorf(
+			"subject resolver: provider %q maps to more than one issuer (%s); "+
+				"a second issuer for one provider is not supported yet because rows are stamped with the sign-in issuer",
+			name, strings.Join(issuers, ", "))
+	}
+	return nil
 }
 
 // buildDeviceFlowFactory builds the RFC 8628 device authorization grant

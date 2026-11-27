@@ -59,10 +59,10 @@ var _ subject.Resolver = (*Resolver)(nil)
 // Each entry asserts what Provider documents: that the issuer's SubjectClaim
 // values are the subjects the named upstream stores. New accepts several
 // issuers for the same provider name with different subject claims (an Okta
-// custom authorization server carries the sign-in subject in uid), but nothing
-// configures that yet; it belongs to the third-party issuers work. Rows are
-// stamped with the sign-in issuer and claim, so an additional issuer entry,
-// when that work lands, must compare rows against the sign-in binding.
+// custom authorization server carries the sign-in subject in uid), but the
+// server refuses to build such a mapping at startup, and nothing configures it
+// yet; it belongs to the third-party issuers work. Resolve compares rows with
+// the token's issuer, not the sign-in binding (see there).
 // It returns an error if the store is nil, no providers are given, an entry has
 // an empty issuer, name or subject claim, or subject.ValidateBindingClaim
 // refuses an entry's claim (the error wraps subject.ErrInvalidBindingClaim).
@@ -118,6 +118,12 @@ func (r *Resolver) Resolve(ctx context.Context, ref subject.Ref) (string, error)
 		return "", subject.ErrUnknown
 	}
 	unstamped := identity.IsUnstamped()
+	// The row is compared with the token's issuer and the provider's subject
+	// claim, which equal the sign-in binding only while a provider has a single
+	// issuer. A cross-issuer mapping (for example an Okta custom authorization
+	// server with the subject in uid) will need Provider to carry the sign-in
+	// binding and compare against it; see "Delegated access: tokens and actors
+	// from third-party issuers".
 	if !identity.MatchesBinding(ref.Issuer, p.SubjectClaim) && !unstamped {
 		return "", subject.ErrUnknown
 	}

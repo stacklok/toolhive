@@ -1497,6 +1497,12 @@ registration, and again in `Config.Validate`.
 | `resolve` on an issuer that accepts `jwt_bearer` assertions (an unset `accepted_assertion_types` accepts both forms) | `issuer_url "<url>": jwt_bearer_grant.subject_mode resolve requires accepted_assertion_types [id_jag]` |
 | `resolve` when the server has no upstream, or its first upstream is not `oidc` | `trusted_issuers: issuer_url "<url>": jwt_bearer_grant.subject_mode resolve needs an OIDC identity provider as the first upstream` |
 | `resolve` when the first upstream's `subject_claim` is mutable (`email`, `preferred_username`, `upn` and the others `subject.ValidateBindingClaim` refuses) | `trusted_issuers: issuer_url "<url>": jwt_bearer_grant.subject_mode resolve needs a stable subject_claim on the first upstream: <reason>` |
+| More than one issuer mapped to the same provider when the resolver is built | `subject resolver: provider "<name>" maps to more than one issuer (<issuers>); a second issuer for one provider is not supported yet because rows are stamped with the sign-in issuer` |
+
+The issuer-per-provider row is not a config check: it fires when the server
+builds its subject resolver, which every construction path (run-config and
+library) goes through. Today the server maps only the first upstream's issuer,
+so it guards a future second mapping.
 
 `subject_bindings` stays required for a `namespaced` issuer, with the same
 error as before, and must be empty for a `resolve` issuer. A file-based
@@ -1520,12 +1526,16 @@ configuration. Today it knows one pair: the first upstream's issuer and
 `subject_claim` (default `sub`). The resolver refuses any other `iss` or `claim`
 with `subject.ErrNotConfigured`, and the handler does not check the pair itself.
 When a row is found under the first upstream's name and `value`, the resolver
-checks the row's stored `Issuer` and `SubjectClaim` against the binding that
-sign-in stamps on that upstream's rows. That binding is the first upstream's
-issuer and subject claim, and it can differ from the `iss` and `claim` of the
-ID-JAG being resolved (for example a token from an Okta custom authorization
-server that carries the subject in `uid`). A row created under a different
-issuer or subject claim (or a half-stamped row) is refused with
+checks the row's stored `Issuer` and `SubjectClaim` against the `iss` of the
+token being resolved and the provider's subject claim. While a provider has a
+single issuer, these equal the binding that sign-in stamps on the upstream's
+rows. A server cannot configure a second issuer for one provider: startup
+refuses it, because rows are stamped with the sign-in issuer. A cross-issuer
+mapping (for example a token from an Okta custom authorization server that
+carries the subject in `uid`) will need the provider to carry the sign-in
+binding and compare against it; that belongs to the delegated access work
+"Delegated access: tokens and actors from third-party issuers". A row created
+under a different issuer or subject claim (or a half-stamped row) is refused with
 `subject.ErrUnknown` (`subject_unknown`) without writing to storage. A row that
 carries neither (written before binding existed) is accepted read-only and
 logged once per process at `WARN`; sign-in stamps it when the storage supports

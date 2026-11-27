@@ -1518,8 +1518,9 @@ no bindings. The other ID-JAG checks run unchanged.
 The first upstream must be OIDC because the first upstream is the only sign-in
 leg that writes the provider-identity rows a subject is resolved against, and
 only an OIDC upstream records the OIDC issuer URL and subject claim those rows
-are bound to. An OAuth2 first upstream also writes rows, bound to its endpoint
-URL and extraction rule rather than an OIDC issuer. A later OIDC upstream does
+are bound to. An OAuth2 first upstream also writes rows, bound to a hash of its
+endpoint's host (plus any non-default port) and its extraction rule rather than
+an OIDC issuer. A path change does not change the binding. A later OIDC upstream does
 not count, and a token-only server (no upstreams) is refused. The ID-JAG's
 `upstream_subject` claim is resolved by a resolver built from this server's
 configuration. Today it knows one pair: the first upstream's issuer and
@@ -1529,8 +1530,9 @@ When a row is found under the first upstream's name and `value`, the resolver
 checks the row's stored `Issuer` and `SubjectClaim` against the `iss` of the
 token being resolved and the provider's subject claim. While a provider has a
 single issuer, these equal the binding that sign-in stamps on the upstream's
-rows. A server cannot configure a second issuer for one provider: startup
-refuses it, because rows are stamped with the sign-in issuer. A cross-issuer
+rows. There is no setting for a second issuer for one provider today. If a future
+change adds one, startup refuses it until the mapping is built, because rows
+are stamped with the sign-in issuer. A cross-issuer
 mapping (for example a token from an Okta custom authorization server that
 carries the subject in `uid`) will need the provider to carry the sign-in
 binding and compare against it; that belongs to the delegated access work
@@ -1538,7 +1540,7 @@ binding and compare against it; that belongs to the delegated access work
 under a different issuer or subject claim (or a half-stamped row) is refused with
 `subject.ErrUnknown` (`subject_unknown`) without writing to storage. A row that
 carries neither (written before binding existed) is accepted read-only and
-logged once per process at `WARN`; sign-in stamps it when the storage supports
+logged once per resolver at `WARN`; sign-in stamps it when the storage supports
 compare-and-swap. A row nobody has used since the upgrade therefore resolves to
 the old account under the new configuration; see [Migrating identity providers
 or subject claims](11-auth-server-storage.md#migrating-identity-providers-or-subject-claims).

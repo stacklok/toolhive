@@ -281,8 +281,9 @@ type ProviderIdentity struct {
 	ProviderSubject string
 
 	// Issuer identifies the upstream authority that produced ProviderSubject:
-	// the OIDC issuer URL for OIDC upstreams, or a mode-prefixed endpoint URL
-	// for plain OAuth 2.0 upstreams. Empty on legacy unstamped rows.
+	// the OIDC issuer URL for OIDC upstreams, or
+	// oauth2:<mode>:sha256:<hex of host[:non-default port]> for plain OAuth 2.0
+	// upstreams (no endpoint URL is stored). Empty on legacy unstamped rows.
 	Issuer string
 
 	// SubjectClaim names the claim or extraction rule that produced

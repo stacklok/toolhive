@@ -18,9 +18,11 @@ func Unwrap(stor Storage) Storage {
 
 // storageDecorator is implemented by ToolHive's own storage decorators. They
 // leave provider-identity rows to the Storage they wrap, so a capability
-// lookup may look underneath them. Its method is unexported, so types outside
-// this package cannot implement it: an external wrapper stops the lookup even
-// if it has Unwrap, and must implement the capability itself to offer it.
+// lookup may look underneath them. Its method is unexported, so a wrapper
+// defined outside this package carries it only by embedding one of these
+// decorators. Embedding the Storage interface or a concrete store does not, so
+// that wrapper stops the lookup even if it has Unwrap and must implement the
+// capability itself to offer it.
 type storageDecorator interface {
 	Unwrap() Storage
 	storageDecorator()

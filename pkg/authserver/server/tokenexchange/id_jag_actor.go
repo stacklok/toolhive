@@ -44,7 +44,7 @@ func newActorPolicies(policies map[string]*JWTBearerGrantPolicy) (map[string]act
 // checkActorIssuer refuses an ID-JAG from a resolve issuer whose effective
 // actor is missing or malformed, or comes from an issuer other than the
 // ID-JAG's own or one in actor_issuers. It needs no storage, so it runs before
-// the gate and before resolution; checkActorPolicy runs after resolution.
+// resolution; checkActorPolicy runs after resolution.
 // Namespaced issuers are not checked.
 func (h *IDJAGHandler) checkActorIssuer(
 	ctx context.Context, claims *ValidatedClaims, policy *JWTBearerGrantPolicy, clientID string,

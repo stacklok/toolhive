@@ -318,6 +318,8 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 			assert.NotEmpty(t, claims["jti"], tc.name)
 			assert.NotEmpty(t, claims["iat"], tc.name)
 			assert.NotContains(t, claims, "tsid", tc.name)
+			assert.Equal(t, true, claims[claimnames.DelegatedAccessKey], tc.name)
+			assert.Equal(t, true, claims[claimnames.NoUpstreamSessionKey], tc.name)
 			exp, ok := claims["exp"].(float64)
 			require.True(t, ok, tc.name)
 			assert.LessOrEqual(t, int64(exp), intClaim(t, idjagClaims, "exp"), "%s: exp is capped by the ID-JAG", tc.name)
@@ -326,9 +328,10 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 			// value for the session grant's ID-JAG and for the scheduled run's
 			// child grant.
 			assert.Equal(t, wantAct, claims["act"], tc.name)
-			// AS-2 here is a namespaced server: it has no local user for AS-1's
-			// subject, so sub is the issuer-qualified AS-1 subject.
-			assert.Equal(t, f.as1+"#"+f.sub, claims["sub"], tc.name)
+			// AS-2 resolves the ID-JAG's upstream subject to the user its own
+			// sign-in created, so sub is that local user, not AS-1's subject.
+			assert.Equal(t, f.as2User, claims["sub"], tc.name)
+			assert.NotEqual(t, f.as1+"#"+f.sub, claims["sub"], tc.name)
 		}
 
 		// A replayed ID-JAG is refused with the invalid_assertion reason.
@@ -347,10 +350,10 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		res = f.as2.redeem(t, f.as2.client, res.str(t, "access_token"))
 		requireError(t, res, "invalid_grant", "invalid_assertion: The ID-JAG assertion is invalid or could not be verified.")
 
-		// AS-2 binds exactly one subject, f.sub. Another real user's ID-JAG from
-		// the same AS-1 has the same issuer, client ID, audience and resource as
-		// a good one and differs in its subject (and the subject claims that
-		// follow from it), so the refusal can only be the subject binding.
+		// AS-2 has a user for one upstream identity only. Another real user's
+		// ID-JAG from the same AS-1 has the same issuer, client ID, audience and
+		// resource as a good one and differs in the upstream identity it names,
+		// which never signed in at AS-2, so the refusal can only be resolution.
 		f.oidc.QueueUser(&mockoidc.MockUser{Subject: "other-upstream-subject", Email: "other@example.com"})
 		otherLogin := realLoginAccessToken(t, f.as1Env)
 		grant := f.as1Env.requestRefreshToken(t, broker, otherLogin, entryForm(oauthproto.TokenTypeIDJAG, nil))
@@ -361,7 +364,8 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		assert.Equal(t, mark+1, a.callCount())
 		otherIDJAG := res.str(t, "access_token")
 		_, otherClaims := decodeIDJAG(t, otherIDJAG)
-		require.NotEqual(t, f.sub, otherClaims["sub"])
+		_, aliceClaims := decodeIDJAG(t, f.sessionIDJAG)
+		require.NotEqual(t, aliceClaims[claimnames.UpstreamSubjectKey], otherClaims[claimnames.UpstreamSubjectKey])
 		res = f.as2.redeem(t, f.as2.client, otherIDJAG)
 		requireError(t, res, "access_denied", "subject_unknown")
 
@@ -545,6 +549,7 @@ type flow struct {
 	actor          *flowActor
 
 	sub           string // AS-1's local subject for the user (one user, two logins)
+	as2User       string // the user AS-2's sign-in created for the same person
 	sessionLogin  string // login 1: opens the session grant
 	scheduleLogin string // login 2: opens the schedule grant
 
@@ -563,7 +568,8 @@ type flow struct {
 
 // startFlow starts both servers and signs the user in twice. AS-1 gives the
 // user a random subject at the first login and resolves the second login to
-// the same one. AS-2 binds that subject exactly, so it starts after the logins.
+// the same one. AS-2 resolves the user's upstream identity to its own user, so
+// it starts after the logins and the user then signs in there once.
 func startFlow(t *testing.T, backend string) *flow {
 	t.Helper()
 	f := &flow{}
@@ -637,9 +643,26 @@ func startFlow(t *testing.T, backend string) *flow {
 
 	f.sub, f.sessionLogin, f.scheduleLogin = sub, login1, login2
 
-	f.as2 = startAS2(t, l2, f.as1, f.sub, authserverrunner.WithAccessTokenType("at+jwt"),
-		authserverrunner.WithAuthorizationDetailsRegistry(callRegistry))
+	// AS-2 resolves the ID-JAG's upstream subject to its own user, so the user
+	// signs in there once, through the same company IdP, before any redemption.
+	f.as2 = startAS2With(t, l2, f.as1, f.sub, []string{xrtIDJAGResource},
+		resolveAS2(t, f.oidc, flowActIssuer),
+		authserverrunner.WithAccessTokenType("at+jwt"),
+		authserverrunner.WithAuthorizationDetailsRegistry(callRegistry),
+		authserverrunner.WithUserKeyedUpstreamStorage())
 	require.Equal(t, f.as2Issuer, f.as2.issuer)
+
+	f.oidc.QueueUser(&mockoidc.MockUser{Subject: realLoginUpstreamSubject, Email: realLoginUpstreamEmail})
+	as2Login := accessTokenClaims(t, f.as2.embedded, f.as2.login(t))
+	f.as2User, _ = as2Login["sub"].(string)
+	require.NotEmpty(t, f.as2User)
+	require.NotEqual(t, sub, f.as2User, "AS-2's user is its own, not AS-1's")
+	user, err := f.as2.store.GetUser(t.Context(), f.as2User)
+	require.NoError(t, err)
+	require.Equal(t, f.as2User, user.ID)
+	link, err := f.as2.store.GetProviderIdentity(t.Context(), "mockoidc", realLoginUpstreamSubject)
+	require.NoError(t, err)
+	require.Equal(t, f.as2User, link.UserID, "the sign-in linked the company identity to the user")
 	return f
 }
 

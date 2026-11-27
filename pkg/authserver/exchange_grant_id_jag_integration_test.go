@@ -287,6 +287,13 @@ func TestMintIDJAGClaimsFromRealLogin(t *testing.T) {
 // and returns the access token for the broker's API audience.
 func realLoginAccessToken(t *testing.T, env *xrtEnv) string {
 	t.Helper()
+	return realLoginAccessTokenAt(t, env.srv.URL, cfgAudienceA)
+}
+
+// realLoginAccessTokenAt is realLoginAccessToken against the server at
+// baseURL, asking for audience. The server must register xrtSourceApp.
+func realLoginAccessTokenAt(t *testing.T, baseURL, audience string) string {
+	t.Helper()
 	locationOf := func(response *http.Response, status int) *url.URL {
 		t.Helper()
 		defer func() { require.NoError(t, response.Body.Close()) }()
@@ -295,17 +302,17 @@ func realLoginAccessToken(t *testing.T, env *xrtEnv) string {
 		require.NoError(t, err)
 		return location
 	}
-	browser := helpers.NewOAuthClient(env.srv.URL)
+	browser := helpers.NewOAuthClient(baseURL)
 	verifier := servercrypto.GeneratePKCEVerifier()
 	page, err := browser.StartAuthorization(url.Values{
 		"client_id": {xrtSourceApp}, "redirect_uri": {cfgRedirectURI}, "response_type": {"code"},
-		"scope": {"openid profile offline_access"}, "state": {"login-state"}, "resource": {cfgAudienceA},
+		"scope": {"openid profile offline_access"}, "state": {"login-state"}, "resource": {audience},
 		"code_challenge":        {servercrypto.ComputePKCEChallenge(verifier)},
 		"code_challenge_method": {"S256"},
 	})
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, page.StatusCode)
-	approved, err := browser.ApproveConsent(page, env.srv.URL)
+	approved, err := browser.ApproveConsent(page, baseURL)
 	require.NoError(t, err)
 	require.NoError(t, page.Body.Close())
 	upstreamAuthorize := locationOf(approved, http.StatusSeeOther)
@@ -322,10 +329,10 @@ func realLoginAccessToken(t *testing.T, env *xrtEnv) string {
 	done := locationOf(callback, http.StatusSeeOther)
 	require.Equal(t, "login-state", done.Query().Get("state"))
 
-	tokens := postToken(t, env.srv.URL, clientAuth{}, url.Values{
+	tokens := postToken(t, baseURL, clientAuth{}, url.Values{
 		"grant_type": {oauthproto.GrantTypeAuthorizationCode}, "code": {done.Query().Get("code")},
 		"redirect_uri": {cfgRedirectURI}, "code_verifier": {verifier}, "client_id": {xrtSourceApp},
-		"resource": {cfgAudienceA},
+		"resource": {audience},
 	})
 	require.Equal(t, http.StatusOK, tokens.status, tokens.body)
 	return tokens.str(t, "access_token")

@@ -85,14 +85,7 @@ func testDelegatedCredentialCall(t *testing.T, version, failure string) {
 	if failure == "no canonical user" {
 		// For a valid PlatformUserID, the real reader supplies the canonical user.
 		// Inject the storage-side failure instead of changing the admitted identity.
-		fault := storagemocks.NewMockUpstreamTokenStorage(gomock.NewController(t))
-		fault.EXPECT().GetUpstreamTokens(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
-			func(ctx context.Context, sid, provider string) (*storage.UpstreamTokens, error) {
-				if provider == credentialProvider && missingCanonicalUser.Load() {
-					return nil, fmt.Errorf("private storage detail: %w", storage.ErrNoCanonicalUser)
-				}
-				return stor.GetUpstreamTokens(ctx, sid, provider)
-			}).AnyTimes()
+		fault := &canonicalUserFault{UpstreamTokenStorage: stor, provider: credentialProvider, on: &missingCanonicalUser}
 		outgoingReader = upstreamtoken.NewInProcessService(fault, as.UpstreamTokenRefresher())
 	}
 	incoming := credentialIncoming(t, as, reader, credentialIssuer)
@@ -546,4 +539,23 @@ func assertCredentialRPCError(t *testing.T, response *httptest.ResponseRecorder,
 	assert.Empty(t, envelope.Result, response.Body.String())
 	assert.Equal(t, code, envelope.Error.Code)
 	assert.Equal(t, message, envelope.Error.Message)
+}
+
+// canonicalUserFault decorates the user-keyed storage, so the reader built on
+// it still reports UserKeyed, and fails reads for one provider on demand.
+type canonicalUserFault struct {
+	storage.UpstreamTokenStorage
+	provider string
+	on       *atomic.Bool
+}
+
+func (f *canonicalUserFault) Unwrap() storage.UpstreamTokenStorage { return f.UpstreamTokenStorage }
+
+func (f *canonicalUserFault) GetUpstreamTokens(
+	ctx context.Context, sid, provider string,
+) (*storage.UpstreamTokens, error) {
+	if provider == f.provider && f.on.Load() {
+		return nil, fmt.Errorf("private storage detail: %w", storage.ErrNoCanonicalUser)
+	}
+	return f.UpstreamTokenStorage.GetUpstreamTokens(ctx, sid, provider)
 }

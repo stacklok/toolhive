@@ -528,7 +528,30 @@ func TestUserKeyedUpstreamRefreshGuard_Storage(t *testing.T) {
 		// wantRefreshCall expects the one upstream refresh whose rejection is confirmed.
 		wantRefreshCall bool
 		wantWarn        int
+		// checkTimeout overrides the guard's check deadline when set.
+		checkTimeout time.Duration
 	}{
+		{
+			// The reader's first lookup ignores its context and reports the row
+			// missing only after the guard's deadline. That answer is uncertain,
+			// not a reason to revoke: the mock has no revoke expectation.
+			name: "a not-found answer that arrives after the deadline grants with one WARN",
+			tsid: guardTestTSID,
+			setup: func(stor *mocks.MockStorage) {
+				reads := 0
+				stor.EXPECT().GetUpstreamTokens(gomock.Any(), gomock.Any(), "idp").DoAndReturn(
+					func(ctx context.Context, _, _ string) (*storage.UpstreamTokens, error) {
+						reads++
+						if reads == 1 {
+							return guardTestRow(time.Now().Add(-time.Minute), "rt"), storage.ErrExpired
+						}
+						<-ctx.Done()
+						return nil, storage.ErrNotFound
+					}).AnyTimes()
+			},
+			checkTimeout: 20 * time.Millisecond,
+			wantWarn:     1,
+		},
 		{
 			// Not revoked (the mock storage has no revoke expectation).
 			name: "no canonical user for the row is refused without revoking",
@@ -584,6 +607,9 @@ func TestUserKeyedUpstreamRefreshGuard_Storage(t *testing.T) {
 			guard, err := newUserKeyedUpstreamRefreshGuard(stor, refresher, []string{"idp"})
 			require.NoError(t, err)
 			guard.recheckDelay = 0
+			if tt.checkTimeout > 0 {
+				guard.checkTimeout = tt.checkTimeout
+			}
 
 			err = guard.HandleTokenEndpointRequest(context.Background(), guardRequestFor(guardUserID, tt.tsid))
 			if tt.wantRefuse {
@@ -902,7 +928,7 @@ func TestUserKeyedUpstreamRefreshGuard_RememberedRejection(t *testing.T) {
 				mock := mocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
 				mock.EXPECT().RefreshAndStore(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 					func(ctx context.Context, sessionID string, expired *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
-						// assert, not require: this runs on the guard's goroutine.
+						// assert, not require: this runs on the reader's detached refresh goroutine.
 						assert.True(t, skipsRememberedRejections(ctx), "the guard must mark its context")
 						if int(calls.Add(1)) <= tt.rememberedCalls {
 							tokens, err := env.refresher.RefreshAndStore(guardUserCtx(), sessionID, expired)

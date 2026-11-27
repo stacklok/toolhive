@@ -134,12 +134,24 @@ type UserCredentialReader interface {
 	// missing connection) when the storage cannot resolve a user, and any other
 	// error for an infrastructure failure.
 	//
+	// The read returns promptly when ctx ends; an in-flight detached refresh
+	// can finish and persist the updated row in the background. Error text can
+	// include detail the provider supplied: log a failure category, not
+	// err.Error(), and never return it to a client. Wrapped causes stay
+	// reachable with errors.Is and errors.As. If ctx ends while an expired
+	// access token is being refreshed, the error matches both ErrRefreshFailed
+	// and ctx.Err().
+	//
 	// When only the ID token needed refreshing and the access token is still
 	// live, a failed refresh, including invalid_grant, returns the stored
 	// credential and is logged at WARN; needs-authorization follows once the
-	// access token expires. A refresh after which the refresher removed or
-	// cleared the row, because it could not save a rotated refresh token, needs
-	// authorization at once. See InProcessService.GetValidTokensForUser for the
+	// access token expires. The exception is ctx ending during that refresh: the
+	// read then returns the stored credential with no error, and a later
+	// failure of that refresh is logged once at WARN and backs off the ID-token
+	// refresh. A refresh after which the refresher removed or cleared the row,
+	// because it could not save a rotated refresh token, needs authorization at
+	// once, unless ctx ends during the refresh: that read still returns the
+	// stored credential and the next read reports needs-authorization. See InProcessService.GetValidTokensForUser for the
 	// full contract.
 	GetValidTokensForUser(ctx context.Context, userID, providerName string) (*UpstreamCredential, error)
 }

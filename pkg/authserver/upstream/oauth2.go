@@ -292,7 +292,7 @@ func convertOAuth2Token(token *oauth2.Token) (*Tokens, error) {
 	// Validate token_type per RFC 6749 Section 5.1
 	// The comparison is case-insensitive per the spec
 	if !strings.EqualFold(token.TokenType, "bearer") {
-		return nil, fmt.Errorf("unexpected token_type: expected \"Bearer\", got %q", token.TokenType)
+		return nil, errors.New(`unexpected token_type: expected "Bearer"`)
 	}
 
 	// Extract ID token from extras (OIDC providers include it here)

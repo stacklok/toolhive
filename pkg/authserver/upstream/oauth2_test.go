@@ -1249,6 +1249,15 @@ func TestBaseOAuth2Provider_WithOAuth2HTTPClient(t *testing.T) {
 	assert.NotEmpty(t, result.tokens.AccessToken)
 }
 
+func TestConvertOAuth2Token_OmitsUnexpectedTokenType(t *testing.T) {
+	t.Parallel()
+
+	tokens, err := convertOAuth2Token(&oauth2.Token{AccessToken: "test-token", TokenType: "provider-controlled-value"})
+
+	require.EqualError(t, err, `unexpected token_type: expected "Bearer"`)
+	assert.Nil(t, tokens)
+}
+
 func TestBaseOAuth2Provider_TokenTypeValidation(t *testing.T) {
 	t.Parallel()
 

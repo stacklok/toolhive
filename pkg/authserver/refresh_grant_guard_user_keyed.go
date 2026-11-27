@@ -226,26 +226,21 @@ func (g *upstreamRefreshGuard) askUserCredential(ctx context.Context, userID, pr
 	return err
 }
 
-// readUserCredential runs the per-user read in a goroutine and returns early
-// when ctx ends. The refresher the reader calls detaches from its caller's
-// deadline, so without the select a hung IdP would hold the token endpoint for
-// the refresher's full timeout. ctx's error is not a refusal
-// cause, so the caller treats it as uncertain. The credential itself is not
-// needed, only whether it could be read.
+// readUserCredential checks only whether the credential can be read. The
+// reader bounds the refresh wait by ctx, but its first storage lookup does not
+// always observe ctx. A failure that arrives after ctx has ended is therefore
+// uncertain, whatever the reader reported, so it returns ctx.Err() and never a
+// refusal cause such as ErrNeedsAuthorization. A nil result stays nil. The
+// check can run past guardCheckTimeout by up to the storage client's own
+// timeout (about 3s for Redis), because go-redis ignores context deadlines on
+// socket I/O.
 func (g *upstreamRefreshGuard) readUserCredential(ctx context.Context, userID, provider string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Buffered so the goroutine never blocks once the guard stops waiting.
-	done := make(chan error, 1)
-	go func() {
-		_, err := g.userKeyed.reader.GetValidTokensForUser(ctx, userID, provider)
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
+	_, err := g.userKeyed.reader.GetValidTokensForUser(ctx, userID, provider)
+	if err != nil && ctx.Err() != nil {
 		return ctx.Err()
 	}
+	return err
 }

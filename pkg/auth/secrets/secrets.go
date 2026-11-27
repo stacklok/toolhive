@@ -93,23 +93,6 @@ func ProcessSecret(workloadName, secretValue string, tokenType TokenType) (strin
 	return processSecretWithProvider(workloadName, secretValue, secretManager, tokenConfig)
 }
 
-// ProcessSecretWithProvider processes a secret using the provided secret manager
-// This version is testable with dependency injection and is used for testing
-func ProcessSecretWithProvider(
-	workloadName,
-	secretValue string,
-	secretManager secrets.Provider,
-	tokenType TokenType,
-) (string, error) {
-	// Get the configuration for this token type
-	tokenConfig, ok := tokenTypeConfigs[tokenType]
-	if !ok {
-		return "", fmt.Errorf("unknown token type: %s", tokenType)
-	}
-
-	return processSecretWithProvider(workloadName, secretValue, secretManager, tokenConfig)
-}
-
 // processSecretWithProvider processes a secret using the provided secret manager
 // This is the internal implementation
 func processSecretWithProvider(

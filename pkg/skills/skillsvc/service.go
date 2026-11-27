@@ -125,12 +125,6 @@ func (sl *skillLock) lock(name string, scope skills.Scope, projectRoot string) f
 // dependency materialization, cascades, and compensation.
 type projectTx struct{}
 
-// lock acquires the project transaction mutex for projectRoot's stripe and
-// returns a release function.
-func (*projectTx) lock(ctx context.Context, projectRoot string) (func(), error) {
-	return projecttxn.Lock(ctx, projectRoot)
-}
-
 // run executes fn while holding both the process-wide project transaction
 // mutex and an OS-backed file lock shared by ToolHive processes that use the
 // same state directory. The lock file is intentionally retained after

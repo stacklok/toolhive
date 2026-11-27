@@ -67,24 +67,6 @@ func (b *PORCBuilder) Build(
 	return porc
 }
 
-// buildPORC is a test helper that creates a PORC with all context options enabled.
-// This function is only intended for use in tests within this package.
-func buildPORC(
-	feature authorizers.MCPFeature,
-	operation authorizers.MCPOperation,
-	resourceID string,
-	claims map[string]interface{},
-	arguments map[string]interface{},
-) PORC {
-	// Use a config with all context enabled and MPE claim mapper for testing
-	contextConfig := ContextConfig{
-		IncludeArgs:      true,
-		IncludeOperation: true,
-	}
-	claimMapper := &MPEClaimMapper{}
-	return NewPORCBuilder("test", contextConfig, claimMapper).Build(feature, operation, resourceID, claims, arguments)
-}
-
 // buildPrincipal constructs the principal object from JWT claims using the configured ClaimMapper.
 // The claim mapping is delegated to the ClaimMapper, which can be configured to use different
 // conventions (e.g., MPE-specific m-prefixed claims or standard OIDC claims).

@@ -179,22 +179,6 @@ func isConnectionError(err error) bool {
 		strings.Contains(errorStr, "no such host")
 }
 
-// TestDefaultConfig tests the default configuration
-func TestDefaultConfig(t *testing.T) {
-	t.Parallel()
-
-	config := DefaultConfig()
-
-	assert.Empty(t, config.ServiceName, "ServiceName should be empty by default (resolved at runtime from workload name)")
-	assert.Empty(t, config.ServiceVersion, "ServiceVersion should be empty by default (resolved at runtime in NewProvider)")
-	assert.Equal(t, "0.05", config.SamplingRate)
-	assert.NotNil(t, config.Headers)
-	assert.Empty(t, config.Headers)
-	assert.False(t, config.Insecure)
-	assert.False(t, config.EnablePrometheusMetricsPath)
-	assert.Empty(t, config.Endpoint)
-}
-
 // TestResolveServiceName tests service name resolution from workload name
 func TestResolveServiceName(t *testing.T) {
 	t.Parallel()

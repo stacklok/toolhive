@@ -22,7 +22,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -86,39 +85,6 @@ func TestFetchJSON_SuccessfulPOST(t *testing.T) {
 
 	assert.Equal(t, "created", result.Data.Message)
 	assert.Equal(t, 1, result.Data.Value)
-}
-
-func TestFetchJSONWithForm_Success(t *testing.T) {
-	t.Parallel()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "application/x-www-form-urlencoded", r.Header.Get("Content-Type"))
-		assert.Equal(t, "application/json", r.Header.Get("Accept"))
-
-		err := r.ParseForm()
-		require.NoError(t, err)
-		assert.Equal(t, "authorization_code", r.Form.Get("grant_type"))
-		assert.Equal(t, "test-code", r.Form.Get("code"))
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(testResponse{Message: "token", Value: 3600})
-	}))
-	defer server.Close()
-
-	ctx := context.Background()
-	client := server.Client()
-
-	formData := url.Values{
-		"grant_type": {"authorization_code"},
-		"code":       {"test-code"},
-	}
-
-	result, err := FetchJSONWithForm[testResponse](ctx, client, server.URL, formData)
-	require.NoError(t, err)
-
-	assert.Equal(t, "token", result.Data.Message)
-	assert.Equal(t, 3600, result.Data.Value)
 }
 
 func TestFetchJSON_HTTPError4xx(t *testing.T) {
@@ -194,7 +160,7 @@ func TestFetchJSON_HTTPError5xx(t *testing.T) {
 			assert.Nil(t, result)
 			require.Error(t, err)
 
-			assert.True(t, IsHTTPError(err, tt.statusCode))
+			assert.True(t, isHTTPError(err, tt.statusCode))
 		})
 	}
 }
@@ -388,7 +354,7 @@ func TestFetchJSON_CustomErrorHandler(t *testing.T) {
 		assert.Contains(t, err.Error(), "invalid_grant")
 		assert.Contains(t, err.Error(), "The authorization code has expired")
 		// Should NOT be an HTTPError since custom handler returned an error
-		assert.False(t, IsHTTPError(err, 0))
+		assert.False(t, isHTTPError(err, 0))
 	})
 
 	t.Run("error handler returns nil falls back to HTTPError", func(t *testing.T) {
@@ -411,7 +377,7 @@ func TestFetchJSON_CustomErrorHandler(t *testing.T) {
 		)
 
 		require.Error(t, err)
-		assert.True(t, IsHTTPError(err, http.StatusInternalServerError))
+		assert.True(t, isHTTPError(err, http.StatusInternalServerError))
 	})
 }
 
@@ -517,30 +483,6 @@ func TestFetchJSON_NetworkError(t *testing.T) {
 	assert.Contains(t, err.Error(), "request failed")
 }
 
-func TestFetchJSONWithForm_AdditionalOptions(t *testing.T) {
-	t.Parallel()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "application/x-www-form-urlencoded", r.Header.Get("Content-Type"))
-		assert.Equal(t, "Bearer token", r.Header.Get("Authorization"))
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(testResponse{Message: "with auth"})
-	}))
-	defer server.Close()
-
-	ctx := context.Background()
-	formData := url.Values{"key": {"value"}}
-
-	result, err := FetchJSONWithForm[testResponse](ctx, server.Client(), server.URL, formData,
-		WithHeader("Authorization", "Bearer token"),
-	)
-
-	require.NoError(t, err)
-	assert.Equal(t, "with auth", result.Data.Message)
-}
-
 // truncatedBody declares a longer body than it writes; net/http then closes
 // the connection after the handler returns, and the client's read ends with
 // io.ErrUnexpectedEOF.
@@ -603,7 +545,7 @@ func TestFetchJSON_StatusDecidesBeforeBodyRead(t *testing.T) {
 				assert.Equal(t, fmt.Sprintf("%d %s", tt.wantStatus, http.StatusText(tt.wantStatus)), httpErr.Message)
 				return
 			}
-			assert.False(t, IsHTTPError(err, 0))
+			assert.False(t, isHTTPError(err, 0))
 			assert.ErrorIs(t, err, tt.wantReadErr)
 			assert.Contains(t, err.Error(), "failed to read response body")
 		})

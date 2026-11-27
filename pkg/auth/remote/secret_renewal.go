@@ -126,12 +126,7 @@ func (h *Handler) renewClientSecret(ctx context.Context, issuer string) error {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+regAccessToken)
 
-	httpClient := h.httpClient
-	if httpClient == nil {
-		httpClient = newRenewalHTTPClient(ctx, issuer)
-	}
-
-	resp, err := httpClient.Do(req)
+	resp, err := newRenewalHTTPClient(ctx, issuer).Do(req)
 	if err != nil {
 		return fmt.Errorf("client update request failed: %w", err)
 	}

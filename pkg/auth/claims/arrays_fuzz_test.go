@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	oauthclaims "github.com/stacklok/toolhive/pkg/oauthproto/claims"
 )
 
 // FuzzDecodeStringArray feeds arbitrary JSON-decoded claim values to both
@@ -25,7 +27,7 @@ func FuzzDecodeStringArray(f *testing.F) {
 		if json.Unmarshal(data, &raw) != nil {
 			return
 		}
-		strict, err := DecodeStringArray(raw)
+		strict, err := oauthclaims.DecodeStringArray(raw)
 		lenient, recognized := DecodeStringArrayLenient(raw)
 		if err == nil {
 			// Anything the strict decoder accepts, the lenient one must

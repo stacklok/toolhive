@@ -38,22 +38,6 @@ func NewClient(c client.Client, scheme *runtime.Scheme) *Client {
 	}
 }
 
-// GetServiceAccount retrieves a Kubernetes ServiceAccount by name and namespace.
-// Returns the service account if found, or an error if not found or on failure.
-func (c *Client) GetServiceAccount(ctx context.Context, name, namespace string) (*corev1.ServiceAccount, error) {
-	serviceAccount := &corev1.ServiceAccount{}
-	err := c.client.Get(ctx, client.ObjectKey{
-		Name:      name,
-		Namespace: namespace,
-	}, serviceAccount)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to get service account %s in namespace %s: %w", name, namespace, err)
-	}
-
-	return serviceAccount, nil
-}
-
 // UpsertServiceAccountWithOwnerReference creates or updates a Kubernetes ServiceAccount with an owner reference.
 // The owner reference ensures the service account is garbage collected when the owner is deleted.
 // Returns the operation result (Created, Updated, or Unchanged) and any error.
@@ -64,13 +48,6 @@ func (c *Client) UpsertServiceAccountWithOwnerReference(
 	owner client.Object,
 ) (OperationResult, error) {
 	return c.upsertServiceAccount(ctx, serviceAccount, owner)
-}
-
-// UpsertServiceAccount creates or updates a Kubernetes ServiceAccount without an owner reference.
-// Returns the operation result (Created, Updated, or Unchanged) and any error.
-// Callers should return errors to let the controller work queue handle retries.
-func (c *Client) UpsertServiceAccount(ctx context.Context, serviceAccount *corev1.ServiceAccount) (OperationResult, error) {
-	return c.upsertServiceAccount(ctx, serviceAccount, nil)
 }
 
 // upsertServiceAccount creates or updates a Kubernetes ServiceAccount.
@@ -154,22 +131,6 @@ func (c *Client) upsertServiceAccount(
 	return result, nil
 }
 
-// GetRole retrieves a Kubernetes Role by name and namespace.
-// Returns the role if found, or an error if not found or on failure.
-func (c *Client) GetRole(ctx context.Context, name, namespace string) (*rbacv1.Role, error) {
-	role := &rbacv1.Role{}
-	err := c.client.Get(ctx, client.ObjectKey{
-		Name:      name,
-		Namespace: namespace,
-	}, role)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to get role %s in namespace %s: %w", name, namespace, err)
-	}
-
-	return role, nil
-}
-
 // UpsertRoleWithOwnerReference creates or updates a Kubernetes Role with an owner reference.
 // The owner reference ensures the role is garbage collected when the owner is deleted.
 // Returns the operation result (Created, Updated, or Unchanged) and any error.
@@ -180,13 +141,6 @@ func (c *Client) UpsertRoleWithOwnerReference(
 	owner client.Object,
 ) (OperationResult, error) {
 	return c.upsertRole(ctx, role, owner)
-}
-
-// UpsertRole creates or updates a Kubernetes Role without an owner reference.
-// Returns the operation result (Created, Updated, or Unchanged) and any error.
-// Callers should return errors to let the controller work queue handle retries.
-func (c *Client) UpsertRole(ctx context.Context, role *rbacv1.Role) (OperationResult, error) {
-	return c.upsertRole(ctx, role, nil)
 }
 
 // upsertRole creates or updates a Kubernetes Role.
@@ -237,22 +191,6 @@ func (c *Client) upsertRole(
 	return result, nil
 }
 
-// GetRoleBinding retrieves a Kubernetes RoleBinding by name and namespace.
-// Returns the role binding if found, or an error if not found or on failure.
-func (c *Client) GetRoleBinding(ctx context.Context, name, namespace string) (*rbacv1.RoleBinding, error) {
-	roleBinding := &rbacv1.RoleBinding{}
-	err := c.client.Get(ctx, client.ObjectKey{
-		Name:      name,
-		Namespace: namespace,
-	}, roleBinding)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to get role binding %s in namespace %s: %w", name, namespace, err)
-	}
-
-	return roleBinding, nil
-}
-
 // UpsertRoleBindingWithOwnerReference creates or updates a Kubernetes RoleBinding with an owner reference.
 // The owner reference ensures the role binding is garbage collected when the owner is deleted.
 // Returns the operation result (Created, Updated, or Unchanged) and any error.
@@ -263,13 +201,6 @@ func (c *Client) UpsertRoleBindingWithOwnerReference(
 	owner client.Object,
 ) (OperationResult, error) {
 	return c.upsertRoleBinding(ctx, roleBinding, owner)
-}
-
-// UpsertRoleBinding creates or updates a Kubernetes RoleBinding without an owner reference.
-// Returns the operation result (Created, Updated, or Unchanged) and any error.
-// Callers should return errors to let the controller work queue handle retries.
-func (c *Client) UpsertRoleBinding(ctx context.Context, roleBinding *rbacv1.RoleBinding) (OperationResult, error) {
-	return c.upsertRoleBinding(ctx, roleBinding, nil)
 }
 
 // upsertRoleBinding creates or updates a Kubernetes RoleBinding.
@@ -430,39 +361,4 @@ func (c *Client) EnsureRBACResources(ctx context.Context, params EnsureRBACResou
 	results.RoleBinding = rbResult
 
 	return results, nil
-}
-
-// GetAllRBACResources retrieves all RBAC resources (ServiceAccount, Role, RoleBinding)
-// with the given name and namespace. This is useful for debugging, status reporting,
-// or verification of RBAC resource state.
-//
-// If any resource is not found, it returns an error indicating which resource is missing.
-// If all resources exist, they are returned in order: ServiceAccount, Role, RoleBinding.
-func (c *Client) GetAllRBACResources(
-	ctx context.Context,
-	name, namespace string,
-) (*corev1.ServiceAccount, *rbacv1.Role, *rbacv1.RoleBinding, error) {
-	// Get ServiceAccount
-	sa, err := c.GetServiceAccount(ctx, name, namespace)
-	if err != nil {
-		return nil, nil, nil, err // error already wrapped by GetServiceAccount
-	}
-
-	// Get Role
-	role := &rbacv1.Role{}
-	roleKey := client.ObjectKey{Name: name, Namespace: namespace}
-	if err := c.client.Get(ctx, roleKey, role); err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to get role %s in namespace %s: %w",
-			name, namespace, err)
-	}
-
-	// Get RoleBinding
-	rb := &rbacv1.RoleBinding{}
-	rbKey := client.ObjectKey{Name: name, Namespace: namespace}
-	if err := c.client.Get(ctx, rbKey, rb); err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to get role binding %s in namespace %s: %w",
-			name, namespace, err)
-	}
-
-	return sa, role, rb, nil
 }

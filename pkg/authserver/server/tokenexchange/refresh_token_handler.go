@@ -196,30 +196,11 @@ func WithIDJAGAuthorizationDetailsRegistry(registry *authorizationdetails.Regist
 	return func(o *refreshTokenOptions) { o.detailsRegistry = registry }
 }
 
-// withActorValidationTimeout replaces the budget of one actor validation, which
-// is actorValidationTimeout by default.
-func withActorValidationTimeout(timeout time.Duration) RefreshTokenOption {
-	return func(o *refreshTokenOptions) { o.actorTimeout = timeout }
-}
-
-// withClock replaces time.Now as the handler's clock: the instant that decides
-// a request and the instant an actor validator's answer is checked.
-func withClock(clock func() time.Time) RefreshTokenOption {
-	return func(o *refreshTokenOptions) { o.clock = clock }
-}
-
-// withActorValidatorCapacity replaces the number of actor validator calls that
-// may run at once, which is defaultActorValidatorCapacity by default. A value
-// below 1 fails RefreshTokenFactory.
-func withActorValidatorCapacity(capacity int) RefreshTokenOption {
-	return func(o *refreshTokenOptions) { o.actorCapacity = capacity }
-}
-
 // RefreshTokenFactory returns a server.Factory that creates the
 // RefreshTokenHandler. It is registered whenever token exchange is enabled, so
 // a request for a refresh token always reaches this handler, which refuses it
 // for a client that has not enabled the feature. clientPolicies is the same
-// read-only map Factory receives. The exchange-grant store is passed with
+// read-only map FactoryWithSharedTrustedIssuerValidator receives. The exchange-grant store is passed with
 // WithExchangeGrantStorage; it may be nil only if no client has
 // exchange_refresh_tokens.
 //
@@ -668,7 +649,7 @@ func refuseWithReason(ctx context.Context, log *slog.Logger, reason string) erro
 }
 
 // decideChildEntry is decideEntry for a child: the shape hook returns the one
-// entry and validateChildEntry applies the client's policy and the source's
+// entry and validateChildDecoded applies the client's policy and the source's
 // lifetime to it. It also returns the token type the child allows.
 func decideChildEntry(
 	ctx context.Context, pending *authorizationdetails.Pending, clientID string,

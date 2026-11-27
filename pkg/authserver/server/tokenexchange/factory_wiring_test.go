@@ -56,7 +56,7 @@ func TestFactoryOptions_Refusals(t *testing.T) {
 		{
 			name: "token exchange refuses client lifespans",
 			build: func() (any, error) {
-				return Factory(time.Hour, nil, nil, nil, lifespans("client", time.Minute))
+				return FactoryWithSharedTrustedIssuerValidator(time.Hour, nil, nil, nil, nil, lifespans("client", time.Minute))
 			},
 			wantErr: "per-client access token lifespans apply to ID-JAG redemption only",
 		},

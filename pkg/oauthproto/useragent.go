@@ -3,15 +3,7 @@
 
 package oauthproto
 
-import (
-	"net/http"
-	"time"
-)
-
-// httpClientTimeout matches the timeout already used by NonCachingRefresher's
-// http.Client and is appropriate for OAuth token endpoints, which respond
-// quickly under healthy conditions.
-const httpClientTimeout = 30 * time.Second
+import "net/http"
 
 // UserAgentTransport is an http.RoundTripper that adds the ToolHive User-Agent
 // header to outbound requests when no User-Agent is already set.
@@ -61,16 +53,5 @@ func (t *UserAgentTransport) CloseIdleConnections() {
 	}
 	if c, ok := base.(interface{ CloseIdleConnections() }); ok {
 		c.CloseIdleConnections()
-	}
-}
-
-// NewHTTPClient returns an *http.Client whose transport sets the ToolHive
-// User-Agent on every outbound request and that has a sensible timeout for
-// OAuth token endpoint calls. Use it for HTTP clients passed to
-// golang.org/x/oauth2 via the oauth2.HTTPClient context value.
-func NewHTTPClient() *http.Client {
-	return &http.Client{
-		Transport: &UserAgentTransport{},
-		Timeout:   httpClientTimeout,
 	}
 }

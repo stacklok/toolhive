@@ -56,7 +56,7 @@ func TestBuild_ToolCallable(t *testing.T) {
 			}}
 
 			globals := Build(context.Background(), tools, 100_000, 0)
-			_, err := core.Execute(tt.script, globals, 100_000)
+			_, err := core.ExecuteWithStats(tt.script, globals, 100_000, nil)
 			require.NoError(t, err)
 			require.Equal(t, tt.expectArgs, captured)
 		})
@@ -108,7 +108,7 @@ func TestBuild_CallTool(t *testing.T) {
 			}}
 
 			globals := Build(context.Background(), tools, 100_000, 0)
-			_, err := core.Execute(tt.script, globals, 100_000)
+			_, err := core.ExecuteWithStats(tt.script, globals, 100_000, nil)
 
 			if tt.wantErr != "" {
 				require.Error(t, err)
@@ -127,14 +127,14 @@ func TestBuild_Parallel_OrderedResults(t *testing.T) {
 
 	globals := Build(context.Background(), nil, 100_000, 0)
 
-	result, err := core.Execute(`
+	result, err := core.ExecuteWithStats(`
 results = parallel([
     lambda: "first",
     lambda: "second",
     lambda: "third",
 ])
 return results
-`, globals, 100_000)
+`, globals, 100_000, nil)
 	require.NoError(t, err)
 
 	list, ok := result.Value.(*starlark.List)
@@ -157,7 +157,7 @@ func TestBuild_Parallel_ErrorPropagation(t *testing.T) {
 	globals := Build(context.Background(), nil, 100_000, 0)
 	globals["failing"] = failing
 
-	_, err := core.Execute(`return parallel([lambda: failing()])`, globals, 100_000)
+	_, err := core.ExecuteWithStats(`return parallel([lambda: failing()])`, globals, 100_000, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "intentional failure")
 }
@@ -197,7 +197,7 @@ func TestBuild_Parallel_NonCallableElement(t *testing.T) {
 			globals := Build(context.Background(), nil, 100_000, 0)
 			globals["count"] = counter
 
-			_, err := core.Execute(tt.script, globals, 100_000)
+			_, err := core.ExecuteWithStats(tt.script, globals, 100_000, nil)
 			require.Error(t, err)
 			require.Contains(t, err.Error(), tt.expectErr)
 			require.Zero(t, calls.Load(), "no callable may run when any element is invalid")
@@ -234,14 +234,14 @@ func TestBuild_Parallel_ConcurrencyLimit(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		result, err := core.Execute(`
+		result, err := core.ExecuteWithStats(`
 return parallel([
     lambda: slow(),
     lambda: slow(),
     lambda: slow(),
     lambda: slow(),
 ])
-`, globals, 1_000_000)
+`, globals, 1_000_000, nil)
 		require.NoError(t, err)
 
 		list, ok := result.Value.(*starlark.List)
@@ -295,7 +295,7 @@ func TestBuild_NameCollision(t *testing.T) {
 	require.True(t, hasMyTool)
 
 	// But both should be callable via call_tool by original name
-	result, err := core.Execute(`return call_tool("my.tool")`, globals, 100_000)
+	result, err := core.ExecuteWithStats(`return call_tool("my.tool")`, globals, 100_000, nil)
 	require.NoError(t, err)
 	require.Equal(t, starlark.String("second"), result.Value, "should dispatch to my.tool, not my-tool")
 }

@@ -64,7 +64,7 @@ func TestInit(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantEnabled, Enabled())
+			assert.Equal(t, tt.wantEnabled, initialized.Load())
 			assert.Equal(t, tt.wantEnabled, telemetry.HasRegisteredSpanProcessors(),
 				"Sentry initialization should register its trace exporter")
 		})
@@ -285,10 +285,10 @@ func TestRecoverPanic(t *testing.T) {
 //nolint:paralleltest // mutates global initialized state
 func TestEnabled(t *testing.T) {
 	initialized.Store(false)
-	assert.False(t, Enabled())
+	assert.False(t, initialized.Load())
 
 	initialized.Store(true)
-	assert.True(t, Enabled())
+	assert.True(t, initialized.Load())
 	initialized.Store(false)
 }
 

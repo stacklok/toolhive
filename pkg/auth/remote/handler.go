@@ -26,7 +26,6 @@ type Handler struct {
 	tokenPersister             TokenPersister
 	clientCredentialsPersister ClientCredentialsPersister
 	secretProvider             secrets.Provider
-	httpClient                 networking.HTTPClient
 }
 
 // NewHandler creates a new remote authentication handler
@@ -51,11 +50,6 @@ func (h *Handler) SetSecretProvider(provider secrets.Provider) {
 // when DCR client credentials are obtained and need to be persisted.
 func (h *Handler) SetClientCredentialsPersister(persister ClientCredentialsPersister) {
 	h.clientCredentialsPersister = persister
-}
-
-// SetHTTPClient sets the HTTP client used for RFC 7592 registration management requests.
-func (h *Handler) SetHTTPClient(client networking.HTTPClient) {
-	h.httpClient = client
 }
 
 // Authenticate is the main entry point for remote MCP server authentication

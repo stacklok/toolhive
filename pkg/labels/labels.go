@@ -63,17 +63,6 @@ func AddNetworkIsolationLabel(labels map[string]string, networkIsolation bool) {
 	labels[LabelNetworkIsolation] = strconv.FormatBool(networkIsolation)
 }
 
-// FormatToolHiveFilter formats a filter for ToolHive containers
-func FormatToolHiveFilter() string {
-	return fmt.Sprintf("%s=%s", LabelToolHive, LabelToolHiveValue)
-}
-
-// IsToolHiveContainer checks if a container is managed by ToolHive
-func IsToolHiveContainer(labels map[string]string) bool {
-	value, ok := labels[LabelToolHive]
-	return ok && strings.ToLower(value) == LabelToolHiveValue
-}
-
 // HasNetworkIsolation checks if a container has network isolation enabled.
 func HasNetworkIsolation(labels map[string]string) bool {
 	value, ok := labels[LabelNetworkIsolation]

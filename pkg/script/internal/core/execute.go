@@ -34,18 +34,14 @@ type ExecuteResult struct {
 	Logs []string
 }
 
-// Execute runs a Starlark script with the given predeclared globals and step limit.
+// ExecuteWithStats runs a Starlark script with the given predeclared globals
+// and step limit, and counts, on stats, the execution steps and parallel()
+// fan-out of the run. stats may be nil. It is filled in whether or not the
+// script succeeds.
 //
 // The script is wrapped in a function body so that top-level return statements
 // work naturally. A step limit of 0 disables the execution step cap (not
 // recommended for untrusted scripts).
-func Execute(script string, globals starlark.StringDict, stepLimit uint64) (*ExecuteResult, error) {
-	return ExecuteWithStats(script, globals, stepLimit, nil)
-}
-
-// ExecuteWithStats is [Execute] that also counts, on stats, the execution steps
-// and parallel() fan-out of the run. stats may be nil. It is filled in whether
-// or not the script succeeds.
 func ExecuteWithStats(
 	script string, globals starlark.StringDict, stepLimit uint64, stats *Stats,
 ) (*ExecuteResult, error) {

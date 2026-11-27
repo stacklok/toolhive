@@ -134,15 +134,6 @@ func WithRedisMaxDCRClients(n int) RedisStorageOption {
 	}
 }
 
-// withRedisClock sets the clock that drives DCR cap index scores and every
-// exchange grant TTL and expiry decision, so tests can keep it in step with
-// miniredis's key TTLs.
-func withRedisClock(now func() time.Time) RedisStorageOption {
-	return func(s *RedisStorage) {
-		s.now = now
-	}
-}
-
 func newRedisStorage(client redis.UniversalClient, keyPrefix string, opts []RedisStorageOption) *RedisStorage {
 	s := &RedisStorage{
 		client:        client,

@@ -209,22 +209,6 @@ func (c *Config) SetSamplingRateFromFloat(rate float64) {
 // OTel service name automatically (e.g. "thv-fetch", "thv-github").
 const DefaultServiceNamePrefix = "thv-"
 
-// DefaultConfig returns a default telemetry configuration.
-func DefaultConfig() Config {
-	return Config{
-		ServiceName:                 "",     // empty — resolved at runtime from the workload name
-		ServiceVersion:              "",     // resolved at runtime in NewProvider()
-		TracingEnabled:              true,   // Enable tracing by default if endpoint is configured
-		MetricsEnabled:              true,   // Enable metrics by default if endpoint is configured
-		SamplingRate:                "0.05", // 5% sampling by default
-		Headers:                     make(map[string]string),
-		Insecure:                    false,
-		EnablePrometheusMetricsPath: false,      // No metrics endpoint by default
-		EnvironmentVariables:        []string{}, // No environment variables by default
-		UseLegacyAttributes:         true,       // Dual emission for backward compat
-	}
-}
-
 // MaybeMakeConfig creates a new telemetry configuration from the given values.
 // It may return nil if no telemetry is configured.
 func MaybeMakeConfig(

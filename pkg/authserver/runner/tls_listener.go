@@ -17,8 +17,6 @@ import (
 	"os"
 	"sync"
 	"time"
-
-	"github.com/stacklok/toolhive/pkg/authserver"
 )
 
 const (
@@ -57,17 +55,6 @@ type tlsListener struct {
 	authorities       func() []*x509.Certificate
 	requestClientCert bool
 	mu                sync.Mutex
-}
-
-func newTLSListener(
-	host string, cfg *authserver.TLSListenerRunConfig, routes map[string]http.Handler,
-	authorities func() []*x509.Certificate, requestClientCert bool,
-) (*tlsListener, error) {
-	cache, err := newTLSKeyPairCache(cfg.CertFile, cfg.KeyFile)
-	if err != nil {
-		return nil, err
-	}
-	return newTLSListenerWithCache(host, cache, routes, authorities, requestClientCert), nil
 }
 
 func newTLSListenerWithCache(

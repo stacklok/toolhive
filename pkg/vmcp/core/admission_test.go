@@ -23,6 +23,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 )
 
+// withLogger overrides the logger the seam emits its warnings to. Used by tests
+// to capture log output without mutating the global slog default.
+func withLogger(logger *slog.Logger) cedarOption {
+	return func(c *cedarAdmission) { c.logger = logger }
+}
+
+// withFilterBudget overrides the FilterTools deadline. Used by tests.
+func withFilterBudget(budget time.Duration) cedarOption {
+	return func(c *cedarAdmission) { c.filterBudget = budget }
+}
+
 // mockAuthorizer is a hand-rolled stub for the single-method authorizers.Authorizer
 // (no generated mock exists; the issue specifies a hand-rolled stub, as
 // pkg/authz/tool_filter_test.go does). It records each call — including what it

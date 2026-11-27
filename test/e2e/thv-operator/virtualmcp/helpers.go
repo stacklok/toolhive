@@ -1645,26 +1645,6 @@ if __name__ == "__main__":
 PYTHON_SCRIPT
 `
 
-// GetInstrumentedMCPBackendStats queries the /stats endpoint of an instrumented MCP backend
-// and returns the parsed statistics.
-//
-// Deprecated: prefer GetInstrumentedMCPBackendStatsFromURL with a pre-established
-// port-forward; this variant spawns a fresh curl Pod on every call which is expensive
-// inside an Eventually polling loop.
-func GetInstrumentedMCPBackendStats(
-	ctx context.Context, c client.Client, namespace, serviceName string,
-) (*InstrumentedMCPBackendStats, error) {
-	logs, err := GetServiceStats(ctx, c, namespace, serviceName, 8080)
-	if err != nil {
-		return nil, err
-	}
-	var stats InstrumentedMCPBackendStats
-	if err := json.Unmarshal([]byte(logs), &stats); err != nil {
-		return nil, fmt.Errorf("failed to parse instrumented backend stats JSON %q: %w", logs, err)
-	}
-	return &stats, nil
-}
-
 // GetInstrumentedMCPBackendStatsFromURL fetches the /stats endpoint at statsURL
 // via a plain HTTP GET and returns the parsed statistics. It is suitable for use
 // inside Eventually polling loops because it is a cheap single HTTP request with

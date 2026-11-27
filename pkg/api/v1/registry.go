@@ -339,15 +339,6 @@ func NewRegistryRoutes() *RegistryRoutes {
 	}
 }
 
-// NewRegistryRoutesWithProvider creates a new RegistryRoutes with a custom config provider
-// This is useful for testing
-func NewRegistryRoutesWithProvider(provider config.Provider) *RegistryRoutes {
-	return &RegistryRoutes{
-		configProvider: provider,
-		configService:  regpkg.NewConfiguratorWithProvider(provider),
-	}
-}
-
 // NewRegistryRoutesForServe creates RegistryRoutes configured for serve mode.
 // In serve mode, the registry provider uses non-interactive auth (no browser OAuth).
 func NewRegistryRoutesForServe() *RegistryRoutes {

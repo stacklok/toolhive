@@ -57,7 +57,7 @@ func newTestJWKSWithKID(t *testing.T, kid string) *testJWKS {
 	}
 }
 
-// publicJWKS returns the public-only JWKS, mirroring how Factory constructs
+// publicJWKS returns the public-only JWKS, mirroring how the token-exchange factory constructs
 // the validator from AuthorizationServerConfig.PublicJWKS().
 func (tj *testJWKS) publicJWKS() *jose.JSONWebKeySet {
 	return &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{tj.jwk.Public()}}
@@ -525,7 +525,7 @@ func newECDSAJWK(t *testing.T, kid string) jose.JSONWebKey {
 }
 
 // publicJWKSOf builds a JWKS containing only the public portion of each key,
-// mirroring how Factory constructs the validator from PublicJWKS().
+// mirroring how the token-exchange factory constructs the validator from PublicJWKS().
 func publicJWKSOf(keys ...jose.JSONWebKey) *jose.JSONWebKeySet {
 	public := make([]jose.JSONWebKey, len(keys))
 	for i, k := range keys {

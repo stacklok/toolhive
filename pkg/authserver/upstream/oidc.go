@@ -129,7 +129,6 @@ type OIDCProviderImpl struct {
 	*BaseOAuth2Provider                                   // Embed for shared OAuth 2.0 logic
 	oidcConfig          *OIDCConfig                       // Store original OIDC config (Issuer + common OAuth fields)
 	endpoints           *oauthproto.OIDCDiscoveryDocument // Discovered endpoints for security validation
-	forceConsentScreen  bool                              // Force consent screen on auth requests
 	// idp builds the ID token verifier for a replacement client_id; the
 	// verifier itself lives in the embedded client state, paired with the
 	// client whose aud it checks.
@@ -161,22 +160,6 @@ func WithHTTPClient(client *http.Client) OIDCProviderOption {
 // prevent replay attacks. See OIDC Core Section 3.1.2.1.
 func WithNonce(nonce string) AuthorizationOption {
 	return WithAdditionalParams(map[string]string{"nonce": nonce})
-}
-
-// WithForceConsentScreen configures the provider to always request the consent screen
-// from the identity provider. When enabled, the "prompt=consent" parameter is added
-// to authorization requests, forcing the user to re-consent even if they have
-// previously authorized the application.
-//
-// This is useful for:
-//   - Testing OAuth flows to verify consent screen behavior
-//   - Obtaining a new refresh token when the original has been lost or revoked
-//   - Ensuring the user explicitly confirms permissions after scope changes
-//   - Applications that require explicit user consent on every authentication
-func WithForceConsentScreen(force bool) OIDCProviderOption {
-	return func(p *OIDCProviderImpl) {
-		p.forceConsentScreen = force
-	}
 }
 
 // NewOIDCProvider creates a new OIDC provider.
@@ -565,8 +548,8 @@ func (p *OIDCProviderImpl) supportsPKCE() bool {
 }
 
 // AuthorizationURL builds the URL to redirect the user to the upstream IDP.
-// This overrides the base implementation to add OIDC-specific parameters (nonce, prompt)
-// and use discovered endpoints.
+// This overrides the base implementation to require discovered endpoints and
+// log OIDC-specific parameters (nonce).
 func (p *OIDCProviderImpl) AuthorizationURL(state, codeChallenge string, opts ...AuthorizationOption) (string, error) {
 	if p.endpoints == nil {
 		return "", errors.New("OIDC endpoints not discovered")
@@ -597,23 +580,8 @@ func (p *OIDCProviderImpl) AuthorizationURL(state, codeChallenge string, opts ..
 		slog.Debug("sending PKCE to provider that does not advertise S256 support (per RFC 7636 Section 5)")
 	}
 
-	// Merge caller's opts with OIDC-specific params
-	allOpts := append(opts, WithAdditionalParams(p.buildOIDCParams())) //nolint:gocritic // intentionally appending single element
-
 	// Use the base implementation which uses oauth2Config (scopes already configured)
-	return p.buildAuthorizationURL(state, codeChallenge, allOpts...)
-}
-
-// buildOIDCParams builds the OIDC-specific authorization parameters.
-func (p *OIDCProviderImpl) buildOIDCParams() map[string]string {
-	params := make(map[string]string)
-
-	// Add prompt=consent if configured to force the consent screen
-	if p.forceConsentScreen {
-		params["prompt"] = "consent"
-	}
-
-	return params
+	return p.buildAuthorizationURL(state, codeChallenge, opts...)
 }
 
 // RefreshTokens refreshes the upstream IDP tokens.

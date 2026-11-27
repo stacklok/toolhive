@@ -45,6 +45,22 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
+// withMaxCIMDClients overrides defaultMaxMemoryCIMDClients, so tests can
+// reach the CIMD cap.
+func withMaxCIMDClients(n int) MemoryStorageOption {
+	return func(s *MemoryStorage) {
+		s.maxCIMDClients = n
+	}
+}
+
+// withClientClock sets the clock used for client expiry and exchange grants,
+// so tests can move past a TTL without sleeping.
+func withClientClock(now func() time.Time) MemoryStorageOption {
+	return func(s *MemoryStorage) {
+		s.now = now
+	}
+}
+
 // dcrClient builds a DCR-issued public client (carrying registration.DCRIssued's
 // marker) for tests that exercise eviction/renewal gating, which requires the
 // real marker rather than a bare mockClient.

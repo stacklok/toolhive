@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+// Package compositetools derives per-session composite tool (workflow)
+// metadata: it filters workflow definitions to the backend tools a session can
+// reach, converts them to vmcp.Tool entries, and computes their annotations.
 package compositetools
 
 import (

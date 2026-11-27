@@ -147,31 +147,6 @@ func defaultRetryConfig() retryConfig {
 	}
 }
 
-// managerOption configures a DefaultManager.
-type managerOption func(*DefaultManager)
-
-// withRetryConfig overrides the retry loop's tunable parameters.
-func withRetryConfig(cfg retryConfig) managerOption {
-	return func(d *DefaultManager) { d.retryConfig = &cfg }
-}
-
-// withRunnerFactory overrides the per-attempt runner constructor.
-func withRunnerFactory(f mcpRunnerFactory) managerOption {
-	return func(d *DefaultManager) { d.newRunner = f }
-}
-
-// withDetachedSpawner overrides the function used to start the detached
-// workload process. Intended for tests so they do not re-exec the test binary.
-func withDetachedSpawner(s detachedProcessSpawner) managerOption {
-	return func(d *DefaultManager) { d.detachedSpawner = s }
-}
-
-// withPortFreer overrides the function used to free an orphaned proxy port
-// during stop/delete. Intended for tests so they do not make real OS calls.
-func withPortFreer(f portFreer) managerOption {
-	return func(d *DefaultManager) { d.portFreer = f }
-}
-
 // retryConfigOrDefault returns the manager's retryConfig if set, otherwise defaults.
 func (d *DefaultManager) retryConfigOrDefault() retryConfig {
 	if d.retryConfig == nil {
@@ -265,21 +240,6 @@ func NewManagerFromRuntime(runtime rt.Runtime) (Manager, error) {
 		runtime:        runtime,
 		statuses:       statusManager,
 		configProvider: config.NewDefaultProvider(),
-	}, nil
-}
-
-// NewManagerFromRuntimeWithProvider creates a new container manager instance from an existing runtime with a
-// custom config provider.
-func NewManagerFromRuntimeWithProvider(runtime rt.Runtime, configProvider config.Provider) (Manager, error) {
-	statusManager, err := statuses.NewStatusManager(runtime)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create status manager: %w", err)
-	}
-
-	return &DefaultManager{
-		runtime:        runtime,
-		statuses:       statusManager,
-		configProvider: configProvider,
 	}, nil
 }
 

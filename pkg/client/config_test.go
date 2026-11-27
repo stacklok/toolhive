@@ -1373,49 +1373,6 @@ func TestIsValidClient(t *testing.T) {
 	}
 }
 
-func TestGetClientDescription(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		client      ClientApp
-		expectFound bool
-	}{
-		{
-			name:        "VSCode description",
-			client:      VSCode,
-			expectFound: true,
-		},
-		{
-			name:        "ClaudeCode description",
-			client:      ClaudeCode,
-			expectFound: true,
-		},
-		{
-			name:        "Cursor description",
-			client:      Cursor,
-			expectFound: true,
-		},
-		{
-			name:        "Invalid client",
-			client:      ClientApp("invalid"),
-			expectFound: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			description := GetClientDescription(tt.client)
-			if tt.expectFound {
-				assert.NotEmpty(t, description, "Expected non-empty description for %s", tt.client)
-			} else {
-				assert.Empty(t, description, "Expected empty description for invalid client")
-			}
-		})
-	}
-}
-
 func TestGetClientListFormatted(t *testing.T) {
 	t.Parallel()
 

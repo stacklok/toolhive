@@ -708,26 +708,9 @@ func UnionScopes(requested, baseline []string) []string {
 	return out
 }
 
-// ValidatePublicGrantTypes validates the grant_types for a public OAuth client,
-// applying the same rules as DCR: authorization_code must be present, and all
-// declared values must be in the allowed set. Returns the validated slice (with
-// defaults applied when nil/empty) or a *DCRError on violation.
-func ValidatePublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
-	return validateGrantTypes(grantTypes, oauthproto.TokenEndpointAuthMethodNone)
-}
-
-// ValidatePublicResponseTypes validates the response_types for a public OAuth
-// client, applying the same rules as DCR: code must be present and all declared
-// values must be in the allowed set (unless grantTypes is device_code-only, which
-// requires no response_types). Returns the validated slice (with defaults
-// applied when nil/empty) or a *DCRError on violation.
-func ValidatePublicResponseTypes(responseTypes, grantTypes []string) ([]string, *DCRError) {
-	return validateResponseTypes(responseTypes, oauthproto.TokenEndpointAuthMethodNone, grantTypes)
-}
-
 // FilterPublicGrantTypes returns the subset of grantTypes this server supports
 // for public clients, dropping unsupported entries instead of rejecting the
-// whole set the way ValidatePublicGrantTypes does.
+// whole set the way DCR validation (ValidateDCRRequest) does.
 //
 // This is the right semantics for CIMD: a Client ID Metadata Document
 // describes the client's capabilities across every authorization server it
@@ -735,7 +718,7 @@ func ValidatePublicResponseTypes(responseTypes, grantTypes []string) ([]string, 
 // example, declares the device_code grant alongside authorization_code, and
 // rejecting the document over a grant type this flow never uses breaks the
 // client entirely. A DCR request, by contrast, is addressed to this server
-// specifically, so ValidatePublicGrantTypes' rejection remains the correct
+// specifically, so ValidateDCRRequest's rejection remains the correct
 // feedback on that path.
 //
 // The surviving set must still include "authorization_code": a client whose

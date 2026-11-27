@@ -8,41 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	oauthclaims "github.com/stacklok/toolhive/pkg/oauthproto/claims"
 )
-
-func TestDecodeStringArrayCompatibilityWrapper(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		input any
-	}{
-		{name: "typed strings", input: []string{"a", "b"}},
-		{name: "interface strings", input: []any{"a", "b"}},
-		{name: "empty typed strings", input: []string{}},
-		{name: "empty interface strings", input: []any{}},
-		{name: "nil", input: nil},
-		{name: "typed nil strings", input: []string(nil)},
-		{name: "typed nil interfaces", input: []any(nil)},
-		{name: "scalar", input: "scalar"},
-		{name: "mixed array", input: []any{"a", 42}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			want, wantErr := oauthclaims.DecodeStringArray(tc.input)
-			got, err := DecodeStringArray(tc.input)
-			assert.Equal(t, want, got)
-			if wantErr != nil {
-				require.EqualError(t, err, wantErr.Error())
-			} else {
-				require.NoError(t, err)
-			}
-		})
-	}
-}
 
 // TestDecodeStringArrayLenient covers the permissive contract the Cedar
 // authorizer relies on. Every case here is a shape where the lenient and the

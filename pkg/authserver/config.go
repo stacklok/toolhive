@@ -1848,7 +1848,7 @@ type Config struct {
 	// Supports key rotation by returning multiple public keys for JWKS.
 	// If nil, an ephemeral key will be auto-generated (development only).
 	//
-	// Production: Use keys.NewFileProvider() or keys.NewProviderFromConfig()
+	// Production: Use keys.NewFileProvider()
 	// Testing: Use a mock or keys.NewGeneratingProvider()
 	KeyProvider keys.KeyProvider
 

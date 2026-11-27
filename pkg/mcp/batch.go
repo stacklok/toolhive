@@ -61,11 +61,3 @@ func WriteBatchUnsupportedError(w http.ResponseWriter) {
 	//nolint:gosec // G104: writing a JSON-RPC error response to an HTTP client
 	_, _ = w.Write(body)
 }
-
-// BatchUnsupportedResponse builds an *http.Response carrying the batch-rejection
-// JSON-RPC error, for proxies that intercept at the RoundTripper layer (the
-// transparent proxy) where no http.ResponseWriter is available. Mirrors
-// ClassificationErrorResponse; the JSON-RPC id is omitted, not null.
-func BatchUnsupportedResponse(req *http.Request) *http.Response {
-	return jsonRPCErrorResponse(req, nil, batchUnsupported)
-}

@@ -19,8 +19,7 @@ type Config struct {
 
 	// SigningKeyFile is the filename of the primary signing key (relative to KeyDir).
 	// This key is used for signing new tokens.
-	// If empty with KeyDir set, NewProviderFromConfig returns an error.
-	// If both KeyDir and SigningKeyFile are empty, an ephemeral key is generated.
+	// If empty with KeyDir set, NewFileProvider returns an error.
 	SigningKeyFile string
 
 	// FallbackKeyFiles are filenames of additional keys for verification (relative to KeyDir).
@@ -37,19 +36,4 @@ type Config struct {
 	//  2. Promote it to SigningKeyFile, move the old key to FallbackKeyFiles, roll out.
 	//  3. Remove the old key from FallbackKeyFiles after its tokens have expired.
 	FallbackKeyFiles []string
-}
-
-// NewProviderFromConfig creates a KeyProvider based on the configuration.
-//
-// Behavior:
-//   - If KeyDir and SigningKeyFile are set: load keys from directory
-//   - If both are empty: return GeneratingProvider (ephemeral key for development)
-//   - If KeyDir is set but SigningKeyFile is empty: returns an error
-func NewProviderFromConfig(cfg Config) (KeyProvider, error) {
-	if cfg.KeyDir != "" {
-		return NewFileProvider(cfg)
-	}
-
-	// Generate ephemeral key (development only)
-	return NewGeneratingProvider(DefaultAlgorithm), nil
 }

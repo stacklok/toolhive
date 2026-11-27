@@ -141,21 +141,6 @@ func NewClientWithConfig(clientset kubernetes.Interface, config *rest.Config) *C
 	}
 }
 
-// NewClientWithConfigAndPlatformDetector creates a new container client with a provided config and platform detector
-// This is primarily used for testing with fake clients and mock platform detectors
-func NewClientWithConfigAndPlatformDetector(
-	clientset kubernetes.Interface,
-	config *rest.Config,
-	platformDetector PlatformDetector,
-) *Client {
-	return &Client{
-		runtimeType:      runtime.TypeKubernetes,
-		client:           clientset,
-		config:           config,
-		platformDetector: platformDetector,
-	}
-}
-
 // AttachToWorkload implements runtime.Runtime.
 // It establishes a kubectl attach connection to the MCP server pod.
 //

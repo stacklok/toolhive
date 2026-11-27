@@ -154,7 +154,7 @@ func TestMentionsReadToolOutsideScope(t *testing.T) {
 			t.Parallel()
 			ps, err := parsePolicySet([]string{tc.policy})
 			require.NoError(t, err)
-			for _, p := range ps.Map() {
+			for _, p := range ps.All() {
 				assert.Equal(t, tc.want, mentionsReadToolOutsideScope(p))
 			}
 		})

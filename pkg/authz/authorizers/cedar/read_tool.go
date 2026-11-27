@@ -28,7 +28,7 @@ const callToolActionEntity = "Action::call_tool"
 // AnswersToolRead reports that this authorizer decides tool:read itself. The
 // tool:call fallback in the decorator must not apply: a read_tool forbid has to
 // hide the tool even when call_tool allows it.
-func (a *Authorizer) AnswersToolRead() bool { return true }
+func (*Authorizer) AnswersToolRead() bool { return true }
 
 // actionScopeNamesReadTool reports whether the policy's action scope names
 // Action::"read_tool" directly, with ==, in, or in a set. A scope of "action" with no
@@ -63,7 +63,7 @@ func readToolPolicySet(ps *cedar.PolicySet) *cedar.PolicySet {
 	if ps == nil {
 		return out
 	}
-	for id, p := range ps.Map() {
+	for id, p := range ps.All() {
 		if actionScopeNamesReadTool(p) {
 			out.Add(id, p)
 			continue

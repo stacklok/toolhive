@@ -18,6 +18,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -254,4 +255,112 @@ type delegatedReaderFunc func(context.Context, string, string) (*upstreamtoken.U
 
 func (f delegatedReaderFunc) GetValidTokensForUser(ctx context.Context, userID, provider string) (*upstreamtoken.UpstreamCredential, error) {
 	return f(ctx, userID, provider)
+}
+
+type userKeyedFakeReader struct {
+	userKeyed bool
+	calls     int
+}
+
+func (r *userKeyedFakeReader) GetValidTokensForUser(context.Context, string, string) (*upstreamtoken.UpstreamCredential, error) {
+	r.calls++
+	return &upstreamtoken.UpstreamCredential{AccessToken: "user-keyed-token"}, nil
+}
+
+func (r *userKeyedFakeReader) UserKeyed() bool { return r.userKeyed }
+
+func delegatedIdentity() *auth.Identity {
+	return &auth.Identity{
+		PrincipalInfo:  auth.PrincipalInfo{PlatformUserID: "platform-user"},
+		AdmissionRoute: auth.AdmissionRouteDelegated,
+	}
+}
+
+//nolint:paralleltest // Captures the process-wide default logger.
+func TestWithUserCredentialReaderRefusesNonUserKeyed(t *testing.T) {
+	logs := captureCredentialLogs(t)
+	reader := &userKeyedFakeReader{userKeyed: false}
+	var creds upstreamCredentials
+	creds.apply(WithUserCredentialReader(reader))
+
+	for range 2 {
+		token, err := creds.accessToken(t.Context(), delegatedIdentity(), "github")
+		require.Empty(t, token)
+		require.Same(t, authtypes.ErrDelegatedCredentialUnavailable, err)
+	}
+	require.Zero(t, reader.calls)
+	require.Equal(t, 1, strings.Count(logs.String(), `"level":"WARN"`))
+	require.Contains(t, logs.String(), "does not read user-keyed storage; failing closed")
+	require.Equal(t, 1, strings.Count(logs.String(), `"level":"DEBUG"`))
+}
+
+func TestWithUserCredentialReaderAcceptsUserKeyed(t *testing.T) {
+	t.Parallel()
+
+	reader := &userKeyedFakeReader{userKeyed: true}
+	var creds upstreamCredentials
+	creds.apply(WithUserCredentialReader(reader))
+
+	token, err := creds.accessToken(t.Context(), delegatedIdentity(), "github")
+	require.NoError(t, err)
+	require.Equal(t, "user-keyed-token", token)
+	require.Equal(t, 1, reader.calls)
+}
+
+func TestWithUserCredentialReaderSessionKeyedService(t *testing.T) {
+	t.Parallel()
+
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+	var creds upstreamCredentials
+	creds.apply(WithUserCredentialReader(upstreamtoken.NewInProcessService(stor, nil)))
+
+	token, err := creds.accessToken(t.Context(), delegatedIdentity(), "github")
+	require.Empty(t, token)
+	require.Same(t, authtypes.ErrDelegatedCredentialUnavailable, err)
+}
+
+func TestWithUserCredentialReaderLastOptionWins(t *testing.T) {
+	t.Parallel()
+
+	good := &userKeyedFakeReader{userKeyed: true}
+	var creds upstreamCredentials
+	creds.apply(
+		WithUserCredentialReader(&userKeyedFakeReader{}),
+		WithUserCredentialReader(good),
+		nil,
+	)
+	token, err := creds.accessToken(t.Context(), delegatedIdentity(), "github")
+	require.NoError(t, err)
+	require.Equal(t, "user-keyed-token", token)
+}
+
+func TestWithUserCredentialReaderNilAndValueReaders(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *userKeyedFakeReader
+	var creds upstreamCredentials
+	creds.apply(WithUserCredentialReader(nil), WithUserCredentialReader(typedNil))
+	require.Nil(t, creds.reader)
+	require.False(t, creds.readerNotUserKeyed)
+
+	valueReader := delegatedReaderFunc(func(context.Context, string, string) (*upstreamtoken.UpstreamCredential, error) {
+		return &upstreamtoken.UpstreamCredential{AccessToken: "value-token"}, nil
+	})
+	var withValue upstreamCredentials
+	withValue.apply(WithUserCredentialReader(valueReader))
+	token, err := withValue.accessToken(t.Context(), delegatedIdentity(), "github")
+	require.NoError(t, err)
+	require.Equal(t, "value-token", token)
+
+	structReader := valueStructReader{}
+	var withStruct upstreamCredentials
+	withStruct.apply(WithUserCredentialReader(structReader))
+	require.NotNil(t, withStruct.reader)
+}
+
+type valueStructReader struct{}
+
+func (valueStructReader) GetValidTokensForUser(context.Context, string, string) (*upstreamtoken.UpstreamCredential, error) {
+	return nil, upstreamtoken.ErrNeedsAuthorization
 }

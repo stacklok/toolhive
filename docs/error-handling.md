@@ -80,7 +80,9 @@ differently:
   `provider "github" requires upstream authorization`, or
   `upstream authorization required` if no provider is named.
 - **The credential is unavailable.** `tools/call` returns JSON-RPC `-32603`
-  with the fixed message `upstream credential unavailable`.
+  with the fixed message `upstream credential unavailable`. Causes include a
+  missing reader, a reader that does not read user-keyed storage, and storage
+  or refresh failures.
 
 Both revisions (Legacy 2025-11-25 and Modern 2026-07-28) answer the same way,
 for a direct call, through the Legacy optimizer's `call_tool`, and for a

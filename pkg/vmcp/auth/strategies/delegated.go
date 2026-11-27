@@ -23,13 +23,29 @@ type Option func(*upstreamCredentials)
 // WithUserCredentialReader configures the reader used to look up delegated
 // credentials by platform user ID and provider. It does not change token
 // resolution on non-delegated routes.
-// A nil or typed-nil reader is treated as no reader.
+//
+// A nil or typed-nil reader is treated as no reader. A reader that implements
+// upstreamtoken.UserKeyedReader and reports false is refused, because it
+// cannot find rows by user ID and would report every user as unauthorized; the
+// strategy then fails closed on delegated requests. A reader that does not
+// implement UserKeyedReader is accepted as given.
 func WithUserCredentialReader(reader upstreamtoken.UserCredentialReader) Option {
 	return func(c *upstreamCredentials) {
-		if !isNilReader(reader) {
+		switch {
+		case isNilReader(reader):
+		case notUserKeyed(reader):
+			c.reader = nil
+			c.readerNotUserKeyed = true
+		default:
 			c.reader = reader
+			c.readerNotUserKeyed = false
 		}
 	}
+}
+
+func notUserKeyed(reader upstreamtoken.UserCredentialReader) bool {
+	uk, ok := reader.(upstreamtoken.UserKeyedReader)
+	return ok && !uk.UserKeyed()
 }
 
 // isNilReader reports whether reader is nil or wraps a nil value, which would
@@ -48,7 +64,10 @@ func isNilReader(reader upstreamtoken.UserCredentialReader) bool {
 }
 
 type upstreamCredentials struct {
-	reader              upstreamtoken.UserCredentialReader
+	reader upstreamtoken.UserCredentialReader
+	// readerNotUserKeyed records that a reader was supplied but refused, so
+	// the fail-closed warning names the right cause.
+	readerNotUserKeyed  bool
 	missingReaderWarned atomic.Bool
 }
 
@@ -94,11 +113,14 @@ func (c *upstreamCredentials) readDelegatedCredential(
 		slog.DebugContext(ctx, "delegated credential provider is empty")
 		return nil, authtypes.ErrDelegatedCredentialUnavailable
 	case c.reader == nil:
+		msg := "delegated credential reader is not configured"
+		if c.readerNotUserKeyed {
+			msg = "delegated credential reader does not read user-keyed storage"
+		}
 		if c.missingReaderWarned.CompareAndSwap(false, true) {
-			slog.WarnContext(ctx, "delegated credential reader is not configured; failing closed on delegated requests",
-				"provider", provider)
+			slog.WarnContext(ctx, msg+"; failing closed on delegated requests", "provider", provider)
 		} else {
-			slog.DebugContext(ctx, "delegated credential reader is not configured", "provider", provider)
+			slog.DebugContext(ctx, msg, "provider", provider)
 		}
 		return nil, authtypes.ErrDelegatedCredentialUnavailable
 	case identity.PlatformUserID == "":

@@ -1799,7 +1799,7 @@ func TestOAuth2BindingIssuer(t *testing.T) {
 		{name: "ipv6 default port", endpoint: "https://[2001:db8::1]:443/user", sameAs: "https://[2001:db8::1]/user"},
 		{name: "ipv6 non-default port", endpoint: "https://[2001:db8::1]:8443/user", differs: "https://[2001:db8::1]/user"},
 		{name: "different host", endpoint: "https://api.other.example.com/user", differs: "https://api.example.com/user"},
-		{name: "unparseable", endpoint: "://bad", empty: true},
+		{name: "unparsable", endpoint: "://bad", empty: true},
 		{name: "no host", endpoint: "/user", empty: true},
 	}
 	for _, tt := range tests {

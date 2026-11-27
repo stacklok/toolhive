@@ -147,9 +147,13 @@ type fakeCore struct {
 	// view, as an unreachable backend is.
 	unavailableBackends []string
 	// backendStatus is the registry health status of a configured backend,
-	// set with setBackendStatus; absent means none (healthy).
-	backendStatusMu sync.Mutex
-	backendStatus   map[string]vmcp.BackendHealthStatus
+	// set with setBackendStatus; absent means none (healthy). unavailableLists
+	// maps a backend to the list methods whose listing failed transiently on
+	// it (core.AdmittedBackendCapabilities.ListErrors), set with
+	// setUnavailableLists. backendStatusMu guards both.
+	backendStatusMu  sync.Mutex
+	backendStatus    map[string]vmcp.BackendHealthStatus
+	unavailableLists map[string][]string
 
 	listToolsCalls             atomic.Int32
 	listResourcesCalls         atomic.Int32
@@ -479,6 +483,17 @@ func (f *fakeCore) setBackendStatus(id string, status vmcp.BackendHealthStatus) 
 	f.backendStatus[id] = status
 }
 
+// setUnavailableLists sets the list methods whose listing failed transiently
+// on backend id; none clears them.
+func (f *fakeCore) setUnavailableLists(id string, methods ...string) {
+	f.backendStatusMu.Lock()
+	defer f.backendStatusMu.Unlock()
+	if f.unavailableLists == nil {
+		f.unavailableLists = map[string][]string{}
+	}
+	f.unavailableLists[id] = methods
+}
+
 // LookupBackend applies the real core's rule: a backend is in identity's
 // view when identity's lists hold at least one of its tools, resources or
 // prompts (resource templates do not count) and it contributes to the view,
@@ -495,6 +510,47 @@ func (f *fakeCore) LookupBackend(_ context.Context, identity *auth.Identity, id 
 	f.backendStatusMu.Lock()
 	defer f.backendStatusMu.Unlock()
 	return &vmcp.Backend{ID: id, Name: id, HealthStatus: f.backendStatus[id]}, nil
+}
+
+// LookupBackendCapabilities applies the real core's rule from one read of the
+// fake's state: a configured backend that is available and offers identity at
+// least one item, resource templates included, is in identity's view; one
+// whose registry status health.ShouldAdvertise rejects gets
+// vmcp.ErrBackendUnavailable, and every other backend vmcp.ErrNotFound.
+func (f *fakeCore) LookupBackendCapabilities(
+	ctx context.Context, identity *auth.Identity, id string,
+) (*core.AdmittedBackendCapabilities, error) {
+	backends, err := f.ListBackends(ctx, identity, false)
+	if err != nil {
+		return nil, err
+	}
+	i := slices.IndexFunc(backends, func(b vmcp.Backend) bool { return b.ID == id })
+	if i < 0 || slices.Contains(f.unavailableBackends, id) {
+		return nil, fmt.Errorf("%w: backend %q", vmcp.ErrNotFound, id)
+	}
+	lists := f.listsFor(identity)
+	f.backendStatusMu.Lock()
+	unavailable := slices.Clone(f.unavailableLists[id])
+	f.backendStatusMu.Unlock()
+	caps := &core.AdmittedBackendCapabilities{
+		Tools:             slices.DeleteFunc(slices.Clone(lists.tools), func(t vmcp.Tool) bool { return t.BackendID != id }),
+		Resources:         slices.DeleteFunc(slices.Clone(lists.resources), func(r vmcp.Resource) bool { return r.BackendID != id }),
+		ResourceTemplates: slices.DeleteFunc(slices.Clone(lists.resourceTemplates), func(t vmcp.ResourceTemplate) bool { return t.BackendID != id }),
+		Prompts:           slices.DeleteFunc(slices.Clone(lists.prompts), func(p vmcp.Prompt) bool { return p.BackendID != id }),
+	}
+	for _, method := range unavailable {
+		if caps.ListErrors == nil {
+			caps.ListErrors = map[string]error{}
+		}
+		caps.ListErrors[method] = fmt.Errorf("%w: %s failed for now", vmcp.ErrBackendUnavailable, method)
+	}
+	if len(caps.Tools)+len(caps.Resources)+len(caps.ResourceTemplates)+len(caps.Prompts) == 0 {
+		return nil, fmt.Errorf("%w: backend %q", vmcp.ErrNotFound, id)
+	}
+	if !health.ShouldAdvertise(backends[i].HealthStatus) {
+		return nil, fmt.Errorf("%w: backend %q is %s", vmcp.ErrBackendUnavailable, id, backends[i].HealthStatus)
+	}
+	return caps, nil
 }
 
 func (*fakeCore) Discover(context.Context, *auth.Identity) (core.DiscoverCapabilities, error) {

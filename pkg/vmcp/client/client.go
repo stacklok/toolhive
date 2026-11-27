@@ -1267,34 +1267,48 @@ func (h *httpBackendClient) modernEnumerate(
 		}
 	}
 
+	// unavailable names the optional lists that failed transiently (see
+	// modernListOptional), so a caller can tell their empty lists apart.
+	var unavailable []string
+	var skipped bool
+
 	var resources []mcp.Resource
 	var templates []mcp.ResourceTemplate
 	if caps != nil && caps.Resources != nil {
-		resources, err = modernListOptional[mcp.Resource](
+		resources, skipped, err = modernListOptional[mcp.Resource](
 			ctx, hc, endpoint, "resources/list", "resources", target.WorkloadName, true,
 		)
 		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list resources")
 		}
+		if skipped {
+			unavailable = append(unavailable, "resources/list")
+		}
 
 		// Resource templates share the resources capability flag. A backend that
 		// does not implement resources/templates/list (-32601) degrades to an
 		// empty template list, mirroring the Legacy queryResourceTemplates path.
-		templates, err = modernListOptional[mcp.ResourceTemplate](
+		templates, skipped, err = modernListOptional[mcp.ResourceTemplate](
 			ctx, hc, endpoint, "resources/templates/list", "resourceTemplates", target.WorkloadName, true,
 		)
 		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list resource templates")
 		}
+		if skipped {
+			unavailable = append(unavailable, "resources/templates/list")
+		}
 	}
 
 	var prompts []mcp.Prompt
 	if caps != nil && caps.Prompts != nil {
-		prompts, err = modernListOptional[mcp.Prompt](
+		prompts, skipped, err = modernListOptional[mcp.Prompt](
 			ctx, hc, endpoint, "prompts/list", "prompts", target.WorkloadName, true,
 		)
 		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list prompts")
+		}
+		if skipped {
+			unavailable = append(unavailable, "prompts/list")
 		}
 	}
 
@@ -1302,7 +1316,9 @@ func (h *httpBackendClient) modernEnumerate(
 		"backend", target.WorkloadName,
 		"tools", len(tools), "resources", len(resources),
 		"resource_templates", len(templates), "prompts", len(prompts))
-	return newCapabilityListFromMCP(target.WorkloadID, tools, resources, templates, prompts), nil
+	capabilities := newCapabilityListFromMCP(target.WorkloadID, tools, resources, templates, prompts)
+	capabilities.UnavailableLists = unavailable
+	return capabilities, nil
 }
 
 // modernListOptional enumerates an optional capability list via modernListAll.
@@ -1311,7 +1327,8 @@ func (h *httpBackendClient) modernEnumerate(
 //
 //   - a transient failure (errModernTransient: HTTP 408/429/5xx, a mid-stream
 //     read failure, or a transport/network error), after the mandatory
-//     tools/list has already succeeded, yields an empty list with a WARN;
+//     tools/list has already succeeded, yields an empty list with a WARN, and
+//     unavailable is true: the items are unknown, not absent;
 //   - a -32601 not-implemented (mcp.ErrMethodNotFound) yields an empty list
 //     when degradeNotFound is set. This is used for optional resource and
 //     prompt surfaces so a backend's remaining capabilities can still aggregate.
@@ -1319,19 +1336,19 @@ func (h *httpBackendClient) modernEnumerate(
 // Any other error is returned to the caller, which fails the enumeration.
 func modernListOptional[T any](
 	ctx context.Context, hc *http.Client, endpoint, method, itemsField, backend string, degradeNotFound bool,
-) ([]T, error) {
-	items, err := modernListAll[T](ctx, hc, endpoint, method, itemsField, backend)
+) (items []T, unavailable bool, err error) {
+	items, err = modernListAll[T](ctx, hc, endpoint, method, itemsField, backend)
 	switch {
 	case errors.Is(err, errModernTransient):
 		slog.Warn(method+" transiently unavailable; degrading to empty list",
 			"backend", backend, "error", err)
-		return nil, nil
+		return nil, true, nil
 	case errors.Is(err, mcp.ErrMethodNotFound) && degradeNotFound:
-		return nil, nil
+		return nil, false, nil
 	case err != nil:
-		return nil, err
+		return nil, false, err
 	}
-	return items, nil
+	return items, false, nil
 }
 
 // cursorParams builds the Modern list request params carrying a pagination

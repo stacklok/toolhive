@@ -1488,7 +1488,9 @@ policies are configured:
   name to the inner core. A backend that advertised a tool named `execute_tool_script`
   would be silently shadowed by the virtual tool and skip its own Cedar admission, so the
   decorator fails **loud** (`ErrReservedToolName`) on that collision — `ListTools`,
-  `LookupTool`, and the `CallTool` script-binding path all refuse to serve rather than mask it.
+  `LookupTool`, and the `CallTool` script-binding path all refuse to serve rather than mask it,
+  and `LookupBackendCapabilities` refuses that backend's `tools/list`, while its other lists
+  are still answered.
 
 The `Call*` methods keep their internal admission checks as defense-in-depth for other
 embedders and misconfigured gates.
@@ -1569,16 +1571,32 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   `server` must be a backend in the caller's view: one the caller is admitted to at
   least one tool, resource, resource template or prompt of. A server that is unknown,
   hidden by authorization, offers the caller nothing, or contributes nothing to the
-  view (its discovery fails) gets the same 403 `server_not_found`, as an unknown tool
-  gets `tool_not_found`: AS-1 signs any `server` name, so the answer must not tell
-  whether a backend the caller cannot see exists. A backend in the caller's view that
+  view (its discovery fails while another backend's succeeds) gets the same 403
+  `server_not_found`, as an unknown tool gets `tool_not_found`: AS-1 signs any
+  `server` name, so the answer must not tell whether a backend the caller cannot see
+  exists. A backend in the caller's view that
   the core's lists leave out for its health status (unhealthy, unknown or
   unauthenticated, even while it still answers) gets 503; a degraded one stays in the
-  lists and is listed. The check and the items come from separate aggregations, so a
-  backend that drops out of the view between the two is answered with an empty list
-  and the token is used. A list call that carries a cursor is refused with
-  `invalid_params`. A `tools/call` or another list method is refused with
-  `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
+  lists and is listed. A backend in the caller's view whose list of the method's
+  items cannot be listed now also gets 503: the list failed transiently (a Modern
+  backend's optional list, which the lists report as empty), or code mode refuses the
+  backend's `tools/list` because it advertises `execute_tool_script`. One the caller
+  could see only through a list that failed is not known to be in view, so it gets
+  403. While no backend in a non-empty group answers discovery, a list call that
+  reaches the check on a capability-cache miss gets 503, whatever its `server`, so the
+  outage tells nothing about which backends exist; an empty group has no backend to
+  find, so every `server` gets 403. The check and the items come from one aggregation
+  when the core offers `core.BackendCapabilitiesLookup`, so they cannot disagree. That
+  interface is separate from `core.VMCP`, so a decorator that only embeds `core.VMCP`
+  does not promote it; the list call then falls back to the decorator's own
+  `LookupBackend` and `List*` answers, from separate aggregations. A list call that
+  is answered runs admission over its backend's items only. Every 403
+  `server_not_found` and every health 503 runs the same aggregations and, in each,
+  admission over every item once, as the lists do (the items of the other backends
+  are checked and the results discarded), so its time does not tell an unknown
+  `server` from a hidden backend with many items. A list call that
+  carries a cursor is refused with `invalid_params`. A `tools/call` or another list
+  method is refused with `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
   a tool-call entry: it uses up the token. It is recorded only once its answer is
   ready, and ended at once: of concurrent duplicates, each runs the handler, but only
   the first to record is answered, and the others get `token_reused`.

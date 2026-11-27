@@ -146,7 +146,7 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
 		result, err := agg.QueryAllCapabilities(context.Background(), backends)
 
-		require.Error(t, err)
+		require.ErrorIs(t, err, ErrNoBackendCapabilities)
 		assert.Nil(t, result)
 		assert.Contains(t, err.Error(), "no backends returned capabilities")
 	})
@@ -463,6 +463,30 @@ func TestDefaultAggregator_AggregateCapabilities(t *testing.T) {
 		assert.Equal(t, 2, result.Metadata.BackendCount)
 		assert.Equal(t, 2, result.Metadata.ToolCount)
 		assert.Equal(t, 1, result.Metadata.ResourceCount)
+		assert.Nil(t, result.UnavailableLists, "no backend reported an unavailable list")
+	})
+
+	t.Run("reports each backend's unavailable lists", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backends := []vmcp.Backend{newTestBackend("backend1"), newTestBackend("backend2")}
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
+				caps := newTestCapabilityList(withTools(newTestTool("tool-"+target.WorkloadID, target.WorkloadID)))
+				if target.WorkloadID == "backend1" {
+					caps.UnavailableLists = []string{"prompts/list"}
+				}
+				return caps, nil
+			}).Times(2)
+
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		result, err := agg.AggregateCapabilities(context.Background(), backends)
+
+		require.NoError(t, err)
+		assert.Equal(t, map[string][]string{"backend1": {"prompts/list"}}, result.UnavailableLists)
 	})
 }
 

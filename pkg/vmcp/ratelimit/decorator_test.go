@@ -279,3 +279,37 @@ func TestCheckToolCallConsumesNoTokens(t *testing.T) {
 	assert.True(t, inner.checkCalled, "the check must promote to inner")
 	assert.Empty(t, limiter.toolName, "a pre-flight check must not consume a rate-limit token")
 }
+
+// lookupCore is a recordingCore that implements core.BackendCapabilitiesLookup.
+type lookupCore struct {
+	recordingCore
+	caps *core.AdmittedBackendCapabilities
+}
+
+func (c *lookupCore) LookupBackendCapabilities(
+	context.Context, *auth.Identity, string,
+) (*core.AdmittedBackendCapabilities, error) {
+	return c.caps, nil
+}
+
+// TestLookupBackendCapabilitiesForwards verifies the decorator forwards the
+// optional lookup, which embedding does not promote, consuming no tokens, and
+// reports core.ErrBackendCapabilitiesLookupUnsupported over an inner core that
+// does not implement it, so a list call falls back to the lists.
+func TestLookupBackendCapabilitiesForwards(t *testing.T) {
+	t.Parallel()
+	limiter := &recordingLimiter{decision: &baseratelimit.Decision{Allowed: false}}
+	inner := &lookupCore{caps: &core.AdmittedBackendCapabilities{Tools: []vmcp.Tool{{Name: "echo", BackendID: "b1"}}}}
+	d, ok := NewDecorator(inner, limiter).(core.BackendCapabilitiesLookup)
+	require.True(t, ok)
+
+	caps, err := d.LookupBackendCapabilities(context.Background(), nil, "b1")
+	require.NoError(t, err)
+	assert.Same(t, inner.caps, caps)
+	assert.Empty(t, limiter.toolName, "a list lookup consumes no rate-limit token")
+
+	d, ok = NewDecorator(&recordingCore{}, limiter).(core.BackendCapabilitiesLookup)
+	require.True(t, ok)
+	_, err = d.LookupBackendCapabilities(context.Background(), nil, "b1")
+	require.ErrorIs(t, err, core.ErrBackendCapabilitiesLookupUnsupported)
+}

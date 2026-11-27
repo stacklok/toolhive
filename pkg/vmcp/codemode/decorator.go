@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -112,6 +114,7 @@ func virtualToolInputSchema() map[string]any {
 // its Cedar admission. The decorator refuses that collision fail-loud via innerTools:
 // ListTools, LookupTool, and the CallTool script-binding path all error with
 // ErrReservedToolName rather than serve the shadowed set (#5845).
+// LookupBackendCapabilities refuses the shadowing backend's tools/list the same way.
 //
 // The decorator is stateless and safe for concurrent use: a fresh [script.Executor] is
 // built per execution from the inner core's identity-filtered tool set, so two callers
@@ -119,15 +122,21 @@ func virtualToolInputSchema() map[string]any {
 type decorator struct {
 	// core.VMCP is embedded, so any method the decorator does not override is promoted
 	// straight to the inner core. The reserved-name collision guard (#5845) lives only in
-	// the overrides that read the inner tool set via innerTools (ListTools, LookupTool, and
-	// CallTool's script path). If core.VMCP ever grows another tool-set-reading method, it
-	// will auto-promote and bypass that guard — reintroducing the silent execute_tool_script
-	// shadow. Any such new method MUST be overridden here to funnel through innerTools.
+	// the overrides that read the inner tool set: via innerTools (ListTools, LookupTool,
+	// and CallTool's script path), and in LookupBackendCapabilities, which returns one
+	// backend's tools and so checks only those; embedding does not promote that
+	// optional method, so it is implemented here explicitly. If core.VMCP ever grows another
+	// tool-set-reading method, it will auto-promote and bypass that guard — reintroducing
+	// the silent execute_tool_script shadow. Any such new method MUST be overridden here
+	// to refuse a tool set that holds the reserved name.
 	core.VMCP
 	cfg Config
 }
 
-var _ core.VMCP = (*decorator)(nil)
+var (
+	_ core.VMCP                      = (*decorator)(nil)
+	_ core.BackendCapabilitiesLookup = (*decorator)(nil)
+)
 
 // NewDecorator wraps inner with vMCP code mode. The returned VMCP advertises
 // execute_tool_script in addition to inner's tools and executes submitted Starlark
@@ -194,6 +203,35 @@ func (d *decorator) LookupTool(ctx context.Context, identity *auth.Identity, nam
 	}
 	t := virtualTool(tools)
 	return &t, nil
+}
+
+// LookupBackendCapabilities defers to inner and refuses, with
+// ErrReservedToolName, the "tools/list" of a backend that advertises
+// execute_tool_script, as ListTools refuses it: that tool would be listed under
+// a name the decorator resolves to its virtual definition. The backend's other
+// lists are answered from the same snapshot, since the collision is only among
+// tools. It checks only this backend's tools, which are all it returns, so it
+// does not aggregate the whole tool set again.
+func (d *decorator) LookupBackendCapabilities(
+	ctx context.Context, identity *auth.Identity, backendID string,
+) (*core.AdmittedBackendCapabilities, error) {
+	caps, err := core.LookupBackendCapabilities(ctx, d.VMCP, identity, backendID)
+	if err != nil {
+		return nil, err
+	}
+	i := slices.IndexFunc(caps.Tools, func(t vmcp.Tool) bool { return t.Name == script.ExecuteToolScriptName })
+	if i < 0 {
+		return caps, nil
+	}
+	refused := *caps
+	refused.Tools = []vmcp.Tool{}
+	refused.ListErrors = maps.Clone(caps.ListErrors)
+	if refused.ListErrors == nil {
+		refused.ListErrors = map[string]error{}
+	}
+	refused.ListErrors["tools/list"] = fmt.Errorf("%w: %q advertised by backend %q",
+		ErrReservedToolName, script.ExecuteToolScriptName, caps.Tools[i].BackendID)
+	return &refused, nil
 }
 
 // CallTool intercepts execute_tool_script and runs the submitted script; every other

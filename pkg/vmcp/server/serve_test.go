@@ -85,6 +85,9 @@ func (*stubVMCP) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Bac
 func (*stubVMCP) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.Backend, error) {
 	return nil, nil
 }
+func (*stubVMCP) LookupBackendCapabilities(context.Context, *auth.Identity, string) (*core.AdmittedBackendCapabilities, error) {
+	return nil, vmcp.ErrNotFound
+}
 func (*stubVMCP) Discover(context.Context, *auth.Identity) (core.DiscoverCapabilities, error) {
 	return core.DiscoverCapabilities{}, nil
 }

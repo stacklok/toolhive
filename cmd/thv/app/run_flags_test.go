@@ -21,6 +21,8 @@ import (
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/webhook"
@@ -1092,4 +1094,70 @@ func TestSetupOIDCConfiguration_MiddlewareFlagWiring(t *testing.T) {
 	assert.Equal(t, "/path/to/token", got.AuthTokenFile)
 	assert.True(t, got.AllowPrivateIP)
 	assert.True(t, got.InsecureAllowHTTP)
+}
+
+func TestLoadInstructionsConfig(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	policy := filepath.Join(dir, "policy.txt")
+	require.NoError(t, os.WriteFile(policy, []byte("policy\n"), 0o600))
+	empty := filepath.Join(dir, "empty.txt")
+	require.NoError(t, os.WriteFile(empty, nil, 0o600))
+
+	tests := []struct {
+		name    string
+		path    string
+		mode    string
+		want    *instructions.Config
+		wantErr string
+	}{
+		{name: "no flags", want: nil},
+		{name: "file with default mode", path: policy, want: &instructions.Config{Value: "policy\n"}},
+		{name: "file with mode", path: policy, mode: "replace", want: &instructions.Config{Mode: instructions.ModeReplace, Value: "policy\n"}},
+		{name: "mode without file", mode: "replace", wantErr: "--instructions-mode requires --instructions-file"},
+		{name: "unknown mode", path: policy, mode: "after", wantErr: "invalid instructions mode"},
+		{name: "empty file", path: empty, wantErr: "must not be empty"},
+		{name: "missing file", path: filepath.Join(dir, "missing.txt"), wantErr: "failed to read instructions file"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := loadInstructionsConfig(tt.path, tt.mode)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestBuildRunnerConfig_InstructionsWiring(t *testing.T) {
+	t.Parallel()
+
+	policy := filepath.Join(t.TempDir(), "policy.txt")
+	require.NoError(t, os.WriteFile(policy, []byte("policy"), 0o600))
+
+	runFlags := &RunFlags{}
+	cmd := &cobra.Command{}
+	AddRunFlags(cmd, runFlags)
+	require.NoError(t, cmd.Flags().Set("permission-profile", "none"))
+	require.NoError(t, cmd.Flags().Set("transport", "stdio"))
+	require.NoError(t, cmd.Flags().Set("instructions-file", policy))
+	require.NoError(t, cmd.Flags().Set("instructions-mode", "prepend"))
+
+	cfg, err := buildRunnerConfig(
+		t.Context(), runFlags, nil, false, "127.0.0.1", nil, "test:latest", "test:latest", nil,
+		map[string]string{}, &runner.DetachedEnvVarValidator{}, nil, nil, &config.Config{},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, &instructions.Config{Mode: instructions.ModePrepend, Value: "policy"}, cfg.Instructions)
+	var mwTypes []string
+	for _, mw := range cfg.MiddlewareConfigs {
+		mwTypes = append(mwTypes, mw.Type)
+	}
+	assert.Contains(t, mwTypes, mcp.InstructionsMiddlewareType,
+		"the flag middleware path must see the instructions set before it")
 }

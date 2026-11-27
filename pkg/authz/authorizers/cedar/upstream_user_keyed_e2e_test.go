@@ -27,13 +27,21 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
+// hiddenUserKeyedReader wraps a TokenReader without forwarding
+// upstreamtoken.UserKeyedReader, as a reader wrapper written before that
+// interface existed would, so the validator cannot see the user-keyed storage
+// behind it and only the request-time checks apply.
+type hiddenUserKeyedReader struct{ upstreamtoken.TokenReader }
+
 // TestUserKeyedUpstreamLoadEndToEnd runs a token through the real middleware over
 // user-keyed storage (memory and miniredis). A validator bound to the embedded
 // issuer, with its in-process key provider and an audience, classifies the token
-// as interactive and loads the user's row; a validator for the same token without the
-// embedded issuer answers 503, because the unbound path never writes the
+// as interactive and loads the user's row. Behind a reader that hides
+// user-keyed storage, the request-time checks remain: without the embedded
+// issuer the request gets 503, because the unbound path never writes the
 // canonical-user key and the user-keyed storage reads only that key, so the
-// misconfiguration is not silently turned into "no upstream tokens".
+// misconfiguration is not silently turned into "no upstream tokens"; a bound
+// validator without an audience loads nothing.
 func TestUserKeyedUpstreamLoadEndToEnd(t *testing.T) {
 	t.Parallel()
 
@@ -104,11 +112,11 @@ func TestUserKeyedUpstreamLoadEndToEnd(t *testing.T) {
 					ExpiresAt:   time.Now().Add(time.Hour),
 				}))
 
-			authenticate := func(t *testing.T, bindEmbedded bool, validatorAudience string) (*httptest.ResponseRecorder, *auth.Identity) {
+			newValidator := func(
+				t *testing.T, reader upstreamtoken.TokenReader, bindEmbedded bool, validatorAudience string,
+			) (*auth.TokenValidator, error) {
 				t.Helper()
-				opts := []auth.TokenValidatorOption{
-					auth.WithUpstreamTokenReader(upstreamtoken.NewInProcessService(stor, nil)),
-				}
+				opts := []auth.TokenValidatorOption{auth.WithUpstreamTokenReader(reader)}
 				if bindEmbedded {
 					provider := keysmocks.NewMockPublicKeyProvider(gomock.NewController(t))
 					provider.EXPECT().PublicKeys(gomock.Any()).
@@ -116,10 +124,19 @@ func TestUserKeyedUpstreamLoadEndToEnd(t *testing.T) {
 						AnyTimes()
 					opts = append(opts, auth.WithEmbeddedAuthServerIssuer(embeddedIssuer), auth.WithKeyProvider(provider))
 				}
-				validator, vErr := auth.NewTokenValidator(t.Context(), auth.TokenValidatorConfig{
+				return auth.NewTokenValidator(t.Context(), auth.TokenValidatorConfig{
 					Issuer: embeddedIssuer, Audience: validatorAudience, JWKSURL: jwksServer.URL,
 					ClientID: "vmcp", AllowPrivateIP: true, InsecureAllowHTTP: true,
 				}, opts...)
+			}
+			reader := upstreamtoken.NewInProcessService(stor, nil)
+			hidden := hiddenUserKeyedReader{reader}
+
+			authenticate := func(
+				t *testing.T, reader upstreamtoken.TokenReader, bindEmbedded bool, validatorAudience string,
+			) (*httptest.ResponseRecorder, *auth.Identity) {
+				t.Helper()
+				validator, vErr := newValidator(t, reader, bindEmbedded, validatorAudience)
 				require.NoError(t, vErr)
 
 				var captured *auth.Identity
@@ -133,18 +150,18 @@ func TestUserKeyedUpstreamLoadEndToEnd(t *testing.T) {
 				return rr, captured
 			}
 
-			rr, identity := authenticate(t, true, audience)
+			rr, identity := authenticate(t, reader, true, audience)
 			require.Equal(t, http.StatusOK, rr.Code)
 			require.NotNil(t, identity)
 			require.Equal(t, map[string]string{providerName: "ya29.opaque-access-token"}, identity.UpstreamTokens)
 
-			rr, identity = authenticate(t, false, audience)
+			rr, identity = authenticate(t, hidden, false, audience)
 			require.Equal(t, http.StatusServiceUnavailable, rr.Code)
 			require.Nil(t, identity)
 
 			// A bound validator with no audience gives every token the unspecified
 			// route, so even an interactive token loads nothing.
-			rr, identity = authenticate(t, true, "")
+			rr, identity = authenticate(t, hidden, true, "")
 			require.Equal(t, http.StatusOK, rr.Code)
 			require.NotNil(t, identity)
 			require.Nil(t, identity.UpstreamTokens)

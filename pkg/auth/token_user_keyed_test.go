@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -475,4 +476,80 @@ func TestMiddleware_UserKeying(t *testing.T) {
 		rr, _ := run(t, bound, nil, readerSeeing(t, &seen, upstreamtoken.ErrNoCanonicalUser))
 		require.Equal(t, http.StatusServiceUnavailable, rr.Code)
 	})
+}
+
+// TestNewTokenValidator_UserKeyedReaderRequirements pins the startup refusal of
+// a validator whose upstream token reader reads user-keyed storage but which
+// could never classify a token as an interactive session.
+func TestNewTokenValidator_UserKeyedReaderRequirements(t *testing.T) {
+	t.Parallel()
+	const issuer = "https://auth.example.com"
+
+	newStorage := func(t *testing.T) *storage.MemoryStorage {
+		t.Helper()
+		s := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	}
+	userKeyedReader := func(t *testing.T) upstreamtoken.TokenReader {
+		t.Helper()
+		wrapper, err := storage.NewUserKeyedUpstreamStorage(newStorage(t))
+		require.NoError(t, err)
+		return upstreamtoken.NewInProcessService(wrapper, nil)
+	}
+	sessionKeyedReader := func(t *testing.T) upstreamtoken.TokenReader {
+		t.Helper()
+		return upstreamtoken.NewInProcessService(newStorage(t), nil)
+	}
+
+	tests := []struct {
+		name           string
+		reader         func(t *testing.T) upstreamtoken.TokenReader
+		embeddedIssuer string
+		keyProvider    bool
+		audience       string
+		wantMissing    []string // empty: the validator is built
+	}{
+		{name: "user-keyed with all three is built", reader: userKeyedReader,
+			embeddedIssuer: issuer, keyProvider: true, audience: "aud"},
+		{name: "user-keyed without the embedded issuer is refused", reader: userKeyedReader,
+			keyProvider: true, audience: "aud", wantMissing: []string{"WithEmbeddedAuthServerIssuer"}},
+		{name: "user-keyed bound to another issuer is refused", reader: userKeyedReader,
+			embeddedIssuer: "https://other.example.com", keyProvider: true, audience: "aud",
+			wantMissing: []string{"WithEmbeddedAuthServerIssuer"}},
+		{name: "user-keyed without the key provider is refused", reader: userKeyedReader,
+			embeddedIssuer: issuer, audience: "aud", wantMissing: []string{"WithKeyProvider"}},
+		{name: "user-keyed without an audience is refused", reader: userKeyedReader,
+			embeddedIssuer: issuer, keyProvider: true, wantMissing: []string{"an audience"}},
+		{name: "user-keyed without any of them names all three", reader: userKeyedReader,
+			wantMissing: []string{"WithEmbeddedAuthServerIssuer", "WithKeyProvider", "an audience"}},
+		{name: "session-keyed storage needs none of them", reader: sessionKeyedReader},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := []TokenValidatorOption{WithUpstreamTokenReader(tt.reader(t))}
+			if tt.embeddedIssuer != "" {
+				opts = append(opts, WithEmbeddedAuthServerIssuer(tt.embeddedIssuer))
+			}
+			if tt.keyProvider {
+				opts = append(opts, WithKeyProvider(keysmocks.NewMockPublicKeyProvider(gomock.NewController(t))))
+			}
+			_, err := NewTokenValidator(t.Context(), TokenValidatorConfig{
+				Issuer: issuer, Audience: tt.audience, JWKSURL: issuer + "/jwks",
+			}, opts...)
+			if len(tt.wantMissing) == 0 {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, "keyed by user")
+			for _, setting := range []string{"WithEmbeddedAuthServerIssuer", "WithKeyProvider", "an audience"} {
+				if slices.Contains(tt.wantMissing, setting) {
+					require.ErrorContains(t, err, setting)
+				} else {
+					require.NotContains(t, err.Error(), setting)
+				}
+			}
+		})
+	}
 }

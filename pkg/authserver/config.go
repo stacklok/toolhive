@@ -2020,6 +2020,8 @@ type Config struct {
 	// not a nil-valued concrete pointer implementing UpstreamFilter — a typed-nil
 	// interface value is non-nil and will still be wired in. Has no effect with
 	// fewer than 2 configured upstreams; Validate rejects that combination.
+	// Validate also rejects it together with UserKeyedUpstreamStorage, because
+	// the read side does not apply the filter per user yet.
 	UpstreamFilter upstreamfilter.UpstreamFilter
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
@@ -2210,6 +2212,36 @@ type Config struct {
 	// 1 registration per second with a burst of 5. See the identically named
 	// field on RunConfig.
 	RegistrationRateLimit *RegistrationRateLimitRunConfig
+
+	// UserKeyedUpstreamStorage stores upstream tokens keyed by the canonical
+	// user ID instead of per login session, so a user's second client reuses
+	// their connections. The zero value keeps the session-keyed layout. It is
+	// an embedder-only option and is not part of RunConfig. Validate refuses it
+	// together with UpstreamFilter, because the read side does not apply the
+	// filter per user yet.
+	//
+	// The bearer validator loads upstream tokens for a user only when it is
+	// bound to the embedded issuer (auth.WithEmbeddedAuthServerIssuer equal to
+	// its issuer), verifies tokens with the in-process key provider
+	// (auth.WithKeyProvider), and has an audience configured.
+	// auth.NewTokenValidator refuses to start without all three when its
+	// upstream token reader reports user-keyed storage
+	// (upstreamtoken.UserKeyedReader): an InProcessService over
+	// IDPTokenStorage() does, and a reader that wraps another must forward it.
+	// Behind a reader that does not report it, a validator bound to the
+	// embedded issuer that lacks the key provider or an audience loads no
+	// upstream tokens and serves the request without them, and a validator not
+	// bound to the embedded issuer fails the load with a 503.
+	//
+	// The server wraps the storage it is given and refuses storage that
+	// already contains the in-tree user-keyed layer. Do not enable it over
+	// another decorator that keys rows by user: the server cannot detect it,
+	// rows would be keyed twice, and deletes would find nothing. Read upstream
+	// tokens through the server's IDPTokenStorage(); a token service built
+	// over the raw storage handle bypasses the user keying. Before enabling
+	// it, go through "Adopting user-keyed storage in an embedder" in
+	// docs/arch/11-auth-server-storage.md.
+	UserKeyedUpstreamStorage bool
 }
 
 // DelegateClient is the resolved form of DelegateClientRunConfig: the secret
@@ -3123,10 +3155,16 @@ func (u *UpstreamConfig) redirectURI() string {
 // 2 upstreams. handlers.computeChain consults the filter only when there is a
 // non-first upstream to narrow, so with a single upstream the filter would
 // silently never be invoked; this fails loudly instead of letting it no-op
-// without any indication to the caller.
+// without any indication to the caller. It also rejects an UpstreamFilter
+// together with UserKeyedUpstreamStorage: the read side does not apply the
+// filter per user yet.
 func (c *Config) validateUpstreamFilter() error {
 	if c.UpstreamFilter != nil && len(c.Upstreams) < 2 {
 		return fmt.Errorf("upstream_filter is configured but has no effect with fewer than 2 upstreams")
+	}
+	if c.UpstreamFilter != nil && c.UserKeyedUpstreamStorage {
+		return fmt.Errorf("UpstreamFilter cannot be combined with UserKeyedUpstreamStorage: " +
+			"the read side does not apply the filter per user yet")
 	}
 	return nil
 }

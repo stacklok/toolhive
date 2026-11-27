@@ -121,6 +121,7 @@ func (s *Server) optimizerSessionTools(
 				Name:           def.Name,
 				Description:    def.Description,
 				RawInputSchema: schemaJSON,
+				Annotations:    conversion.ToMCPToolAnnotations(def.Annotations),
 			},
 			Handler: handler,
 		})

@@ -20,6 +20,7 @@ import (
 	appconfig "github.com/stacklok/toolhive/pkg/config"
 	configmocks "github.com/stacklok/toolhive/pkg/config/mocks"
 	"github.com/stacklok/toolhive/pkg/container/templates"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	registrymocks "github.com/stacklok/toolhive/pkg/registry/mocks"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
@@ -522,6 +523,7 @@ func fullyConfiguredOld(t *testing.T) *runner.RunConfig {
 		TelemetryConfig:             &telemetry.Config{Endpoint: "otel.example:4317", ServiceName: "wl"},
 		ToolsFilter:                 []string{"safe_tool"},
 		ToolsOverride:               map[string]runner.ToolOverride{"a": {Name: "b"}},
+		Instructions:                &instructions.Config{Mode: instructions.ModeAppend, Value: "policy"},
 		MiddlewareConfigs:           []transporttypes.MiddlewareConfig{*mw},
 	}
 }
@@ -588,6 +590,7 @@ func TestApplier_Apply_PreservesFullUserConfig(t *testing.T) {
 	assert.Equal(t, old.TelemetryConfig, got.TelemetryConfig, "telemetry preserved")
 	assert.Equal(t, old.ToolsFilter, got.ToolsFilter, "tools filter preserved (security)")
 	assert.Equal(t, old.ToolsOverride, got.ToolsOverride)
+	assert.Equal(t, old.Instructions, got.Instructions, "instructions preserved")
 	assert.Equal(t, old.MiddlewareConfigs, got.MiddlewareConfigs, "middleware chain preserved")
 }
 

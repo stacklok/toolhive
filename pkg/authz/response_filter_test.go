@@ -1236,13 +1236,20 @@ func TestResponseFilteringWriter_ResourceTemplatesList_SSEForcesPrivateCaching(t
 	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 	rfw.ResponseWriter.Header().Set("Cache-Control", "public, max-age=60")
 	rfw.WriteHeader(http.StatusOK)
+	// The reverse proxy flushes an SSE response before the body arrives. For a
+	// filtered method that must not commit the head, or the backend's
+	// Cache-Control would reach the client.
 	rfw.Flush()
-	assert.Equal(t, "private, no-store", rr.Header().Get("Cache-Control"),
-		"the private cache policy must be committed before an SSE stream flushes")
+	assert.False(t, rr.Flushed, "a flush must not commit a filtered response's head")
 
 	_, err = rfw.Write([]byte("data: " + string(responseBytes) + "\n\n"))
 	require.NoError(t, err)
 	require.NoError(t, rfw.FlushAndFilter())
+
+	committed := rr.Result()
+	t.Cleanup(func() { _ = committed.Body.Close() })
+	assert.Equal(t, "private, no-store", committed.Header.Get("Cache-Control"),
+		"the committed head must carry the private cache policy")
 
 	events := parseSSEStream(t, rr.Body.Bytes())
 	require.Len(t, events, 1)
@@ -1654,10 +1661,9 @@ func TestResponseFilteringWriter_ContentLengthMismatch(t *testing.T) {
 		// directly to the real http.ResponseWriter.
 		//
 		// FlushInterval: -1 matches the production transparent proxy
-		// (transparent_proxy.go), which flushes after every write. This is
-		// critical: the flush triggers an implicit WriteHeader on the real
-		// writer, sending headers (including any stale Content-Length) to
-		// the wire before FlushAndFilter() runs.
+		// (transparent_proxy.go), which flushes after every write. The
+		// stale Content-Length must not survive to whichever call commits
+		// the head.
 		proxy := httputil.NewSingleHostReverseProxy(backendURL)
 		proxy.FlushInterval = -1
 		proxy.ServeHTTP(filteringWriter, r)

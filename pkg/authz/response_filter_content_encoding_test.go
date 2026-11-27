@@ -118,6 +118,8 @@ func TestResponseFilteringWriter_ContentEncodedListFailsClosed(t *testing.T) {
 				return
 			}
 
+			assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+			assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 			assert.Empty(t, resp.Header.Get("Content-Encoding"),
 				"the replacement error body is plain JSON and must not carry the backend's encoding")
 			assert.NotContains(t, string(body), "admin_tool")
@@ -129,7 +131,8 @@ func TestResponseFilteringWriter_ContentEncodedListFailsClosed(t *testing.T) {
 
 // TestResponseFilteringWriter_ContentEncodedWithoutReverseProxy covers writers
 // that reach the filter by paths httputil.ReverseProxy never takes: a Write with
-// no WriteHeader, and a Flush that commits headers before FlushAndFilter runs.
+// no WriteHeader, and a Flush before or after the body, which must leave the
+// head for FlushAndFilter to rewrite.
 func TestResponseFilteringWriter_ContentEncodedWithoutReverseProxy(t *testing.T) {
 	t.Parallel()
 
@@ -148,10 +151,10 @@ func TestResponseFilteringWriter_ContentEncodedWithoutReverseProxy(t *testing.T)
 		// method the filter was built for.
 		method string
 		drive  func(rfw *ResponseFilteringWriter)
-		// wantRejected expects the 500 JSON-RPC error in place of the body.
+		// wantRejected expects the JSON-RPC error in place of the body.
 		wantRejected bool
-		// wantStatus is the forwarded status when the response is not rejected.
-		// Zero means 200.
+		// wantStatus is the status the client sees. Zero means 500 for a
+		// rejected response and 200 otherwise.
 		wantStatus int
 	}{
 		{
@@ -174,7 +177,7 @@ func TestResponseFilteringWriter_ContentEncodedWithoutReverseProxy(t *testing.T)
 			wantRejected: true,
 		},
 		{
-			name:   "flushed event stream commits the rejection head",
+			name:   "flushed event stream is still rejected",
 			method: string(mcp.MethodToolsList),
 			drive: func(rfw *ResponseFilteringWriter) {
 				backendHeaders(rfw.Header(), "text/event-stream")
@@ -205,17 +208,18 @@ func TestResponseFilteringWriter_ContentEncodedWithoutReverseProxy(t *testing.T)
 			},
 		},
 		{
-			// Only a 2xx can carry a list, so an encoded error status is
-			// forwarded intact rather than replaced by an opaque 500 -- a client
-			// whose session expired still sees the 404 it needs to act on.
-			name:   "encoded non-2xx keeps the backend status",
+			// A non-2xx body can carry a list too, so it is replaced like any
+			// other, but its status is kept: a client whose session expired
+			// still sees the 404 it needs to act on.
+			name:   "encoded non-2xx keeps the backend status and loses the body",
 			method: string(mcp.MethodToolsList),
 			drive: func(rfw *ResponseFilteringWriter) {
 				backendHeaders(rfw.Header(), "application/json")
 				rfw.WriteHeader(http.StatusNotFound)
 				_, _ = rfw.Write(opaque)
 			},
-			wantStatus: http.StatusNotFound,
+			wantRejected: true,
+			wantStatus:   http.StatusNotFound,
 		},
 	}
 
@@ -236,14 +240,13 @@ func TestResponseFilteringWriter_ContentEncodedWithoutReverseProxy(t *testing.T)
 			require.NoError(t, err)
 
 			if !tt.wantRejected {
-				wantStatus := cmp.Or(tt.wantStatus, http.StatusOK)
-				assert.Equal(t, wantStatus, resp.StatusCode)
+				assert.Equal(t, cmp.Or(tt.wantStatus, http.StatusOK), resp.StatusCode)
 				assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
 				assert.Equal(t, opaque, body)
 				return
 			}
 
-			assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+			assert.Equal(t, cmp.Or(tt.wantStatus, http.StatusInternalServerError), resp.StatusCode)
 			assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 			for _, h := range []string{"Content-Encoding", "Content-Length", "ETag", "Content-MD5", "Content-Range"} {
 				assert.Empty(t, resp.Header.Get(h), "%s describes the backend body, not the error", h)

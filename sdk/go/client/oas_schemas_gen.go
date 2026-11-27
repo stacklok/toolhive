@@ -6023,6 +6023,49 @@ type InstallSkillUnauthorizedApplicationJSON string
 
 func (*InstallSkillUnauthorizedApplicationJSON) installSkillRes() {}
 
+// Instructions sets the instructions clients receive in the server's
+// initialize and server/discover results.
+// Ref: #/components/schemas/InstructionsConfig
+type InstructionsConfig struct {
+	// Mode says how value combines with the instructions the server returns.
+	// replace returns value alone. append returns the server's instructions,
+	// a blank line, and value. prepend returns value, a blank line, and the
+	// server's instructions. When the server returns no instructions, every
+	// mode returns value alone.
+	// +kubebuilder:validation:Enum=replace;append;prepend
+	// +kubebuilder:default=append
+	// +optional.
+	Mode OptString `json:"mode"`
+	// Value is the text that mode combines with the server's instructions.
+	// Leading and trailing ASCII white space (tab, LF, FF, CR, space) is
+	// dropped, and a value that is only such white space is rejected.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=65536
+	// +kubebuilder:validation:Pattern=`\S`.
+	Value OptString `json:"value"`
+}
+
+// GetMode returns the value of Mode.
+func (s *InstructionsConfig) GetMode() OptString {
+	return s.Mode
+}
+
+// GetValue returns the value of Value.
+func (s *InstructionsConfig) GetValue() OptString {
+	return s.Value
+}
+
+// SetMode sets the value of Mode.
+func (s *InstructionsConfig) SetMode(val OptString) {
+	s.Mode = val
+}
+
+// SetValue sets the value of Value.
+func (s *InstructionsConfig) SetValue(val OptString) {
+	s.Value = val
+}
+
 type ListDefaultSecretKeysInternalServerErrorApplicationJSON string
 
 func (*ListDefaultSecretKeysInternalServerErrorApplicationJSON) listDefaultSecretKeysRes() {}
@@ -9347,6 +9390,52 @@ func (o OptIgnoreConfig) Get() (v IgnoreConfig, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptIgnoreConfig) Or(d IgnoreConfig) IgnoreConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptInstructionsConfig returns new OptInstructionsConfig with value set to v.
+func NewOptInstructionsConfig(v InstructionsConfig) OptInstructionsConfig {
+	return OptInstructionsConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptInstructionsConfig is optional InstructionsConfig.
+type OptInstructionsConfig struct {
+	Value InstructionsConfig
+	Set   bool
+}
+
+// IsSet returns true if OptInstructionsConfig was set.
+func (o OptInstructionsConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptInstructionsConfig) Reset() {
+	var v InstructionsConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptInstructionsConfig) SetTo(v InstructionsConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptInstructionsConfig) Get() (v InstructionsConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptInstructionsConfig) Or(d InstructionsConfig) InstructionsConfig {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -18433,7 +18522,8 @@ type RunnerRunConfig struct {
 	Host         OptString       `json:"host"`
 	IgnoreConfig OptIgnoreConfig `json:"ignore_config"`
 	// Image is the Docker image to run.
-	Image OptString `json:"image"`
+	Image        OptString             `json:"image"`
+	Instructions OptInstructionsConfig `json:"instructions"`
 	// IsolateNetwork indicates whether to isolate the network for the container.
 	IsolateNetwork OptBool `json:"isolate_network"`
 	// DEPRECATED: No longer appears to be used.
@@ -18656,6 +18746,11 @@ func (s *RunnerRunConfig) GetIgnoreConfig() OptIgnoreConfig {
 // GetImage returns the value of Image.
 func (s *RunnerRunConfig) GetImage() OptString {
 	return s.Image
+}
+
+// GetInstructions returns the value of Instructions.
+func (s *RunnerRunConfig) GetInstructions() OptInstructionsConfig {
+	return s.Instructions
 }
 
 // GetIsolateNetwork returns the value of IsolateNetwork.
@@ -18971,6 +19066,11 @@ func (s *RunnerRunConfig) SetIgnoreConfig(val OptIgnoreConfig) {
 // SetImage sets the value of Image.
 func (s *RunnerRunConfig) SetImage(val OptString) {
 	s.Image = val
+}
+
+// SetInstructions sets the value of Instructions.
+func (s *RunnerRunConfig) SetInstructions(val OptInstructionsConfig) {
+	s.Instructions = val
 }
 
 // SetIsolateNetwork sets the value of IsolateNetwork.

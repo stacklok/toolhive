@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -271,6 +272,10 @@ type RunConfig struct {
 	// DEPRECATED: Middleware configuration.
 	// ToolsOverride is a map from an actual tool to its overridden name and/or description
 	ToolsOverride map[string]ToolOverride `json:"tools_override,omitempty" yaml:"tools_override,omitempty"`
+
+	// Instructions sets the instructions clients receive in the server's
+	// initialize and server/discover results.
+	Instructions *instructions.Config `json:"instructions,omitempty" yaml:"instructions,omitempty"`
 
 	// IgnoreConfig contains configuration for ignore processing
 	IgnoreConfig *ignore.Config `json:"ignore_config,omitempty" yaml:"ignore_config,omitempty"`

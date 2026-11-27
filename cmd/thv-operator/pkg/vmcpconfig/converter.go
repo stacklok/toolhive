@@ -5,6 +5,7 @@
 package vmcpconfig
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 
@@ -129,6 +130,10 @@ func (c *Converter) Convert(
 	if len(vmcp.Spec.PassthroughHeaders) > 0 {
 		config.PassthroughHeaders = vmcp.Spec.PassthroughHeaders
 	}
+
+	// Promoted top-level field. Admission rejects setting it together with
+	// spec.config.instructions, which otherwise passes through as is.
+	config.Instructions = cmp.Or(vmcp.Spec.Instructions.DeepCopy(), config.Instructions)
 
 	// Override name with the CR name (authoritative source)
 	config.Name = vmcp.Name

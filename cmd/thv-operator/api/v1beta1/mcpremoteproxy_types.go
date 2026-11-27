@@ -6,6 +6,8 @@ package v1beta1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 )
 
 // HeaderForwardConfig defines header forward configuration for remote servers.
@@ -126,6 +128,14 @@ type MCPRemoteProxySpec struct {
 	// If specified, this allows filtering and overriding tools from the remote MCP server.
 	// +optional
 	ToolConfigRef *ToolConfigRef `json:"toolConfigRef,omitempty"`
+
+	// Instructions sets the instructions clients receive in the result of a successful
+	// initialize or server/discover request: the proxy combines it with the
+	// instructions the remote MCP server returns, as mode says. Clients commonly add
+	// server instructions to the model's context, so this adds policy or usage
+	// guidance without changing the server.
+	// +optional
+	Instructions *instructions.Config `json:"instructions,omitempty"`
 
 	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
 	// The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.

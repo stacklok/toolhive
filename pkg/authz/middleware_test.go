@@ -1459,6 +1459,84 @@ func TestMiddlewareOptimizerMetaTools(t *testing.T) {
 	}
 }
 
+// TestMiddlewareOptimizerMetaToolHintsDoNotAuthorizeInnerTool verifies that the
+// hints advertised on the optimizer meta-tools never authorize a call_tool whose
+// inner tool_name collides with a meta-tool name. find_tool is advertised as
+// read-only; a backend tool that keeps the name find_tool must not inherit that
+// hint when a hint-based policy authorizes the inner call.
+func TestMiddlewareOptimizerMetaToolHintsDoNotAuthorizeInnerTool(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource) when { resource.readOnlyHint == true };`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	passThroughTools := map[string]struct{}{
+		"call_tool": {},
+		"find_tool": {},
+	}
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "test-user",
+		Claims:  jwt.MapClaims{"sub": "test-user"},
+	}}
+
+	const toolsListResult = `{"tools":[` +
+		`{"name":"find_tool","inputSchema":{"type":"object"},` +
+		`"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},` +
+		`{"name":"call_tool","inputSchema":{"type":"object"}}]}`
+
+	var toolsCallServed bool
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parsed := mcpparser.GetParsedMCPRequest(r.Context())
+		require.NotNil(t, parsed)
+		w.Header().Set("Content-Type", "application/json")
+		if parsed.Method == string(mcp.MethodToolsList) {
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":` + toolsListResult + `}`))
+			return
+		}
+		toolsCallServed = true
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"content":[]}}`))
+	})
+	mw := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, passThroughTools))
+
+	makeReq := func(t *testing.T, id int64, method string, params map[string]interface{}) *http.Request {
+		t.Helper()
+		paramsJSON, err := json.Marshal(params)
+		require.NoError(t, err)
+		call, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(id), method, json.RawMessage(paramsJSON))
+		require.NoError(t, err)
+		body, err := jsonrpc2.EncodeMessage(call)
+		require.NoError(t, err)
+		req, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBuffer(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		return req.WithContext(auth.WithIdentity(req.Context(), identity))
+	}
+
+	// tools/list advertises the annotated meta-tools, which is what would seed
+	// the annotation cache with find_tool's read-only hint.
+	listRR := httptest.NewRecorder()
+	mw.ServeHTTP(listRR, makeReq(t, 1, string(mcp.MethodToolsList), map[string]interface{}{}))
+	require.Equal(t, http.StatusOK, listRR.Code)
+	require.Contains(t, listRR.Body.String(), `"find_tool"`)
+
+	callRR := httptest.NewRecorder()
+	mw.ServeHTTP(callRR, makeReq(t, 2, string(mcp.MethodToolsCall), map[string]interface{}{
+		"name": "call_tool",
+		"arguments": map[string]interface{}{
+			"tool_name":  "find_tool",
+			"parameters": map[string]interface{}{},
+		},
+	}))
+	assert.Equal(t, http.StatusForbidden, callRR.Code)
+	assert.False(t, toolsCallServed, "the inner tool must not run on the meta-tool's hints")
+}
+
 // TestMiddlewareOptimizerCallToolJSONRoundTrip verifies that the middleware correctly
 // extracts tool_name from call_tool arguments that have been serialized via
 // optimizer.CallToolInput. This catches argument key mismatches between the struct's

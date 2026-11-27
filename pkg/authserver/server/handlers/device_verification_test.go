@@ -4,9 +4,11 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -767,4 +770,99 @@ func TestDeviceVerification_CompletionRefusesWhenUpstreamIsNoLongerFirst(t *test
 	assert.Equal(t, http.StatusForbidden, rec.Code, "body: %s", rec.Body.String())
 	_, err := h.storage.GetProviderIdentity(context.Background(), "test-upstream", "upstream-subject-1")
 	assert.ErrorIs(t, err, storage.ErrNotFound, "no identity link may be created")
+}
+
+// rowSwappingStorage runs afterRead once after the first upstream token read,
+// so a test can change the user's row between the login's read and its write.
+type rowSwappingStorage struct {
+	storage.Storage
+	afterRead func()
+	once      sync.Once
+}
+
+func (s *rowSwappingStorage) Unwrap() storage.Storage { return s.Storage }
+
+func (s *rowSwappingStorage) GetUpstreamTokens(
+	ctx context.Context, sessionID, providerName string,
+) (*storage.UpstreamTokens, error) {
+	tokens, err := s.Storage.GetUpstreamTokens(ctx, sessionID, providerName)
+	s.once.Do(s.afterRead)
+	return tokens, err
+}
+
+// An account conflict at the shared user row fails the confirmation with a 500
+// before the device request is authorized, and the conflict is logged once at
+// WARN by the store, not again as a storage failure.
+//
+//nolint:paralleltest // mutates the process-global slog default (slog.SetDefault)
+func TestDeviceVerificationConfirmHandler_UpstreamAccountConflict(t *testing.T) {
+	const (
+		userID       = "user-id"
+		providerName = "test-upstream"
+	)
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	mem := storage.NewMemoryStorage()
+	ctx := context.Background()
+	require.NoError(t, mem.RegisterClient(ctx, &fosite.DefaultClient{
+		ID: "device-client", GrantTypes: []string{oauthproto.GrantTypeDeviceCode},
+		Scopes: []string{"openid"}, Public: true,
+	}))
+	userKeyed, err := storage.NewUserKeyedUpstreamStorage(mem)
+	require.NoError(t, err)
+
+	userCtx := serveridentity.WithCanonicalUser(ctx, userID)
+	row := func(rt, subject string) *storage.UpstreamTokens {
+		return &storage.UpstreamTokens{
+			ProviderID: providerName, AccessToken: "old-access", RefreshToken: rt,
+			ExpiresAt: time.Now().Add(time.Hour), ClientID: "device-client",
+			UserID: userID, UpstreamSubject: subject,
+		}
+	}
+	require.NoError(t, userKeyed.StoreUpstreamTokens(userCtx, "seed", providerName, row("rt-current", "upstream-subject-1")))
+	stor := &rowSwappingStorage{Storage: userKeyed}
+	stor.afterRead = func() {
+		assert.NoError(t, userKeyed.StoreUpstreamTokens(userCtx, "seed", providerName, row("rt-rotated", "someone-else")))
+	}
+
+	fositeConfig := &fosite.Config{}
+	config := &server.AuthorizationServerConfig{
+		Config: fositeConfig, ScopesSupported: []string{"openid"}, DeviceFlowEnabled: true,
+	}
+	h, err := NewHandler(fosite.NewOAuth2Provider(stor, fositeConfig), config, stor,
+		[]NamedUpstream{{Name: providerName, Provider: &mockIDPProvider{providerType: upstream.ProviderTypeOAuth2}}})
+	require.NoError(t, err)
+
+	deviceCode, userCode := issueDeviceCode(t, h)
+	const confirmToken = "confirm-token"
+	require.NoError(t, stor.StorePendingDeviceConfirmation(ctx, confirmToken, &storage.PendingDeviceConfirmation{
+		DeviceCode: deviceCode, UserCode: userCode, ResolvedUserID: userID,
+		UpstreamTokens: &storage.UpstreamTokens{
+			ProviderID: providerName, AccessToken: "new-access", ExpiresAt: time.Now().Add(time.Hour),
+			ClientID: "device-client", UpstreamSubject: "upstream-subject-1",
+		},
+	}))
+
+	form := url.Values{"confirm_token": {confirmToken}, "action": {"approve"}}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/device/confirm", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	h.DeviceVerificationConfirmHandler(rec, req)
+
+	assert.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
+	device, err := mem.LoadDeviceRequestByDeviceCode(ctx, deviceCode)
+	require.NoError(t, err)
+	assert.Equal(t, storage.DeviceRequestStatusPending, device.Status, "MarkDeviceRequestAuthorized must not run")
+	assert.NotContains(t, logs.String(), "failed to store upstream tokens")
+	const conflictMsg = "kept upstream row of a different account"
+	assert.Equal(t, 1, strings.Count(logs.String(), conflictMsg))
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, conflictMsg) {
+			assert.Contains(t, line, "level=WARN")
+			assert.NotContains(t, line, "user_id=")
+		}
+	}
 }

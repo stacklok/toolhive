@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -46,6 +47,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		mcp.ParserMiddlewareType:              mcp.CreateParserMiddleware,
 		mcp.ToolFilterMiddlewareType:          mcp.CreateToolFilterMiddleware,
 		mcp.ToolCallFilterMiddlewareType:      mcp.CreateToolCallFilterMiddleware,
+		mcp.InstructionsMiddlewareType:        mcp.CreateInstructionsMiddleware,
 		ratelimit.MiddlewareType:              ratelimit.CreateMiddleware,
 		usagemetrics.MiddlewareType:           usagemetrics.CreateMiddleware,
 		telemetry.MiddlewareType:              telemetry.CreateMiddleware,
@@ -173,6 +175,13 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 		return fmt.Errorf("failed to create MCP parser middleware config: %w", err)
 	}
 	middlewareConfigs = append(middlewareConfigs, *mcpParserConfig)
+
+	// Instructions middleware (if configured). See addInstructionsMiddleware.
+	middlewareConfigs, err = addInstructionsMiddleware(
+		middlewareConfigs, config.Instructions, types.EffectiveProxyMode(config.Transport, config.ProxyMode))
+	if err != nil {
+		return err
+	}
 
 	// Telemetry middleware (if enabled).
 	// Positioned after MCP parsing and before rate limiting so the limiter can
@@ -302,6 +311,32 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	// Set the populated middleware configs
 	config.MiddlewareConfigs = middlewareConfigs
 	return nil
+}
+
+// addInstructionsMiddleware appends the instructions middleware when
+// configured is set. It reads the parsed request to find initialize and
+// server/discover requests, so it goes inside the MCP parser. Middleware
+// outside it (audit, the tool filter) sees the rewritten result. proxyMode is
+// the transport clients speak, which decides whether the middleware reads
+// the legacy SSE event stream or POST responses (see
+// mcp.InstructionsMiddlewareParams).
+func addInstructionsMiddleware(
+	middlewareConfigs []types.MiddlewareConfig,
+	configured *instructions.Config,
+	proxyMode types.ProxyMode,
+) ([]types.MiddlewareConfig, error) {
+	if configured == nil {
+		return middlewareConfigs, nil
+	}
+	params := mcp.InstructionsMiddlewareParams{
+		Instructions: *configured,
+		LegacySSE:    proxyMode == types.ProxyModeSSE,
+	}
+	instructionsConfig, err := types.NewMiddlewareConfig(mcp.InstructionsMiddlewareType, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create instructions middleware config: %w", err)
+	}
+	return append(middlewareConfigs, *instructionsConfig), nil
 }
 
 // oboSubjectProviderKey is the obo.MiddlewareParameters JSON key that selects

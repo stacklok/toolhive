@@ -4,6 +4,7 @@
 - [toolhive.stacklok.dev/audit](#toolhivestacklokdevaudit)
 - [toolhive.stacklok.dev/authtypes](#toolhivestacklokdevauthtypes)
 - [toolhive.stacklok.dev/config](#toolhivestacklokdevconfig)
+- [toolhive.stacklok.dev/instructions](#toolhivestacklokdevinstructions)
 - [toolhive.stacklok.dev/json](#toolhivestacklokdevjson)
 - [toolhive.stacklok.dev/ratelimit](#toolhivestacklokdevratelimit)
 - [toolhive.stacklok.dev/redisconfig](#toolhivestacklokdevredisconfig)
@@ -426,6 +427,7 @@ _Appears in:_
 | `sessionStorage` _[vmcp.config.SessionStorageConfig](#vmcpconfigsessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When provider is "redis", the operator injects Redis connection parameters<br />(address, db, keyPrefix) here. The Redis password is provided separately via<br />the THV_SESSION_REDIS_PASSWORD environment variable. |  | Optional: \{\} <br /> |
 | `rateLimiting` _[ratelimit.types.RateLimitConfig](#ratelimittypesratelimitconfig)_ | RateLimiting defines rate limiting configuration for the Virtual MCP server.<br />Requires Redis session storage to be configured for distributed rate limiting. |  | Optional: \{\} <br /> |
 | `passthroughHeaders` _string array_ | PassthroughHeaders is an allowlist of incoming client request header names<br />forwarded verbatim to all backends. Captured per request at the vMCP<br />incoming edge by headerforward.CaptureMiddleware: tool calls, resource<br />reads and prompt gets carry the values from the request that triggered<br />them, and a header absent on that request is not forwarded. Session-scoped<br />work (the session's backend connections, its advertised capability list,<br />and background capability resyncs) uses the values from the request that<br />created the session. Names must not be in the restricted set (Host,<br />hop-by-hop, X-Forwarded-*, etc.). |  | Optional: \{\} <br /> |
+| `instructions` _[mcp.instructions.Config](#mcpinstructionsconfig)_ | Instructions sets the instructions clients receive in the result of a<br />successful initialize or server/discover request: vMCP combines it with<br />any instructions it produces, as mode says. A VirtualMCPServer sets<br />either spec.instructions or this field, not both. |  | Type: object <br />Optional: \{\} <br /> |
 
 
 #### vmcp.config.ConflictResolutionConfig
@@ -914,6 +916,35 @@ _Appears in:_
 | `filter` _string array_ | Filter is an allow-list of tool names to advertise to MCP clients.<br />Tools NOT in this list are hidden from clients (not in tools/list response)<br />but remain available in the routing table for composite tools to use.<br />This enables selective exposure of backend tools while allowing composite<br />workflows to orchestrate all backend capabilities.<br />Only used if ToolConfigRef is not specified. |  | Optional: \{\} <br /> |
 | `overrides` _object (keys:string, values:[vmcp.config.ToolOverride](#vmcpconfigtooloverride))_ | Overrides is an inline map of tool overrides for renaming and description changes.<br />Overrides are applied to tools before conflict resolution and affect both<br />advertising and routing (the overridden name is used everywhere).<br />Only used if ToolConfigRef is not specified. |  | Optional: \{\} <br /> |
 | `excludeAll` _boolean_ | ExcludeAll hides all tools from this workload from MCP clients when true.<br />Hidden tools are NOT advertised in tools/list responses, but they ARE<br />available in the routing table for composite tools to use.<br />This enables the use case where you want to hide raw backend tools from<br />direct client access while exposing curated composite tool workflows. |  | Optional: \{\} <br /> |
+
+
+
+
+
+## toolhive.stacklok.dev/instructions
+
+
+#### mcp.instructions.Config
+
+
+
+Config sets the instructions an MCP endpoint returns to clients in the
+result of a successful initialize or server/discover request. Clients
+commonly add server instructions to the model's context, so this is where
+an operator adds policy or usage guidance without changing the server.
+
+
+
+_Appears in:_
+- [vmcp.config.Config](#vmcpconfigconfig)
+- [api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
+- [api.v1beta1.VirtualMCPServerSpec](#apiv1beta1virtualmcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `mode` _[mcp.instructions.Mode](#mcpinstructionsmode)_ | Mode says how value combines with the instructions the server returns.<br />replace returns value alone. append returns the server's instructions,<br />a blank line, and value. prepend returns value, a blank line, and the<br />server's instructions. When the server returns no instructions, every<br />mode returns value alone. | append | Enum: [replace append prepend] <br />Optional: \{\} <br /> |
+| `value` _string_ | Value is the text that mode combines with the server's instructions.<br />Leading and trailing ASCII white space (tab, LF, FF, CR, space) is<br />dropped, and a value that is only such white space is rejected. |  | MaxLength: 65536 <br />MinLength: 1 <br />Pattern: `\S` <br />Required: \{\} <br /> |
 
 
 
@@ -3202,6 +3233,7 @@ _Appears in:_
 | `authzConfigRef` _[api.v1beta1.MCPAuthzConfigReference](#apiv1beta1mcpauthzconfigreference)_ | AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.<br />The referenced MCPAuthzConfig must exist in the same namespace as this MCPRemoteProxy.<br />Mutually exclusive with authzConfig. |  | Optional: \{\} <br /> |
 | `audit` _[api.v1beta1.AuditConfig](#apiv1beta1auditconfig)_ | Audit defines audit logging configuration for the proxy |  | Optional: \{\} <br /> |
 | `toolConfigRef` _[api.v1beta1.ToolConfigRef](#apiv1beta1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this allows filtering and overriding tools from the remote MCP server. |  | Optional: \{\} <br /> |
+| `instructions` _[mcp.instructions.Config](#mcpinstructionsconfig)_ | Instructions sets the instructions clients receive in the result of a successful<br />initialize or server/discover request: the proxy combines it with the<br />instructions the remote MCP server returns, as mode says. Clients commonly add<br />server instructions to the model's context, so this adds policy or usage<br />guidance without changing the server. |  | Type: object <br />Optional: \{\} <br /> |
 | `telemetryConfigRef` _[api.v1beta1.MCPTelemetryConfigReference](#apiv1beta1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
 | `resources` _[api.v1beta1.ResourceRequirements](#apiv1beta1resourcerequirements)_ | Resources defines the resource requirements for the proxy container.<br />Unset fields fall back to defaults: requests of 50m CPU and 64Mi memory,<br />limits of 200m CPU and 256Mi memory. Resources set on the "toolhive"<br />container through podTemplateSpec take precedence over this field.<br />A limit set without a request, here or in podTemplateSpec, drops the<br />default request so Kubernetes copies the limit into the request as usual.<br />A request set without a limit raises the default limit to match if the<br />request is above it. Requests and limits the user sets explicitly are used as given. |  | Optional: \{\} <br /> |
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the proxy.<br />If not specified, a ServiceAccount will be created automatically and used by the proxy. |  | Optional: \{\} <br /> |
@@ -3442,6 +3474,7 @@ _Appears in:_
 | `authzConfigRef` _[api.v1beta1.MCPAuthzConfigReference](#apiv1beta1mcpauthzconfigreference)_ | AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.<br />The referenced MCPAuthzConfig must exist in the same namespace as this MCPServer.<br />Mutually exclusive with authzConfig. |  | Optional: \{\} <br /> |
 | `audit` _[api.v1beta1.AuditConfig](#apiv1beta1auditconfig)_ | Audit defines audit logging configuration for the MCP server |  | Optional: \{\} <br /> |
 | `toolConfigRef` _[api.v1beta1.ToolConfigRef](#apiv1beta1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
+| `instructions` _[mcp.instructions.Config](#mcpinstructionsconfig)_ | Instructions sets the instructions clients receive in the result of a successful<br />initialize or server/discover request: the proxy combines it with the<br />instructions the MCP server returns, as mode says. Clients commonly add server<br />instructions to the model's context, so this adds policy or usage guidance<br />without changing the server. |  | Type: object <br />Optional: \{\} <br /> |
 | `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource for external authentication.<br />Supported types are tokenExchange, unauthenticated, embeddedAuthServer, and<br />obo. For new embedded authorization<br />server configurations, prefer AuthServerRef. headerInjection, upstreamInject,<br />and xaa are accepted but not applied by the MCPServer: they take effect when<br />a VirtualMCPServer discovers this server as a backend. Other types are<br />reported in status.conditions with Reason: UnsupportedAuthType.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer. |  | Optional: \{\} <br /> |
 | `webhookConfigRef` _[api.v1beta1.WebhookConfigRef](#apiv1beta1webhookconfigref)_ | WebhookConfigRef references a MCPWebhookConfig resource for webhook middleware configuration.<br />The referenced MCPWebhookConfig must exist in the same namespace as this MCPServer. |  | Optional: \{\} <br /> |
 | `authServerRef` _[api.v1beta1.AuthServerRef](#apiv1beta1authserverref)_ | AuthServerRef optionally references a resource that configures an embedded<br />OAuth 2.0/OIDC authorization server to authenticate MCP clients.<br />Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer). |  | Optional: \{\} <br /> |
@@ -5129,6 +5162,7 @@ _Appears in:_
 | `incomingAuth` _[api.v1beta1.IncomingAuthConfig](#apiv1beta1incomingauthconfig)_ | IncomingAuth configures authentication for clients connecting to the Virtual MCP server.<br />Must be explicitly set - use "anonymous" type when no authentication is required.<br />This field takes precedence over config.IncomingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  | Required: \{\} <br /> |
 | `outgoingAuth` _[api.v1beta1.OutgoingAuthConfig](#apiv1beta1outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend resources.<br />This field takes precedence over config.OutgoingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config.<br />Referenced MCPExternalAuthConfig types supported by VirtualMCPServer are tokenExchange,<br />headerInjection, unauthenticated, awsSts, upstreamInject, xaa, and obo.<br />Unsupported types are reported per backend in<br />status.conditions with Reason: UnsupportedAuthType. |  | Optional: \{\} <br /> |
 | `passthroughHeaders` _string array_ | PassthroughHeaders is an allowlist of incoming client request header names<br />forwarded verbatim to all backends (e.g. an API key the backend resolves to<br />a user). Takes precedence over config.PassthroughHeaders. Names must not be<br />restricted headers (Host, hop-by-hop, X-Forwarded-*). Forwarded headers are<br />attacker-influenceable unless a trusted upstream sets them. |  | Optional: \{\} <br /> |
+| `instructions` _[mcp.instructions.Config](#mcpinstructionsconfig)_ | Instructions sets the instructions clients receive in the result of a successful<br />initialize or server/discover request: the Virtual MCP server combines it with<br />any instructions it produces, as mode says. Clients commonly add server<br />instructions to the model's context, so this adds policy or usage guidance<br />without changing the server. Set this or config.instructions, not both. |  | Type: object <br />Optional: \{\} <br /> |
 | `serviceType` _string_ | ServiceType specifies the Kubernetes service type for the Virtual MCP server | ClusterIP | Enum: [ClusterIP NodePort LoadBalancer] <br />Optional: \{\} <br /> |
 | `sessionAffinity` _string_ | SessionAffinity controls whether the Service routes repeated client connections to the same pod.<br />MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.<br />Set to "None" for stateless servers or when using an external load balancer with its own affinity. | ClientIP | Enum: [ClientIP None] <br />Optional: \{\} <br /> |
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the Virtual MCP server.<br />If not specified, a ServiceAccount will be created automatically and used by the Virtual MCP server. |  | Optional: \{\} <br /> |

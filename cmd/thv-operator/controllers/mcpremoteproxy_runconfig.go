@@ -111,6 +111,9 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		options = append(options, runner.WithToolsOverride(toolsOverride))
 	}
 
+	// Add instructions if present
+	options = append(options, runner.WithInstructions(proxy.Spec.Instructions.DeepCopy()))
+
 	// Add telemetry configuration from TelemetryConfigRef
 	if err := r.addTelemetryOptions(ctx, proxy, &options); err != nil {
 		return nil, err

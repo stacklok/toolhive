@@ -472,6 +472,13 @@ func (s *WorkloadService) BuildFullRunConfig(
 	// set. Mirrors what the CLI does in configureMiddlewareAndAuthOptions.
 	telemetry.ResolveServiceName(telemetryConfig, req.Name)
 
+	// Instructions - not supported via API yet. An edit keeps the ones set
+	// with thv run, as the upgrade applier does. This must come before the
+	// middleware options, which read them.
+	if persisted != nil {
+		options = append(options, runner.WithInstructions(persisted.Instructions))
+	}
+
 	// Configure middleware from flags
 	options = append(options,
 		runner.WithMiddlewareFromFlags(

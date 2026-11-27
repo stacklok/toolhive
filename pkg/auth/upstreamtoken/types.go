@@ -47,6 +47,19 @@ type UpstreamCredential struct {
 	IDToken     string
 }
 
+// UserKeyedReader is implemented by a TokenReader that reads upstream tokens
+// from storage keyed by user (the user-keyed layer of the embedded
+// authorization server). auth.NewTokenValidator uses it to refuse, at startup, a
+// validator that could not load such tokens for an interactive session.
+//
+// A TokenReader that wraps another must implement it and forward the wrapped
+// reader's answer; otherwise the validator cannot see the user-keyed storage
+// behind it, and a misconfiguration only shows up at request time.
+type UserKeyedReader interface {
+	// UserKeyed reports whether the reader's storage is keyed by user.
+	UserKeyed() bool
+}
+
 // TokenReader retrieves upstream provider credentials for a session.
 // This narrow interface decouples the auth middleware from storage internals.
 type TokenReader interface {
@@ -124,7 +137,9 @@ type UserCredentialReader interface {
 	// When only the ID token needed refreshing and the access token is still
 	// live, a failed refresh, including invalid_grant, returns the stored
 	// credential and is logged at WARN; needs-authorization follows once the
-	// access token expires. See InProcessService.GetValidTokensForUser for the
+	// access token expires. A refresh after which the refresher removed or
+	// cleared the row, because it could not save a rotated refresh token, needs
+	// authorization at once. See InProcessService.GetValidTokensForUser for the
 	// full contract.
 	GetValidTokensForUser(ctx context.Context, userID, providerName string) (*UpstreamCredential, error)
 }

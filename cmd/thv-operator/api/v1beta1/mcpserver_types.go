@@ -8,6 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
 )
 
@@ -346,6 +347,14 @@ type MCPServerSpec struct {
 	// Cross-namespace references are not supported for security and isolation reasons.
 	// +optional
 	ToolConfigRef *ToolConfigRef `json:"toolConfigRef,omitempty"`
+
+	// Instructions sets the instructions clients receive in the result of a successful
+	// initialize or server/discover request: the proxy combines it with the
+	// instructions the MCP server returns, as mode says. Clients commonly add server
+	// instructions to the model's context, so this adds policy or usage guidance
+	// without changing the server.
+	// +optional
+	Instructions *instructions.Config `json:"instructions,omitempty"`
 
 	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource for external authentication.
 	// Supported types are tokenExchange, unauthenticated, embeddedAuthServer, and

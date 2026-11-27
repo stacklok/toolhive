@@ -96,7 +96,8 @@ func (c *upstreamCredentials) readDelegatedCredential(
 		return nil, authtypes.NewDelegatedAuthRequiredError(provider, upstreamtoken.ErrNeedsAuthorization)
 	case errors.Is(err, upstreamtoken.ErrInvalidBinding):
 		slog.ErrorContext(ctx, "delegated credential lookup has invalid binding", "provider", provider)
-	case errors.Is(err, upstreamtoken.ErrSessionNotFound), errors.Is(err, upstreamtoken.ErrNoCanonicalUser):
+	case errors.Is(err, upstreamtoken.ErrSessionNotFound), errors.Is(err, upstreamtoken.ErrNoCanonicalUser),
+		errors.Is(err, upstreamtoken.ErrNoRefreshToken):
 		// Persistent per-user conditions; WARN would repeat on every request.
 		slog.DebugContext(ctx, "delegated credential lookup failed", "provider", provider, "reason", readerFailureReason(err))
 	case err != nil:

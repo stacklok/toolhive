@@ -41,7 +41,10 @@ func (*UpstreamInjectStrategy) Name() string {
 // This method:
 //  1. Skips authentication for health check requests (no user identity to inject)
 //  2. Retrieves the authenticated identity from the request context
-//  3. Looks up the upstream token for the configured provider name
+//  3. Resolves the upstream token for the configured provider name. For a delegated
+//     identity (AdmissionRoute delegated) it reads the credential through the configured
+//     UserCredentialReader by platform user ID and provider, with no fallback; otherwise
+//     it reads Identity.UpstreamTokens
 //  4. Sets the Authorization header with the upstream token as a Bearer token
 //
 // Parameters:
@@ -53,6 +56,8 @@ func (*UpstreamInjectStrategy) Name() string {
 //   - No identity is found in the context
 //   - Strategy configuration is nil or missing UpstreamInject
 //   - The upstream token cannot be resolved for the configured provider
+//   - A delegated read fails: ErrDelegatedCredentialUnavailable, or a
+//     DelegatedAuthRequiredError (package authtypes)
 func (s *UpstreamInjectStrategy) Authenticate(
 	ctx context.Context, req *http.Request, strategy *authtypes.BackendAuthStrategy,
 ) error {

@@ -124,7 +124,7 @@ func TestUpstreamCredentialsDelegatedReaderResult(t *testing.T) {
 		},
 		{
 			name: "no refresh token", readerErr: fmt.Errorf("detail: %w", upstreamtoken.ErrNoRefreshToken),
-			wantErr: unavailable, wantLevel: "WARN", wantCause: "no_refresh_token",
+			wantErr: unavailable, wantLevel: "DEBUG", wantCause: "no_refresh_token",
 		},
 		{
 			name: "user not found", readerErr: fmt.Errorf("detail: %w", upstreamtoken.ErrSessionNotFound),

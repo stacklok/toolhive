@@ -176,6 +176,10 @@ type fakeCore struct {
 	completeErr       error          // when set, Complete returns it (e.g. vmcp.ErrAuthorizationFailed)
 	lookupResourceErr error          // when set, LookupResource returns it for an ADVERTISED URI (admission denial)
 
+	// callHook, when set, runs at the start of CallTool with the call's
+	// context, so a test can hold a call open until it is cancelled.
+	callHook func(ctx context.Context)
+
 	// invalidateCacheCalls counts InvalidateCapabilityCache invocations, so tests
 	// covering the list_changed sink can assert the cache was re-swept (#5748).
 	invalidateCacheCalls atomic.Int32
@@ -252,7 +256,7 @@ func (f *fakeCore) ListTools(ctx context.Context, identity *auth.Identity) ([]vm
 }
 
 func (f *fakeCore) CallTool(
-	_ context.Context, identity *auth.Identity, name string, args map[string]any, _ map[string]any,
+	ctx context.Context, identity *auth.Identity, name string, args map[string]any, _ map[string]any,
 ) (*vmcp.ToolCallResult, error) {
 	f.callToolCalls.Add(1)
 	f.lastCallToolName.Store(name)
@@ -260,6 +264,9 @@ func (f *fakeCore) CallTool(
 		f.lastCallToolArgs.Store(args)
 	}
 	f.recordCallIdentity(args, identity)
+	if f.callHook != nil {
+		f.callHook(ctx)
+	}
 	if f.callErr != nil {
 		return nil, f.callErr
 	}

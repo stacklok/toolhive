@@ -266,6 +266,9 @@ func (s *Server) coreSessionPrompts(
 // caller's explicit identity. Admission (authorization) is the core's responsibility.
 func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		ctx, end := s.openRequests.begin(ctx, sessionID)
+		defer end()
+
 		// Label the audit event with the backend serving this tool. The audit
 		// middleware created the BackendInfo upstream and reads it after this handler
 		// returns (auditor.Middleware), so writing the pre-resolved name here — where
@@ -273,6 +276,11 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 		// backend-enrichment middleware and its per-request lookup (#5512 review).
 		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
 			bi.BackendName = backendName
+		}
+		// The session's DELETE is already in progress: skip the binding check,
+		// which would load the session again and may find it gone.
+		if ctx.Err() != nil {
+			return legacyToolCallError(server.ClientSessionFromContext(ctx), context.Cause(ctx))
 		}
 
 		// Shape-check on the SDK decode first: a non-object payload is rejected before the
@@ -343,8 +351,14 @@ func (s *Server) coreResourceHandler(
 	sessionID, uri, backendName string,
 ) server.ResourceResultHandlerFunc {
 	return func(ctx context.Context, _ mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		ctx, end := s.openRequests.begin(ctx, sessionID)
+		defer end()
+
 		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
 			bi.BackendName = backendName
+		}
+		if ctx.Err() != nil {
+			return nil, context.Cause(ctx)
 		}
 
 		caller, _ := auth.IdentityFromContext(ctx)
@@ -389,8 +403,14 @@ func (s *Server) corePromptHandler(
 	sessionID, promptName, backendName string,
 ) server.PromptHandlerFunc {
 	return func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		ctx, end := s.openRequests.begin(ctx, sessionID)
+		defer end()
+
 		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
 			bi.BackendName = backendName
+		}
+		if ctx.Err() != nil {
+			return nil, context.Cause(ctx)
 		}
 
 		caller, _ := auth.IdentityFromContext(ctx)
@@ -443,6 +463,11 @@ func (s *Server) coreCompletionHandler(
 	if sess := server.ClientSessionFromContext(ctx); sess != nil {
 		sessionID = sess.SessionID()
 	}
+	ctx, end := s.openRequests.begin(ctx, sessionID)
+	defer end()
+	if ctx.Err() != nil {
+		return nil, context.Cause(ctx)
+	}
 
 	caller, _ := auth.IdentityFromContext(ctx)
 	if err := s.enforceSessionBinding(ctx, sessionID, caller); err != nil {
@@ -492,6 +517,12 @@ func (s *Server) coreSubscribeHandler(ctx context.Context, capability, uri strin
 	sessionID := ""
 	if sess := server.ClientSessionFromContext(ctx); sess != nil {
 		sessionID = sess.SessionID()
+	}
+	// LookupResource may list the backends when the capability cache is cold.
+	ctx, end := s.openRequests.begin(ctx, sessionID)
+	defer end()
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
 	}
 
 	caller, _ := auth.IdentityFromContext(ctx)

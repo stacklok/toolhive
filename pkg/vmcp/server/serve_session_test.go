@@ -149,7 +149,7 @@ type fakeCore struct {
 	// backendStatus is the registry health status of a configured backend,
 	// set with setBackendStatus; absent means none (healthy). unavailableLists
 	// maps a backend to the list methods whose listing failed transiently on
-	// it (core.AdmittedBackendCapabilities.UnavailableLists), set with
+	// it (core.AdmittedBackendCapabilities.ListErrors), set with
 	// setUnavailableLists. backendStatusMu guards both.
 	backendStatusMu  sync.Mutex
 	backendStatus    map[string]vmcp.BackendHealthStatus
@@ -537,7 +537,12 @@ func (f *fakeCore) LookupBackendCapabilities(
 		Resources:         slices.DeleteFunc(slices.Clone(lists.resources), func(r vmcp.Resource) bool { return r.BackendID != id }),
 		ResourceTemplates: slices.DeleteFunc(slices.Clone(lists.resourceTemplates), func(t vmcp.ResourceTemplate) bool { return t.BackendID != id }),
 		Prompts:           slices.DeleteFunc(slices.Clone(lists.prompts), func(p vmcp.Prompt) bool { return p.BackendID != id }),
-		UnavailableLists:  unavailable,
+	}
+	for _, method := range unavailable {
+		if caps.ListErrors == nil {
+			caps.ListErrors = map[string]error{}
+		}
+		caps.ListErrors[method] = fmt.Errorf("%w: %s failed for now", vmcp.ErrBackendUnavailable, method)
 	}
 	if len(caps.Tools)+len(caps.Resources)+len(caps.ResourceTemplates)+len(caps.Prompts) == 0 {
 		return nil, fmt.Errorf("%w: backend %q", vmcp.ErrNotFound, id)

@@ -96,9 +96,10 @@ start a `tools/call`. Before that list call, a `tools/call` or another list meth
 `invalid_params`. A backend the caller is not admitted to anything of, including one
 that does not exist or that cannot be discovered now, gets 403 `server_not_found`; one
 the caller can see but that is not served now, for its health status or because listing
-that kind of item failed for now, gets **HTTP 503**. While no backend at all can be
-discovered, every list call gets **HTTP 503**, whatever backend it names. None of these uses up the
-token. Before its `exp`, such a token may also send, to the MCP endpoint:
+that kind of item failed for now, gets **HTTP 503**. While no backend of a non-empty group
+can be discovered, a valid list call that has to discover backends gets **HTTP 503**,
+whatever backend it names; a caller whose view is still cached is answered from it. None
+of these uses up the token. Before its `exp`, such a token may also send, to the MCP endpoint:
 
 - the handshake (`initialize`, `notifications/initialized`), the Modern
   `server/discover` probe and `ping`; `initialize` only until the token has started

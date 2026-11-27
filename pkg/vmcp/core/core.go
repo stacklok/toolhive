@@ -20,6 +20,7 @@ package core
 
 import (
 	"context"
+	"errors"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -45,7 +46,7 @@ type DiscoverCapabilities struct {
 
 // AdmittedBackendCapabilities is one backend's part of an identity's view: the
 // items of that backend the identity is admitted to, from one aggregation (see
-// [VMCP.LookupBackendCapabilities]). Unlike [aggregator.BackendCapabilities], a
+// [BackendCapabilitiesLookup]). Unlike [aggregator.BackendCapabilities], a
 // backend's raw query result, it holds only what admission let through.
 type AdmittedBackendCapabilities struct {
 	Tools             []vmcp.Tool
@@ -53,10 +54,89 @@ type AdmittedBackendCapabilities struct {
 	ResourceTemplates []vmcp.ResourceTemplate
 	Prompts           []vmcp.Prompt
 
-	// UnavailableLists names the list methods (such as "prompts/list") whose
-	// listing failed transiently on the backend: the items of that kind are
-	// unknown, and the matching slice is empty.
-	UnavailableLists []string
+	// ListErrors maps a list method (such as "prompts/list") to the error that
+	// keeps its items from being listed now, and the matching slice is then
+	// empty: the backend's listing failed transiently (an error wrapping
+	// vmcp.ErrBackendUnavailable), or a decorator refuses that list, as code
+	// mode refuses "tools/list" on a backend that advertises its reserved tool
+	// name. The other lists are unaffected. A nil map refuses nothing.
+	ListErrors map[string]error
+}
+
+// BackendCapabilitiesLookup is optionally implemented by a [VMCP] that can
+// answer one backend's part of an identity's view from a single aggregation.
+// The vmcp server answers a list call (a call-bound token that lists one
+// backend) with it when the VMCP it serves implements it, and otherwise from
+// LookupBackend and the List* methods, whose separate aggregations can
+// disagree.
+//
+// It is not part of VMCP so that a decorator that embeds VMCP does not promote
+// it: the inner core's items would bypass a list the decorator narrows. A
+// decorator implements it only explicitly: one that narrows no list forwards
+// it to inner with [LookupBackendCapabilities], and one that narrows a list
+// narrows or refuses the same items here.
+type BackendCapabilitiesLookup interface {
+	// LookupBackendCapabilities returns the items identity is admitted to on one
+	// backend, and the lists that cannot be listed there now, from a SINGLE
+	// aggregation, so whether the backend is in identity's view and what it
+	// offers there cannot disagree. The items are those ListTools,
+	// ListResources, ListResourceTemplates and ListPrompts would return with
+	// this BackendID from the same aggregation, in the same order; composite
+	// tools have no backend and are never included. Only this backend's items
+	// are run through admission.
+	//
+	// The backend is in identity's view when identity is admitted to at least
+	// one of its tools, resources, resource templates or prompts. Resource
+	// templates count here, unlike for ListBackends and LookupBackend, because
+	// a list call can list a backend's templates: a backend that offers
+	// identity only templates is resolved here though ListBackends omits it.
+	// It returns:
+	//   - an error wrapping vmcp.ErrNotFound when the registry is empty, or the
+	//     backend is unknown or out of group, offers identity nothing (every
+	//     item is denied, or it has none), or contributes nothing (its
+	//     discovery fails while another backend's succeeds). These are not told
+	//     apart, so the error does not reveal whether a backend identity cannot
+	//     see exists;
+	//   - an error wrapping vmcp.ErrBackendUnavailable when the backend is in
+	//     identity's view but cannot be answered now: the lists leave it out
+	//     for its health status (health.ShouldAdvertise is false: unhealthy,
+	//     unknown, unauthenticated), or it contributed nothing to the lists'
+	//     aggregation and answered in the whole registry's;
+	//   - any other error when the view cannot be built now, including one
+	//     wrapping aggregator.ErrNoBackendCapabilities when no backend in the
+	//     registry answers discovery: every backendID gets that error alike.
+	//
+	// The backend is looked up first in one aggregation of the backends the
+	// lists include, so conflict resolution matches the lists, and a backend
+	// found there is answered from it alone. When the lists include every
+	// backend, that aggregation decides every outcome. Otherwise any other
+	// outcome is decided from an aggregation of the whole registry, as
+	// ListBackends aggregates it. So, for a given registry and health state,
+	// every error above runs the same aggregations whatever its reason;
+	// admission still runs over the named backend's items, so its cost grows
+	// with how many items that backend has.
+	LookupBackendCapabilities(
+		ctx context.Context, identity *auth.Identity, backendID string,
+	) (*AdmittedBackendCapabilities, error)
+}
+
+// ErrBackendCapabilitiesLookupUnsupported reports that a VMCP does not
+// implement [BackendCapabilitiesLookup].
+var ErrBackendCapabilitiesLookupUnsupported = errors.New("core: VMCP does not implement BackendCapabilitiesLookup")
+
+// LookupBackendCapabilities calls v's LookupBackendCapabilities when v
+// implements [BackendCapabilitiesLookup], and otherwise returns
+// [ErrBackendCapabilitiesLookupUnsupported]. A decorator that narrows no list
+// forwards its LookupBackendCapabilities to inner with it, so it answers the
+// lookup exactly when inner does.
+func LookupBackendCapabilities(
+	ctx context.Context, v VMCP, identity *auth.Identity, backendID string,
+) (*AdmittedBackendCapabilities, error) {
+	lookup, ok := v.(BackendCapabilitiesLookup)
+	if !ok {
+		return nil, ErrBackendCapabilitiesLookupUnsupported
+	}
+	return lookup.LookupBackendCapabilities(ctx, identity, backendID)
 }
 
 // VMCP is the core Virtual MCP domain object.
@@ -75,8 +155,8 @@ type AdmittedBackendCapabilities struct {
 //     mirrors the list-filter/call-deny pairing in pkg/authz/tool_filter.go, and
 //     applies to backends too: a decorator may drop entries from ListBackends
 //     output or refuse a LookupBackend, but never surface a backend inner withheld.
-//     LookupBackendCapabilities returns list items, so a decorator that filters
-//     a list must filter or refuse its items there too.
+//     A decorator that embeds VMCP does not offer [BackendCapabilitiesLookup]
+//     unless it implements it, so list calls fall back to its own lists.
 //   - args/meta maps are treated as read-only; the core copies before mutating
 //     (go-style: copy before mutating caller input).
 //   - ReadResource results: Meta may be nil — the mcp-go resources/read handler
@@ -241,42 +321,6 @@ type VMCP interface {
 	// LookupTool/LookupResource/LookupPrompt — a lookup never resolves what the
 	// corresponding authorized list would not show.
 	LookupBackend(ctx context.Context, identity *auth.Identity, backendID string) (*vmcp.Backend, error)
-
-	// LookupBackendCapabilities returns the items identity is admitted to on one
-	// backend, and which of the backend's lists failed transiently, from a
-	// SINGLE aggregation, so whether the backend is in identity's view and what
-	// it offers there cannot disagree. The items are those ListTools,
-	// ListResources, ListResourceTemplates and ListPrompts would return with
-	// this BackendID from the same aggregation, in the same order; composite
-	// tools have no backend and are never included. Only this backend's items
-	// are run through admission.
-	//
-	// The backend is in identity's view when identity is admitted to at least
-	// one of its tools, resources, resource templates or prompts. Resource
-	// templates count here, unlike for ListBackends and LookupBackend, because
-	// a list call can list a backend's templates: a backend that offers
-	// identity only templates is resolved here though ListBackends omits it.
-	// It returns:
-	//   - an error wrapping vmcp.ErrNotFound when the backend is unknown or
-	//     out of group, offers identity nothing (every item is denied, or it has
-	//     none), or contributes nothing (its discovery fails while another
-	//     backend's succeeds). These are not told apart, so the error does not
-	//     reveal whether a backend identity cannot see exists;
-	//   - an error wrapping vmcp.ErrBackendUnavailable when the backend is in
-	//     identity's view but the lists leave it out for its health status
-	//     (health.ShouldAdvertise is false: unhealthy, unknown, unauthenticated);
-	//   - any other error when the view cannot be built now, including one
-	//     wrapping aggregator.ErrNoBackendCapabilities when no backend in the
-	//     registry answers discovery: every backendID gets that error alike.
-	//
-	// The backend is looked up first in one aggregation of the backends the
-	// lists include, so conflict resolution matches the lists, and a backend
-	// found there is answered from it alone. Any other outcome is decided from
-	// an aggregation of the whole registry, as ListBackends aggregates it, so
-	// every refusal does the same work whatever the reason.
-	LookupBackendCapabilities(
-		ctx context.Context, identity *auth.Identity, backendID string,
-	) (*AdmittedBackendCapabilities, error)
 
 	// Discover returns identity's capability-presence flags -- whether it is
 	// admitted to at least one tool, resource, resource template, and prompt --

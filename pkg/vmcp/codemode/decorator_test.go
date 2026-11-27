@@ -28,9 +28,14 @@ type fakeCore struct {
 	callTool   func(ctx context.Context, id *auth.Identity, name string,
 		args, meta map[string]any) (*vmcp.ToolCallResult, error)
 	checkTool func(ctx context.Context, id *auth.Identity, name string, args map[string]any) error
+	// prompts and listErrors are what LookupBackendCapabilities answers for
+	// every backend, besides its listed tools.
+	prompts    []vmcp.Prompt
+	listErrors map[string]error
 }
 
-// LookupBackendCapabilities answers with the listed tools of backendID.
+// LookupBackendCapabilities answers with the listed tools of backendID, the
+// prompts of backendID, and listErrors.
 func (f *fakeCore) LookupBackendCapabilities(
 	ctx context.Context, id *auth.Identity, backendID string,
 ) (*core.AdmittedBackendCapabilities, error) {
@@ -38,10 +43,15 @@ func (f *fakeCore) LookupBackendCapabilities(
 	if err != nil {
 		return nil, err
 	}
-	caps := &core.AdmittedBackendCapabilities{}
+	caps := &core.AdmittedBackendCapabilities{ListErrors: f.listErrors}
 	for _, t := range tools {
 		if t.BackendID == backendID {
 			caps.Tools = append(caps.Tools, t)
+		}
+	}
+	for _, p := range f.prompts {
+		if p.BackendID == backendID {
+			caps.Prompts = append(caps.Prompts, p)
 		}
 	}
 	return caps, nil
@@ -464,21 +474,49 @@ func TestLookupTool_ReservedNameCollisionFails(t *testing.T) {
 	assert.Contains(t, err.Error(), collidingBackendID)
 }
 
-// TestLookupBackendCapabilities_ReservedNameCollisionFails verifies the backend
-// that shadows the reserved name is refused, as ListTools refuses it, and that
-// another backend's capabilities are still returned: they hold no shadowed tool.
+// TestLookupBackendCapabilities_ReservedNameCollisionFails verifies that the
+// tools/list of a backend that shadows the reserved name is refused, as
+// ListTools refuses it, while its other lists, and the lists inner could not
+// answer, come back from the same lookup unchanged, and inner's answer is not
+// modified. Another backend's capabilities are returned as they are: they hold
+// no shadowed tool.
 func TestLookupBackendCapabilities_ReservedNameCollisionFails(t *testing.T) {
 	t.Parallel()
-	d := NewDecorator(collidingBackend(), nil)
+	inner := collidingBackend()
+	prompt := vmcp.Prompt{Name: "greet", BackendID: collidingBackendID}
+	unavailable := errors.New("resources/list failed for now")
+	inner.prompts = []vmcp.Prompt{prompt}
+	inner.listErrors = map[string]error{"resources/list": unavailable}
+	d := NewDecorator(inner, nil).(core.BackendCapabilitiesLookup)
 
-	_, err := d.LookupBackendCapabilities(t.Context(), nil, collidingBackendID)
-	require.ErrorIs(t, err, ErrReservedToolName)
-	assert.Contains(t, err.Error(), collidingBackendID)
+	caps, err := d.LookupBackendCapabilities(t.Context(), nil, collidingBackendID)
+	require.NoError(t, err, "only tools/list is refused")
+	assert.Empty(t, caps.Tools)
+	require.ErrorIs(t, caps.ListErrors["tools/list"], ErrReservedToolName)
+	assert.Contains(t, caps.ListErrors["tools/list"].Error(), collidingBackendID)
+	assert.Equal(t, unavailable, caps.ListErrors["resources/list"], "inner's refusals are kept")
+	assert.Equal(t, []vmcp.Prompt{prompt}, caps.Prompts, "prompts/list is answered from the same lookup")
+	assert.Equal(t, map[string]error{"resources/list": unavailable}, inner.listErrors, "inner's answer is not modified")
 
-	caps, err := d.LookupBackendCapabilities(t.Context(), nil, "b1")
+	caps, err = d.LookupBackendCapabilities(t.Context(), nil, "b1")
 	require.NoError(t, err)
 	require.Len(t, caps.Tools, 1)
 	assert.Equal(t, "echo", caps.Tools[0].Name, "no virtual tool is added: it has no backend")
+	assert.NotContains(t, caps.ListErrors, "tools/list")
+}
+
+// TestLookupBackendCapabilities_InnerWithoutLookup verifies the decorator
+// answers the lookup only as inner does: over a core that does not implement
+// core.BackendCapabilitiesLookup it reports
+// core.ErrBackendCapabilitiesLookupUnsupported, so a list call falls back to
+// the decorator's own lists.
+func TestLookupBackendCapabilities_InnerWithoutLookup(t *testing.T) {
+	t.Parallel()
+	inner := struct{ core.VMCP }{collidingBackend()}
+	d := NewDecorator(inner, nil).(core.BackendCapabilitiesLookup)
+
+	_, err := d.LookupBackendCapabilities(t.Context(), nil, "b1")
+	require.ErrorIs(t, err, core.ErrBackendCapabilitiesLookupUnsupported)
 }
 
 // TestCallTool_ScriptExecutionFailsOnCollision verifies a script execution fails loud as

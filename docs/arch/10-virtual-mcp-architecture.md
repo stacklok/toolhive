@@ -1489,7 +1489,8 @@ policies are configured:
   would be silently shadowed by the virtual tool and skip its own Cedar admission, so the
   decorator fails **loud** (`ErrReservedToolName`) on that collision — `ListTools`,
   `LookupTool`, and the `CallTool` script-binding path all refuse to serve rather than mask it,
-  and `LookupBackendCapabilities` refuses the backend that advertises it.
+  and `LookupBackendCapabilities` refuses that backend's `tools/list`, while its other lists
+  are still answered.
 
 The `Call*` methods keep their internal admission checks as defense-in-depth for other
 embedders and misconfigured gates.
@@ -1577,13 +1578,21 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   the core's lists leave out for its health status (unhealthy, unknown or
   unauthenticated, even while it still answers) gets 503; a degraded one stays in the
   lists and is listed. A backend in the caller's view whose list of the method's
-  items failed transiently (a Modern backend's optional list, which the lists report
-  as empty) also gets 503; one the caller could see only through that list is not
-  known to be in view, so it gets 403. While no backend answers discovery, every list call gets 503, whatever its
-  `server`, so the outage tells nothing about which backends exist. The check and the
-  items come from one aggregation (`core.LookupBackendCapabilities`), so they cannot
-  disagree, and every refusal runs the same aggregations, so its timing does not tell
-  the reasons apart either. A list call that
+  items cannot be listed now also gets 503: the list failed transiently (a Modern
+  backend's optional list, which the lists report as empty), or code mode refuses the
+  backend's `tools/list` because it advertises `execute_tool_script`. One the caller
+  could see only through a list that failed is not known to be in view, so it gets
+  403. While no backend in a non-empty group answers discovery, a list call that
+  reaches the check on a capability-cache miss gets 503, whatever its `server`, so the
+  outage tells nothing about which backends exist; an empty group has no backend to
+  find, so every `server` gets 403. The check and the items come from one aggregation
+  when the core offers `core.BackendCapabilitiesLookup`, so they cannot disagree. That
+  interface is separate from `core.VMCP`, so a decorator that only embeds `core.VMCP`
+  does not promote it; the list call then falls back to the decorator's own
+  `LookupBackend` and `List*` answers, from separate aggregations. Every 403
+  `server_not_found` and every health 503 runs the same aggregations, but admission
+  runs over the named backend's items, so a refusal's time can grow with how many
+  items that backend has. A list call that
   carries a cursor is refused with `invalid_params`. A `tools/call` or another list
   method is refused with `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
   a tool-call entry: it uses up the token. It is recorded only once its answer is

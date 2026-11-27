@@ -91,7 +91,10 @@ type coreVMCP struct {
 	closeErr  error
 }
 
-var _ VMCP = (*coreVMCP)(nil)
+var (
+	_ VMCP                      = (*coreVMCP)(nil)
+	_ BackendCapabilitiesLookup = (*coreVMCP)(nil)
+)
 
 // New constructs the core [VMCP] by relocating the domain wiring that lives in
 // server.New today (server.go:330-405): telemetry backend-client decoration, the
@@ -600,55 +603,94 @@ func (c *coreVMCP) LookupBackend(
 	return nil, fmt.Errorf("%w: backend %q", vmcp.ErrNotFound, backendID)
 }
 
-// LookupBackendCapabilities implements VMCP.LookupBackendCapabilities. It takes
-// the registry once and decides everything from that one snapshot.
+// LookupBackendCapabilities implements BackendCapabilitiesLookup. It takes the
+// registry once and decides everything from that one snapshot.
 //
-// Every backendID is first looked up in one aggregation of the backends the
+// An empty registry has no backend to find, so every backendID gets
+// vmcp.ErrNotFound without aggregating, as LookupBackend answers it. Otherwise
+// every backendID is first looked up in one aggregation of the backends the
 // lists include, so conflict resolution matches the lists; a backend the lists
 // include that offers identity something there is answered from that
-// aggregation alone. Every other outcome (unknown name, hidden, nothing
-// admitted, failed discovery, left out for its health) is then decided from an
-// aggregation of the whole registry, as ListBackends aggregates it. So every
-// refusal does the same work, and neither the response time nor an aggregation
-// error's 503 tells an unknown name from a backend identity cannot see. When
-// every backend is healthy, the second aggregation is the first one again,
-// which the capability cache answers. When no backend in the whole registry
-// answers, every name gets that error, which a list call answers with 503.
+// aggregation alone. When the lists include every backend, that aggregation
+// is the whole registry's too and decides every other outcome, including its
+// error. Otherwise every other outcome (unknown name, hidden, nothing
+// admitted, failed discovery, left out for its health) is decided from an
+// aggregation of the whole registry, as ListBackends aggregates it. So, for a
+// given registry and health state, every refusal runs the same aggregations,
+// and an aggregation error's 503 does not tell an unknown name from a backend
+// identity cannot see. When no backend in the whole registry answers, every
+// name gets that error, which a list call answers with 503.
 func (c *coreVMCP) LookupBackendCapabilities(
 	ctx context.Context, identity *auth.Identity, backendID string,
 ) (*AdmittedBackendCapabilities, error) {
 	ctx = withExplicitIdentity(ctx, identity)
 
-	has := func(backends []vmcp.Backend) bool {
-		return backendID != "" && slices.ContainsFunc(backends, func(b vmcp.Backend) bool { return b.ID == backendID })
-	}
 	all := c.backendRegistry.List(ctx)
+	if len(all) == 0 {
+		return nil, backendNotFound(backendID)
+	}
 	healthy := filterHealthyBackends(all, c.health)
 
 	caps, err := c.admittedIn(ctx, identity, healthy, backendID)
+	if len(healthy) == len(all) {
+		// healthy is all of the registry: a second aggregation of the same
+		// backends could only disagree with this one.
+		switch {
+		case err != nil:
+			return nil, err
+		case caps == nil || !hasBackend(all, backendID):
+			return nil, backendNotFound(backendID)
+		}
+		return caps, nil
+	}
 	if err != nil && (ctx.Err() != nil || !errors.Is(err, aggregator.ErrNoBackendCapabilities)) {
 		return nil, err
 	}
-	if caps != nil && has(healthy) {
+	if caps != nil && hasBackend(healthy, backendID) {
 		return caps, nil
 	}
-	// When no backend in the whole registry answers, the error is returned as
-	// it is, so the caller can answer it as an outage: it depends on no name.
+	return nil, c.refuseFromRegistry(ctx, identity, all, healthy, backendID)
+}
+
+// refuseFromRegistry returns LookupBackendCapabilities' error for a backendID
+// the lists' aggregation did not answer, decided from an aggregation of the
+// whole registry, all. When no backend there answers, the error is returned as
+// it is, so the caller can answer it as an outage: it depends on no name.
+func (c *coreVMCP) refuseFromRegistry(
+	ctx context.Context, identity *auth.Identity, all, healthy []vmcp.Backend, backendID string,
+) error {
 	visible, err := c.admittedIn(ctx, identity, all, backendID)
-	if err != nil {
-		return nil, err
+	switch {
+	case err != nil:
+		return err
+	case visible == nil || !hasBackend(all, backendID):
+		return backendNotFound(backendID)
+	case hasBackend(healthy, backendID):
+		// In the lists' backends, but it contributed nothing to their
+		// aggregation, while the whole registry's has it: its discovery
+		// changed between the two.
+		return fmt.Errorf("%w: backend %q could not be discovered consistently now",
+			vmcp.ErrBackendUnavailable, backendID)
 	}
-	if visible == nil || !has(all) || has(healthy) {
-		return nil, fmt.Errorf("%w: backend %q", vmcp.ErrNotFound, backendID)
-	}
-	return nil, fmt.Errorf("%w: backend %q is left out of the lists for its health status",
+	return fmt.Errorf("%w: backend %q is left out of the lists for its health status",
 		vmcp.ErrBackendUnavailable, backendID)
 }
 
+// hasBackend reports whether backends holds a backend with the non-empty id.
+func hasBackend(backends []vmcp.Backend, id string) bool {
+	return id != "" && slices.ContainsFunc(backends, func(b vmcp.Backend) bool { return b.ID == id })
+}
+
+// backendNotFound is LookupBackendCapabilities' vmcp.ErrNotFound for id.
+func backendNotFound(id string) error {
+	return fmt.Errorf("%w: backend %q", vmcp.ErrNotFound, id)
+}
+
 // admittedIn aggregates backends and returns what identity is admitted to on
-// backendID there, with backendID's transiently unavailable lists, or nil when
-// it offers identity nothing. A failed aggregation, including one in which no
-// backend answered (aggregator.ErrNoBackendCapabilities), returns its error.
+// backendID there, with an error for each of backendID's transiently
+// unavailable lists, or nil when it offers identity nothing. A failed
+// aggregation, including one in which no backend answered
+// (aggregator.ErrNoBackendCapabilities), returns its error.
 func (c *coreVMCP) admittedIn(
 	ctx context.Context, identity *auth.Identity, backends []vmcp.Backend, backendID string,
 ) (*AdmittedBackendCapabilities, error) {
@@ -664,7 +706,13 @@ func (c *coreVMCP) admittedIn(
 		len(caps.ResourceTemplates) == 0 && len(caps.Prompts) == 0 {
 		return nil, nil
 	}
-	caps.UnavailableLists = slices.Clone(agg.UnavailableLists[backendID])
+	for _, method := range agg.UnavailableLists[backendID] {
+		if caps.ListErrors == nil {
+			caps.ListErrors = map[string]error{}
+		}
+		caps.ListErrors[method] = fmt.Errorf("%w: backend %q could not list %s now",
+			vmcp.ErrBackendUnavailable, backendID, method)
+	}
 	return caps, nil
 }
 

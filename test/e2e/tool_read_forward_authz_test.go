@@ -124,9 +124,7 @@ var _ = Describe("Tool visibility with forward_tool_read", Label("middleware", "
 		Expect(names).To(ConsistOf("query_vulnerability"),
 			"the PDP allows tool:read only for query_vulnerability, so it must be the only tool listed")
 
-		pdpServer.mu.RLock()
-		captured := append([]map[string]interface{}{}, pdpServer.requests...)
-		pdpServer.mu.RUnlock()
+		captured := pdpServer.getRequests()
 
 		// With forward_tool_read the PDP answers tool:read itself, and is never asked
 		// tool:call for any tool, because there is no call fallback. The filter asks

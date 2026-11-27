@@ -180,7 +180,7 @@ func (a *cedarAdmission) FilterTools(
 	for i := range tools {
 		if ctx.Err() != nil {
 			// The context is done, so the remaining checks would fail too. They stay hidden.
-			a.logger.Warn("admission: deadline reached while filtering tools, hiding the rest",
+			a.logger.Warn("admission: deadline reached or request cancelled while filtering tools, hiding the rest",
 				"remaining", len(tools)-i)
 			break
 		}

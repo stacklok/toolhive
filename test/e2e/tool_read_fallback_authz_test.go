@@ -123,9 +123,7 @@ var _ = Describe("Tool discovery through tool:call fallback", Label("middleware"
 		Expect(names).To(ConsistOf("query_vulnerability"),
 			"the PDP allows tool:call only for query_vulnerability, so it must be the only tool listed")
 
-		pdpServer.mu.RLock()
-		captured := append([]map[string]interface{}{}, pdpServer.requests...)
-		pdpServer.mu.RUnlock()
+		captured := pdpServer.getRequests()
 
 		// By default the PDP is asked only tool:call, never tool:read.
 		callsForListed := 0

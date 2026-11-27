@@ -44,7 +44,7 @@ func authorizedToolIndexesWithin(
 		if ctx.Err() != nil {
 			// The shared deadline expired or the request was cancelled. Checking the rest
 			// would only repeat the wait, so they stay hidden.
-			slog.Warn("Authorization deadline reached while filtering tools, hiding the rest",
+			slog.Warn("Authorization deadline reached or request cancelled while filtering tools, hiding the rest",
 				"remaining", len(tools)-i)
 			break
 		}
@@ -63,7 +63,7 @@ func authorizedToolIndexesWithin(
 			if ctx.Err() != nil {
 				// The shared deadline expired or the request was cancelled. The rest of
 				// the list is hidden, so one warning is enough.
-				slog.Warn("Authorization deadline reached while filtering tools, hiding the rest",
+				slog.Warn("Authorization deadline reached or request cancelled while filtering tools, hiding the rest",
 					"tool", tool.Name, "error", err)
 				break
 			}

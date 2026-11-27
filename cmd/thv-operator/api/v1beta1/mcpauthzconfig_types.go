@@ -37,7 +37,8 @@ type MCPAuthzConfigSpec struct {
 	// Config contains the backend-specific authorization configuration.
 	// The structure depends on the Type field:
 	//   - cedarv1: policies ([]string), entities_json (string), primary_upstream_provider (string), group_claim_name (string)
-	//   - httpv1: http ({url, timeout, insecure_skip_verify}), context ({include_args, include_operation}), claim_mapping (string), forward_tool_read (bool)
+	//   - httpv1: http ({url, timeout, insecure_skip_verify}), context ({include_args, include_operation}), claim_mapping (string)
+	//   - httpv1 forward_tool_read (bool): ask mcp:tool:read for tools/list visibility
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
 	Config runtime.RawExtension `json:"config"`

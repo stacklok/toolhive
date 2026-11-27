@@ -2650,7 +2650,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `type` _string_ | Type identifies the authorizer backend (e.g., "cedarv1", "httpv1").<br />Must match a registered authorizer type in the factory registry. |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `config` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Config contains the backend-specific authorization configuration.<br />The structure depends on the Type field:<br />  - cedarv1: policies ([]string), entities_json (string), primary_upstream_provider (string), group_claim_name (string)<br />  - httpv1: http (\{url, timeout, insecure_skip_verify\}), context (\{include_args, include_operation\}), claim_mapping (string), forward_tool_read (bool) |  | Type: object <br /> |
+| `config` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Config contains the backend-specific authorization configuration.<br />The structure depends on the Type field:<br />  - cedarv1: policies ([]string), entities_json (string), primary_upstream_provider (string), group_claim_name (string)<br />  - httpv1: http (\{url, timeout, insecure_skip_verify\}), context (\{include_args, include_operation\}), claim_mapping (string)<br />  - httpv1 forward_tool_read (bool): ask mcp:tool:read for tools/list visibility |  | Type: object <br /> |
 
 
 #### api.v1beta1.MCPAuthzConfigStatus

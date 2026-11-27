@@ -62,11 +62,12 @@ POSTs without a parsed request, including client responses.
 ### What authorization decides on
 
 Authorization decides on the request: the caller's claims, the operation, the
-resource ID, and the arguments the client sent. It does not inspect or limit
-what the MCP server or its backend does while carrying out a permitted call.
-The only responses ToolHive filters are the list operations (see
-[List operations](#list-operations)); a `tools/call` result reaches the client
-as the backend sent it.
+resource ID, and the arguments. When a mutating webhook rewrites the request,
+authorization evaluates the rewritten version (see
+[Dynamic webhook middleware](middleware.md#dynamic-webhook-middleware)). It does not see or limit
+what the MCP server or its backend does while carrying out a permitted call,
+and the only responses it filters are the list operations (see
+[List operations](#list-operations)).
 
 This matters when an MCP server reaches its backend with one shared credential
 for every caller, such as a static API key or service account token. A policy

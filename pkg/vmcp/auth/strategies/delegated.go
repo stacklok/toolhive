@@ -45,15 +45,15 @@ func (c *upstreamCredentials) accessToken(ctx context.Context, identity *auth.Id
 		return "", errors.New("no identity for upstream token lookup")
 	}
 
-	// Unknown future routes stay on the identity-map path, even though the
-	// capability cache bypasses them. Only the delegated route uses the reader.
+	// Only the delegated route reads through the reader; every other route,
+	// including unknown future ones, uses the identity's token map.
 	if identity.AdmissionRoute == auth.AdmissionRouteDelegated {
 		cred, err := c.readDelegatedCredential(ctx, identity, provider)
 		if err != nil {
 			return "", err
 		}
 		if cred.AccessToken == "" {
-			slog.WarnContext(ctx, "delegated credential lookup failed", "provider", provider, "error", "empty access token")
+			slog.WarnContext(ctx, "delegated credential lookup failed", "provider", provider, "reason", "empty_access_token")
 			return "", authtypes.ErrDelegatedCredentialUnavailable
 		}
 		return cred.AccessToken, nil
@@ -70,8 +70,6 @@ func (c *upstreamCredentials) readDelegatedCredential(
 	ctx context.Context, identity *auth.Identity, provider string,
 ) (*upstreamtoken.UpstreamCredential, error) {
 	switch {
-	case identity == nil:
-		return nil, authtypes.ErrDelegatedCredentialUnavailable
 	case provider == "":
 		slog.DebugContext(ctx, "delegated credential provider is empty")
 		return nil, authtypes.ErrDelegatedCredentialUnavailable
@@ -98,13 +96,32 @@ func (c *upstreamCredentials) readDelegatedCredential(
 		return nil, authtypes.NewDelegatedAuthRequiredError(provider, upstreamtoken.ErrNeedsAuthorization)
 	case errors.Is(err, upstreamtoken.ErrInvalidBinding):
 		slog.ErrorContext(ctx, "delegated credential lookup has invalid binding", "provider", provider)
+	case errors.Is(err, upstreamtoken.ErrSessionNotFound), errors.Is(err, upstreamtoken.ErrNoCanonicalUser):
+		// Persistent per-user conditions; WARN would repeat on every request.
+		slog.DebugContext(ctx, "delegated credential lookup failed", "provider", provider, "reason", readerFailureReason(err))
 	case err != nil:
-		// The reader contract sanitizes errors for operator logs, not clients.
-		slog.WarnContext(ctx, "delegated credential lookup failed", "provider", provider, "error", err)
+		slog.WarnContext(ctx, "delegated credential lookup failed", "provider", provider, "reason", readerFailureReason(err))
 	case cred == nil:
-		slog.WarnContext(ctx, "delegated credential lookup failed", "provider", provider, "error", "no credential returned")
+		slog.WarnContext(ctx, "delegated credential lookup failed", "provider", provider, "reason", "no_credential_returned")
 	default:
 		return cred, nil
 	}
 	return nil, authtypes.ErrDelegatedCredentialUnavailable
+}
+
+// readerFailureReason maps a reader error to a fixed category. Reader error
+// text can include provider-supplied detail, so it must never be logged.
+func readerFailureReason(err error) string {
+	switch {
+	case errors.Is(err, upstreamtoken.ErrSessionNotFound):
+		return "user_not_found"
+	case errors.Is(err, upstreamtoken.ErrNoCanonicalUser):
+		return "no_canonical_user"
+	case errors.Is(err, upstreamtoken.ErrRefreshFailed):
+		return "refresh_failed"
+	case errors.Is(err, upstreamtoken.ErrNoRefreshToken):
+		return "no_refresh_token"
+	default:
+		return "storage_or_infrastructure"
+	}
 }

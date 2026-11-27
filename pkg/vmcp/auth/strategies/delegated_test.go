@@ -28,10 +28,6 @@ func TestUpstreamCredentialsNilIdentity(t *testing.T) {
 	token, err := creds.accessToken(t.Context(), nil, "github")
 	require.Empty(t, token)
 	require.ErrorContains(t, err, "no identity")
-
-	credential, err := creds.readDelegatedCredential(t.Context(), nil, "github")
-	require.Nil(t, credential)
-	require.Same(t, authtypes.ErrDelegatedCredentialUnavailable, err)
 }
 
 //nolint:paralleltest // Captures the process-wide default logger.
@@ -94,7 +90,7 @@ func TestUpstreamCredentialsDelegatedReaderResult(t *testing.T) {
 	unavailable := authtypes.ErrDelegatedCredentialUnavailable
 	readerCause := &oauth2.RetrieveError{ErrorCode: "invalid_grant"}
 	needsAuth := fmt.Errorf("lookup failed: %w: %w", upstreamtoken.ErrNeedsAuthorization, readerCause)
-	storageFailure := errors.New("storage unavailable")
+	storageFailure := errors.New("storage unavailable: secret-provider-detail")
 
 	//nolint:paralleltest // Captures the process-wide default logger.
 	for _, tt := range []struct {
@@ -104,22 +100,47 @@ func TestUpstreamCredentialsDelegatedReaderResult(t *testing.T) {
 		callerErr error
 		wantErr   error
 		wantLevel string
+		wantCause string
 	}{
 		{name: "valid credential", cred: &upstreamtoken.UpstreamCredential{AccessToken: accessToken}},
 		{name: "caller canceled", callerErr: context.Canceled, readerErr: needsAuth, wantErr: context.Canceled},
 		{name: "caller deadline exceeded", callerErr: context.DeadlineExceeded, wantErr: context.DeadlineExceeded},
 		{
 			name: "reader timeout with live caller", readerErr: context.DeadlineExceeded,
-			wantErr: unavailable, wantLevel: "WARN",
+			wantErr: unavailable, wantLevel: "WARN", wantCause: "storage_or_infrastructure",
 		},
 		{name: "needs authorization", readerErr: needsAuth, wantErr: upstreamtoken.ErrNeedsAuthorization},
 		{
 			name: "invalid binding", readerErr: fmt.Errorf("lookup failed: %w", upstreamtoken.ErrInvalidBinding),
 			wantErr: unavailable, wantLevel: "ERROR",
 		},
-		{name: "storage failure", readerErr: storageFailure, wantErr: unavailable, wantLevel: "WARN"},
-		{name: "nil credential", wantErr: unavailable, wantLevel: "WARN"},
-		{name: "empty access token", cred: &upstreamtoken.UpstreamCredential{}, wantErr: unavailable, wantLevel: "WARN"},
+		{
+			name: "storage failure", readerErr: storageFailure, wantErr: unavailable,
+			wantLevel: "WARN", wantCause: "storage_or_infrastructure",
+		},
+		{
+			name: "refresh failed", readerErr: fmt.Errorf("detail: %w", upstreamtoken.ErrRefreshFailed),
+			wantErr: unavailable, wantLevel: "WARN", wantCause: "refresh_failed",
+		},
+		{
+			name: "no refresh token", readerErr: fmt.Errorf("detail: %w", upstreamtoken.ErrNoRefreshToken),
+			wantErr: unavailable, wantLevel: "WARN", wantCause: "no_refresh_token",
+		},
+		{
+			name: "user not found", readerErr: fmt.Errorf("detail: %w", upstreamtoken.ErrSessionNotFound),
+			wantErr: unavailable, wantLevel: "DEBUG", wantCause: "user_not_found",
+		},
+		{
+			name: "no canonical user", readerErr: fmt.Errorf("detail: %w", upstreamtoken.ErrNoCanonicalUser),
+			wantErr: unavailable, wantLevel: "DEBUG", wantCause: "no_canonical_user",
+		},
+		{
+			name: "nil credential", wantErr: unavailable, wantLevel: "WARN", wantCause: "no_credential_returned",
+		},
+		{
+			name: "empty access token", cred: &upstreamtoken.UpstreamCredential{},
+			wantErr: unavailable, wantLevel: "WARN", wantCause: "empty_access_token",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			logs := captureCredentialLogs(t)
@@ -169,8 +190,12 @@ func TestUpstreamCredentialsDelegatedReaderResult(t *testing.T) {
 			if tt.wantLevel != "" {
 				require.Contains(t, logs.String(), `"level":"`+tt.wantLevel+`"`)
 				require.Contains(t, logs.String(), `"provider":"github"`)
-				if tt.wantLevel == "WARN" && tt.readerErr != nil {
-					require.Contains(t, logs.String(), `"error":"`+tt.readerErr.Error()+`"`)
+				if tt.wantCause != "" {
+					require.Contains(t, logs.String(), `"reason":"`+tt.wantCause+`"`)
+				}
+				if tt.readerErr != nil {
+					require.NotContains(t, logs.String(), tt.readerErr.Error())
+					require.NotContains(t, logs.String(), `"error"`)
 				}
 			}
 		})

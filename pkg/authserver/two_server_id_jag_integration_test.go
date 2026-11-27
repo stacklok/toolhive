@@ -60,26 +60,6 @@ func (e *as2Env) redeem(t *testing.T, auth clientAuth, assertion string) tokenRe
 	})
 }
 
-// startAS2 starts an AS-2 on listener that trusts the AS-1 at as1Issuer. AS-1's
-// JWKS is fetched at the first redemption, so AS-1 may start later. subject is
-// AS-1's sub for the grant's user, bound exactly. The server's own issuer is an
-// accepted audience and is not an allowed audience; the resource is. opts are
-// passed to the embedded server.
-func startAS2(t *testing.T, listener net.Listener, as1Issuer, subject string, opts ...authserverrunner.EmbeddedAuthServerOption) *as2Env {
-	t.Helper()
-	return startAS2For(t, listener, as1Issuer, subject, []string{xrtIDJAGResource}, opts...)
-}
-
-// startAS2For is startAS2 with resources as AS-2's allowed audiences, the
-// client's audiences and the subject binding's allowed resources.
-func startAS2For(
-	t *testing.T, listener net.Listener, as1Issuer, subject string, resources []string,
-	opts ...authserverrunner.EmbeddedAuthServerOption,
-) *as2Env {
-	t.Helper()
-	return startAS2With(t, listener, as1Issuer, subject, resources, nil, opts...)
-}
-
 // startAS2With starts an AS-2 on listener that trusts the AS-1 at as1Issuer.
 // AS-1's JWKS is fetched at the first redemption, so AS-1 may start later.
 // subject is AS-1's sub for the grant's user, bound exactly. The server's own

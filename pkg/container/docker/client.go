@@ -32,6 +32,7 @@ import (
 	"github.com/stacklok/toolhive-core/permissions"
 	"github.com/stacklok/toolhive/pkg/container/docker/sdk"
 	"github.com/stacklok/toolhive/pkg/container/images"
+	"github.com/stacklok/toolhive/pkg/container/internal/netproxy"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	lb "github.com/stacklok/toolhive/pkg/labels"
@@ -55,8 +56,8 @@ func IsAvailable() bool {
 
 // Workloads
 const (
-	ToolhiveAuxiliaryWorkloadLabel = "toolhive-auxiliary-workload"
-	LabelValueTrue                 = "true"
+	ToolhiveAuxiliaryWorkloadLabel = netproxy.AuxiliaryWorkloadLabel
+	LabelValueTrue                 = netproxy.LabelValueTrue
 )
 
 // dockerAPI defines the minimal Docker client surface we need for unit-testing
@@ -1897,32 +1898,14 @@ func (c *Client) createMcpContainer(
 // the HTTP_PROXY/HTTPS_PROXY/NO_PROXY variables for the given egress container.
 // The caller's map is never mutated.
 func addEgressEnvVars(envVars map[string]string, egressContainerName string) map[string]string {
-	egressHost := fmt.Sprintf("http://%s:3128", egressContainerName)
-	result := maps.Clone(envVars)
-	if result == nil {
-		result = make(map[string]string)
-	}
-	result["HTTP_PROXY"] = egressHost
-	result["HTTPS_PROXY"] = egressHost
-	result["http_proxy"] = egressHost
-	result["https_proxy"] = egressHost
-	result["NO_PROXY"] = "localhost,127.0.0.1,::1"
-	result["no_proxy"] = "localhost,127.0.0.1,::1"
-	return result
+	return netproxy.AddEgressEnvVars(envVars, egressContainerName)
 }
 
 // mergeEnvVars returns a new map containing all entries from base with all
 // entries from extra added (extra values overwrite base on conflict). Neither
 // input map is mutated.
 func mergeEnvVars(base, extra map[string]string) map[string]string {
-	result := make(map[string]string, len(base)+len(extra))
-	for k, v := range base {
-		result[k] = v
-	}
-	for k, v := range extra {
-		result[k] = v
-	}
-	return result
+	return netproxy.MergeEnvVars(base, extra)
 }
 
 // setupIngressContainer creates the ingress Squid reverse-proxy container for

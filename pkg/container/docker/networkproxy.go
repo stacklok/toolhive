@@ -5,13 +5,12 @@ package docker
 
 import (
 	"context"
-	"fmt"
 	"net/netip"
-	"os"
 
 	"github.com/moby/moby/api/types/network"
 
 	"github.com/stacklok/toolhive-core/permissions"
+	"github.com/stacklok/toolhive/pkg/container/internal/netproxy"
 )
 
 // networkProxy is the single enforcement point for outbound allowlisting,
@@ -86,6 +85,19 @@ type proxySpec struct {
 	Endpoints map[string]*network.EndpointSettings
 }
 
+func (s proxySpec) toNetProxySpec() netproxy.Spec {
+	return netproxy.Spec{
+		WorkloadName:       s.WorkloadName,
+		UpstreamHost:       s.UpstreamHost,
+		Permissions:        s.Permissions,
+		AllowDockerGateway: s.AllowDockerGateway,
+		GatewayIPs:         s.GatewayIPs,
+		TransportType:      s.TransportType,
+		UpstreamPort:       s.UpstreamPort,
+		AttachStdio:        s.AttachStdio,
+	}
+}
+
 // egressResult is the output of a successful SetupEgress call. It is passed to
 // SetupIngress so backends can carry any state set up during egress forward
 // without holding per-workload state on the shared proxy.
@@ -100,14 +112,15 @@ type egressResult struct {
 // "squid" selects the default squid-based proxy. Any other value returns an
 // error so that misconfiguration is caught at startup.
 func newNetworkProxy(c *Client) (networkProxy, error) {
-	val := os.Getenv("TOOLHIVE_NETWORK_PROXY")
-	switch val {
-	case "", "squid":
-		return &squidProxy{client: c}, nil
-	case "envoy":
+	backend, err := netproxy.SelectedBackend()
+	if err != nil {
+		return nil, err
+	}
+	switch backend {
+	case netproxy.BackendEnvoy:
 		return &envoyProxy{client: c}, nil
 	default:
-		return nil, fmt.Errorf("unknown TOOLHIVE_NETWORK_PROXY value %q: supported values are \"squid\" (default), \"envoy\"", val)
+		return &squidProxy{client: c}, nil
 	}
 }
 

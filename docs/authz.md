@@ -157,6 +157,52 @@ error and no `WWW-Authenticate`, like a Cedar denial. In both cases the message 
 with the reason, and the request is audited as `denied` with
 `metadata.extra.denial_reason`.
 
+A client that acts on the reason reads it from a field rather than from the message
+text, which may change:
+
+- On a 401, the reason is a `reason` auth-param on the challenge, after
+  `error_description`, and a `reason` member of the JSON body. `error` stays
+  `invalid_token`. For example:
+
+  ```text
+  WWW-Authenticate: Bearer error="invalid_token", error_description="the access token is not accepted (token_reused)", reason="token_reused"
+
+  {"error":"invalid_token","error_description":"the access token is not accepted (token_reused)","reason":"token_reused"}
+  ```
+
+- On a 403, the reason is `error.data.reason`:
+
+  ```json
+  {"jsonrpc":"2.0","id":2,"error":{"code":403,"message":"Forbidden: the access token does not permit this request (arguments_mismatch)","data":{"reason":"arguments_mismatch"}}}
+  ```
+
+The reasons are fixed strings, the `callbinding.Reason*` constants:
+
+| Reason | Status | Meaning |
+|--------|--------|---------|
+| `token_expired` | 401 | The token's `exp` has passed. |
+| `token_reused` | 401 | The token has already started its call, and the request would start another call or a new session. The first call may have run, so a client that cannot tell who sent it should not retry. |
+| `malformed_entry` | 401 | The `authorization_details` claim, or its `mcp_tool_call` entry, does not have the required shape. |
+| `single_entry_required` | 401 | The token carries more than one `mcp_tool_call` entry. |
+| `claims_required` | 401 | A call-bound token has no usable `jti`, `iss` or `exp`. |
+| `entry_required` | 403 | The token's client must use call-bound tokens, and the token has no `mcp_tool_call` entry. |
+| `method_not_allowed` | 403 | The request is not one a call-bound token may send, or is not sent to the MCP endpoint. |
+| `method_mismatch` | 403 | The entry names a list call, and the request is a `tools/call` or another list method. |
+| `tool_mismatch` | 403 | `params.name` is not the entry's tool. |
+| `tool_not_found` | 403 | The vMCP does not route the tool for this caller. |
+| `tool_not_bindable` | 403 | The tool has no single backend, such as a composite tool. |
+| `server_mismatch` | 403 | The vMCP routes the call to a backend other than the entry's server. |
+| `server_not_found` | 403 | The list call's server is not a backend the caller is admitted to. |
+| `invalid_arguments` | 403 | `params.arguments` is not one I-JSON object. |
+| `arguments_mismatch` | 403 | The arguments' hash is not the entry's `arguments_sha256`. |
+| `invalid_params` | 403 | The params cannot be read unambiguously, or a list call carries a `cursor`. |
+| `session_mismatch` | 403 | A GET or DELETE names a session other than the call's. |
+| `no_open_call` | 403 | A cancellation, response, GET or DELETE does not belong to an open call of the token. |
+
+A 401 without `reason` comes from the token validator, not from call binding: for
+example an expired token outside any admission grace, or a token whose signature
+fails.
+
 Two consequences are easy to miss. A token whose `authorization_details` claim is
 malformed is refused on every request, whatever its client, even one that never
 asked for call binding. And `exp` is strict: once a call-bound token expires, every

@@ -415,23 +415,28 @@ var cbTokenReasons = []string{
 }
 
 // requireRefused checks the refusal shape. A refusal that describes the token
-// gets 401 with an invalid_token challenge and an RFC 6750 error body naming
-// reason. Any other gets 403 without a challenge and a JSON-RPC 403 error
-// naming reason and echoing id.
+// gets 401 with an invalid_token challenge and an RFC 6750 error body, both
+// carrying reason as a reason member and in the description. Any other gets
+// 403 without a challenge and a JSON-RPC 403 error echoing id, carrying reason
+// in data.reason and in the message. The descriptions and messages are pinned
+// whole: clients that predate the reason member match on them.
 func requireRefused(t *testing.T, resp cbResponse, reason string, id any) {
 	t.Helper()
 	if slices.Contains(cbTokenReasons, reason) {
 		require.Equal(t, http.StatusUnauthorized, resp.status, "body: %s", resp.body)
 		assert.Equal(t,
-			`Bearer error="invalid_token", error_description="the access token is not accepted (`+reason+`)"`,
+			`Bearer error="invalid_token", error_description="the access token is not accepted (`+reason+`)", `+
+				`reason="`+reason+`"`,
 			resp.header.Get("WWW-Authenticate"))
 		var body struct {
 			Error       string `json:"error"`
 			Description string `json:"error_description"`
+			Reason      string `json:"reason"`
 		}
 		require.NoError(t, json.Unmarshal([]byte(resp.body), &body), "body: %s", resp.body)
 		assert.Equal(t, "invalid_token", body.Error)
-		assert.Contains(t, body.Description, "("+reason+")")
+		assert.Equal(t, "the access token is not accepted ("+reason+")", body.Description)
+		assert.Equal(t, reason, body.Reason)
 		return
 	}
 	require.Equal(t, http.StatusForbidden, resp.status, "body: %s", resp.body)
@@ -442,12 +447,16 @@ func requireRefused(t *testing.T, resp cbResponse, reason string, id any) {
 		Error   struct {
 			Code    int    `json:"code"`
 			Message string `json:"message"`
+			Data    struct {
+				Reason string `json:"reason"`
+			} `json:"data"`
 		} `json:"error"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(resp.body), &body), "body: %s", resp.body)
 	assert.Equal(t, "2.0", body.JSONRPC)
 	assert.Equal(t, 403, body.Error.Code)
-	assert.Contains(t, body.Error.Message, "("+reason+")")
+	assert.Equal(t, "Forbidden: the access token does not permit this request ("+reason+")", body.Error.Message)
+	assert.Equal(t, reason, body.Error.Data.Reason)
 	if id == nil {
 		assert.Empty(t, body.ID)
 	} else {
@@ -1524,6 +1533,34 @@ func TestCallBinding_ChallengeParameters(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, resp.status)
 	assert.Equal(t, `Bearer realm="`+cbIssuer+`", `+
 		`resource_metadata="https://vmcp.example.com/.well-known/oauth-protected-resource/mcp", scope="mcp", `+
-		`error="invalid_token", error_description="the access token is not accepted (token_reused)"`,
+		`error="invalid_token", error_description="the access token is not accepted (token_reused)", `+
+		`reason="token_reused"`,
 		resp.header.Get("WWW-Authenticate"))
+}
+
+// TestCallBinding_RefusalWireFormat pins the bytes of a refusal. The reason
+// is added as a field (reason on a 401, error.data.reason on a 403), and the
+// description and message keep the text clients matched before it.
+func TestCallBinding_RefusalWireFormat(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{})
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	session := s.session(t, token)
+
+	forbidden := s.send(t, http.MethodPost, token, session, toolCallBody(2, cbTool, `{"x":1}`), nil)
+	require.Equal(t, http.StatusForbidden, forbidden.status)
+	assert.Equal(t, "application/json", forbidden.header.Get("Content-Type"))
+	assert.Equal(t, `{"jsonrpc":"2.0","id":2,"error":{"code":403,`+
+		`"message":"Forbidden: the access token does not permit this request (arguments_mismatch)",`+
+		`"data":{"reason":"arguments_mismatch"}}}`, forbidden.body)
+
+	requireCallRan(t, s.send(t, http.MethodPost, token, session, toolCallBody(3, cbTool, `{}`), nil))
+	reused := s.send(t, http.MethodPost, token, session, toolCallBody(4, cbTool, `{}`), nil)
+	require.Equal(t, http.StatusUnauthorized, reused.status)
+	assert.Equal(t, `Bearer error="invalid_token", `+
+		`error_description="the access token is not accepted (token_reused)", reason="token_reused"`,
+		reused.header.Get("WWW-Authenticate"))
+	assert.Equal(t, `{"error":"invalid_token",`+
+		`"error_description":"the access token is not accepted (token_reused)","reason":"token_reused"}`,
+		reused.body)
 }

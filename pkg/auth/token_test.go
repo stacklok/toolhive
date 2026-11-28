@@ -4280,15 +4280,54 @@ func TestAuthTokenFileClientsRefuseCrossHostRedirects(t *testing.T) {
 
 func TestBearerChallengeWriteInvalidToken(t *testing.T) {
 	t.Parallel()
-	rec := httptest.NewRecorder()
-	BearerChallenge{Realm: "https://as.example.com", ResourceURL: "https://rs.example.com/mcp"}.
-		WriteInvalidToken(rec, "token reused")
-
-	require.Equal(t, http.StatusUnauthorized, rec.Code)
-	require.Equal(t, `Bearer realm="https://as.example.com", `+
-		`resource_metadata="https://rs.example.com/.well-known/oauth-protected-resource/mcp", `+
-		`error="invalid_token", error_description="token reused"`, rec.Header().Get("WWW-Authenticate"))
-	require.JSONEq(t, `{"error":"invalid_token","error_description":"token reused"}`, rec.Body.String())
+	challenge := BearerChallenge{Realm: "https://as.example.com", ResourceURL: "https://rs.example.com/mcp"}
+	const prefix = `Bearer realm="https://as.example.com", ` +
+		`resource_metadata="https://rs.example.com/.well-known/oauth-protected-resource/mcp", `
+	tests := []struct {
+		name       string
+		write      func(http.ResponseWriter)
+		wantHeader string
+		wantBody   string
+	}{
+		{
+			name:       "without a reason",
+			write:      func(w http.ResponseWriter) { challenge.WriteInvalidToken(w, "token reused") },
+			wantHeader: prefix + `error="invalid_token", error_description="token reused"`,
+			wantBody:   `{"error":"invalid_token","error_description":"token reused"}`,
+		},
+		{
+			name:       "empty reason is omitted",
+			write:      func(w http.ResponseWriter) { challenge.WriteInvalidTokenReason(w, "token reused", "") },
+			wantHeader: prefix + `error="invalid_token", error_description="token reused"`,
+			wantBody:   `{"error":"invalid_token","error_description":"token reused"}`,
+		},
+		{
+			name: "with a reason",
+			write: func(w http.ResponseWriter) {
+				challenge.WriteInvalidTokenReason(w, "token reused (token_reused)", "token_reused")
+			},
+			wantHeader: prefix + `error="invalid_token", error_description="token reused (token_reused)", ` +
+				`reason="token_reused"`,
+			wantBody: `{"error":"invalid_token","error_description":"token reused (token_reused)",` +
+				`"reason":"token_reused"}`,
+		},
+		{
+			name:       "reason is escaped",
+			write:      func(w http.ResponseWriter) { challenge.WriteInvalidTokenReason(w, "refused", `a"b`) },
+			wantHeader: prefix + `error="invalid_token", error_description="refused", reason="a\"b"`,
+			wantBody:   `{"error":"invalid_token","error_description":"refused","reason":"a\"b"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec := httptest.NewRecorder()
+			tt.write(rec)
+			require.Equal(t, http.StatusUnauthorized, rec.Code)
+			require.Equal(t, tt.wantHeader, rec.Header().Get("WWW-Authenticate"))
+			require.JSONEq(t, tt.wantBody, rec.Body.String())
+		})
+	}
 }
 
 func TestClassifyRoute(t *testing.T) {

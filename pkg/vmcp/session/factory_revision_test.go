@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -211,4 +212,73 @@ func TestMakeSession_AllBackendsFailedWarning(t *testing.T) {
 			}
 		})
 	}
+}
+
+const (
+	sessionBudgetExpiredMsg = "session initialize budget expired"
+	sessionCancelledMsg     = "session initialize cancelled"
+)
+
+//nolint:paralleltest // setupLogRecorder swaps the global slog default logger.
+func TestMakeSession_SessionInitContextLogs(t *testing.T) {
+	t.Run("deadline exceeded logs a warning", func(t *testing.T) {
+		buf := setupLogRecorder(t)
+		released := make(chan struct{})
+		t.Cleanup(func() { close(released) })
+		connector := func(ctx context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
+			select {
+			case <-ctx.Done():
+				return nil, nil, ctx.Err()
+			case <-released:
+				return &mockConnectedBackend{}, &vmcp.CapabilityList{}, nil
+			}
+		}
+		factory := newSessionFactoryWithConnector(connector, WithSessionInitTimeout(50*time.Millisecond))
+		backend := &vmcp.Backend{ID: "slow", Name: "slow", BaseURL: "http://x:9", TransportType: "streamable-http"}
+
+		sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sess.Close() })
+
+		logs := buf.String()
+		assert.Contains(t, logs, sessionBudgetExpiredMsg)
+		assert.NotContains(t, logs, sessionCancelledMsg)
+	})
+
+	t.Run("caller cancel logs at debug", func(t *testing.T) {
+		buf := setupLogRecorder(t)
+		entered := make(chan struct{})
+		connector := func(ctx context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
+			close(entered)
+			<-ctx.Done()
+			return nil, nil, ctx.Err()
+		}
+		factory := newSessionFactoryWithConnector(connector, WithSessionInitTimeout(30*time.Second))
+		backend := &vmcp.Backend{ID: "slow", Name: "slow", BaseURL: "http://x:9", TransportType: "streamable-http"}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		errCh := make(chan error, 1)
+		var sess MultiSession
+		go func() {
+			var err error
+			sess, err = factory.MakeSessionWithID(ctx, uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
+			errCh <- err
+		}()
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for connector to start")
+		}
+		cancel()
+		require.NoError(t, <-errCh)
+		t.Cleanup(func() {
+			if sess != nil {
+				_ = sess.Close()
+			}
+		})
+
+		logs := buf.String()
+		assert.Contains(t, logs, sessionCancelledMsg)
+		assert.NotContains(t, logs, sessionBudgetExpiredMsg)
+	})
 }

@@ -108,8 +108,9 @@ func erroredForbid(ps *cedar.PolicySet, diag cedar.Diagnostic) bool {
 //   - a permit scoped to read_tool matches it and no forbid matches for call_tool.
 //
 // Forbids always win. A policy set with no read_tool-scoped policy gives the same
-// result as the call check alone. An error from Cedar on either check fails closed:
-// the tool is not listed.
+// result as the call check alone. An error from a forbid, or one with no policy to
+// attribute it to, fails the check closed with an error. An error from a call_tool
+// permit is a non-match. Any error from a read_tool check returns an error.
 func (a *Authorizer) authorizeToolRead(
 	ctx context.Context,
 	clientID, toolName string,

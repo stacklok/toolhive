@@ -342,7 +342,7 @@ In the context of MCP servers, the following entities are used:
     - `Action::"get_skill"`: Get a skill
 
   Note: List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) are always
-  allowed, but the response is filtered by the user's permissions for the corresponding operation. `tools/list` uses the `tool:read` check, which a `tool:call` grant also satisfies for authorizers that do not decide `tool:read` themselves; Cedar does (see List operations below).
+  allowed, but the response is filtered by the user's permissions for the corresponding operation. `tools/list` uses the `tool:read` check. A `tool:call` grant also satisfies it unless a read-specific forbid applies (for Cedar, a `read_tool` forbid); see List operations below.
   Define policies for the specific operations (call_tool, get_prompt, read_resource, get_skill)
   and the list responses will automatically show only the items the user is authorized to access.
 

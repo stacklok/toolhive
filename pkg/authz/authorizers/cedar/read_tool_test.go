@@ -216,6 +216,15 @@ func TestToolRead_CedarErrorsFailClosed(t *testing.T) {
 			wantError: true,
 		},
 		{
+			name: "forbid error on the call check fails closed even with a read_tool permit",
+			policies: []string{
+				`permit(principal, action == Action::"read_tool", resource);`,
+				`forbid(principal, action == Action::"call_tool", resource) when { context.missing == "x" };`,
+			},
+			wantOK:    false,
+			wantError: true,
+		},
+		{
 			name: "forbid error on the read check fails closed",
 			policies: []string{
 				`permit(principal, action == Action::"read_tool", resource);`,
@@ -327,7 +336,7 @@ func TestToolRead_UpdatePoliciesRebuildsReadSet(t *testing.T) {
 
 // With no identity attached, AuthorizeWithJWTClaims fails at the missing-principal guard
 // before any policy is evaluated.
-func TestAuthorizer_ToolReadWithoutIdentityReturnsErrMissingPrincipal(t *testing.T) {
+func TestAuthorizer_CallWithoutIdentityReturnsErrMissingPrincipal(t *testing.T) {
 	t.Parallel()
 
 	a, err := NewCedarAuthorizer(ConfigOptions{

@@ -449,42 +449,25 @@ func newMutatingWebhookServer(t *testing.T, patch []JSONPatchOp) *httptest.Serve
 	return server
 }
 
-// TestMutatingMiddleware_ParsedRequestReflectsRenamedTool pins the invariant
-// that authorization (which reads mcp.GetParsedMCPRequest) depends on: the
-// cached parse in the request context must always describe the SAME tool
-// name that ends up in the body the backend receives, even after a mutating
-// webhook renames the tool. The chain here uses the real mcp.ParsingMiddleware
-// (not a hand-built ParsedMCPRequest) so the cached parse is produced exactly
-// as it is in production.
-func TestMutatingMiddleware_ParsedRequestReflectsRenamedTool(t *testing.T) {
+// TestMutatingMiddleware_ToolRenamePatchRejected pins that mutating webhooks
+// cannot rewrite the tool name (or method): tool filtering and rate limiting
+// run before mutation, so allowing a rename would bypass those controls.
+func TestMutatingMiddleware_ToolRenamePatchRejected(t *testing.T) {
 	t.Parallel()
 
 	server := newMutatingWebhookServer(t, renameToolPatch)
 	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{makeConfig(server.URL, webhook.FailurePolicyFail)}), "srv", "stdio")
 
 	var nextCalled bool
-	handler := mcp.ParsingMiddleware(mw(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	handler := mcp.ParsingMiddleware(mw(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		nextCalled = true
-		parsed := mcp.GetParsedMCPRequest(r.Context())
-		require.NotNil(t, parsed)
-
-		bodyBytes, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
-		assert.EqualValues(t, len(bodyBytes), r.ContentLength, "ContentLength must match the mutated body actually readable from r.Body")
-
-		var body map[string]interface{}
-		require.NoError(t, json.Unmarshal(bodyBytes, &body))
-		params := body["params"].(map[string]interface{})
-
-		assert.Equal(t, "delete_file", parsed.ResourceID, "cached parse must reflect the renamed tool")
-		assert.Equal(t, params["name"], parsed.ResourceID, "cached parse and mutated body must agree on the tool name")
 	})))
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, newUnparsedMCPRequest(t, []byte(renameToolReqBody)))
 
-	require.True(t, nextCalled, "next must be called for the request to be observed")
-	require.Equal(t, http.StatusOK, rr.Code)
+	require.False(t, nextCalled, "next must not be called when the patch rewrites the tool name")
+	require.Equal(t, http.StatusInternalServerError, rr.Code)
 }
 
 // TestMutatingMiddleware_ParsedRequestReflectsPatchedArgument pins the same
@@ -518,13 +501,9 @@ func TestMutatingMiddleware_ParsedRequestReflectsPatchedArgument(t *testing.T) {
 	require.Equal(t, http.StatusOK, rr.Code)
 }
 
-// TestMutatingMiddleware_HolderReflectsMutatedResourceID pins the invariant
-// that audit (pkg/audit/auditor.go) depends on: it wraps the chain, injects an
-// mcp.ParsedRequestHolder before calling in, and reads the holder after
-// ServeHTTP returns. That holder must reflect the SAME mutated tool name that
-// ends up in the body the backend receives, not the pre-mutation name the
-// parser first observed.
-func TestMutatingMiddleware_HolderReflectsMutatedResourceID(t *testing.T) {
+// TestMutatingMiddleware_HolderUnchangedWhenToolRenameRejected ensures audit
+// never observes a renamed tool when the patch is rejected at scope validation.
+func TestMutatingMiddleware_HolderUnchangedWhenToolRenameRejected(t *testing.T) {
 	t.Parallel()
 
 	server := newMutatingWebhookServer(t, renameToolPatch)
@@ -538,9 +517,7 @@ func TestMutatingMiddleware_HolderReflectsMutatedResourceID(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
-	require.Equal(t, http.StatusOK, rr.Code)
-	require.NotNil(t, holder.Parsed, "audit holder must be filled by the parser")
-	assert.Equal(t, "delete_file", holder.Parsed.ResourceID, "audit holder must reflect the mutated tool name")
+	require.Equal(t, http.StatusInternalServerError, rr.Code)
 }
 
 // TestMutatingMiddleware_PatchRemovesMethod_ReturnsConformantError pins the

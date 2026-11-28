@@ -86,6 +86,21 @@ func mentionsReadToolOutsideScope(p *cedar.Policy) bool {
 		strings.Contains(string(p.MarshalCedar()), readToolActionQuoted)
 }
 
+// erroredForbid reports whether a Cedar evaluation error must fail the check closed.
+// An error from a permit only means that permit did not match (Cedar already treats it
+// that way), so a read_tool permit can still list a tool that a call_tool permit
+// errors on. An error from a forbid, or one with no policy to attribute it to, fails
+// closed so a forbid that cannot be evaluated never stops hiding its tool.
+func erroredForbid(ps *cedar.PolicySet, diag cedar.Diagnostic) bool {
+	for _, e := range diag.Errors {
+		p := ps.Get(e.PolicyID)
+		if p == nil || p.Effect() != cedar.Permit {
+			return true
+		}
+	}
+	return false
+}
+
 // authorizeToolRead decides whether a tool is listed on tools/list.
 //
 // A tool is listed when either:
@@ -121,7 +136,7 @@ func (a *Authorizer) authorizeToolRead(
 	if err != nil {
 		return false, err
 	}
-	if len(callDiag.Errors) > 0 {
+	if erroredForbid(a.policySet, callDiag) {
 		return false, fmt.Errorf("authorization error: %v", callDiag.Errors)
 	}
 
@@ -130,7 +145,7 @@ func (a *Authorizer) authorizeToolRead(
 	if err != nil {
 		return false, err
 	}
-	if len(readDiag.Errors) > 0 {
+	if erroredForbid(a.readSet, readDiag) {
 		return false, fmt.Errorf("authorization error: %v", readDiag.Errors)
 	}
 

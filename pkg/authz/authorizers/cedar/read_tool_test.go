@@ -194,25 +194,58 @@ func TestToolRead_AnswersToolReadNatively(t *testing.T) {
 	assert.True(t, native.AnswersToolRead())
 }
 
-// A Cedar error on either check fails closed: the tool is not listed and the error is returned.
+// A Cedar error from a forbid fails closed: the tool is not listed and the error is returned.
+// An error from a permit only means that permit did not match, so it neither lists nor
+// hides the tool on its own.
 func TestToolRead_CedarErrorsFailClosed(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		policies []string
+		name      string
+		policies  []string
+		wantOK    bool
+		wantError bool
 	}{
 		{
-			name: "error on the call check",
+			name: "forbid error on the call check fails closed",
+			policies: []string{
+				"permit(principal, action, resource);",
+				`forbid(principal, action == Action::"call_tool", resource) when { context.missing == "x" };`,
+			},
+			wantOK:    false,
+			wantError: true,
+		},
+		{
+			name: "forbid error on the read check fails closed",
+			policies: []string{
+				`permit(principal, action == Action::"read_tool", resource);`,
+				`forbid(principal, action == Action::"read_tool", resource) when { context.missing == "x" };`,
+			},
+			wantOK:    false,
+			wantError: true,
+		},
+		{
+			name: "permit error on the call check alone hides the tool",
 			policies: []string{
 				`permit(principal, action == Action::"call_tool", resource) when { context.missing == "x" };`,
 			},
+			wantOK: false,
 		},
 		{
-			name: "error on the read check",
+			name: "permit error on the call check does not hide a read_tool grant",
 			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource) when { context.missing == "x" };`,
+				`permit(principal, action == Action::"read_tool", resource);`,
+			},
+			wantOK: true,
+		},
+		{
+			name: "permit error on the read check does not hide a call grant",
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource);`,
 				`permit(principal, action == Action::"read_tool", resource) when { context.missing == "x" };`,
 			},
+			wantOK: true,
 		},
 	}
 	for _, tc := range tests {
@@ -220,8 +253,12 @@ func TestToolRead_CedarErrorsFailClosed(t *testing.T) {
 			t.Parallel()
 			ok, err := authorizeWithClaims(t, tc.policies, nil,
 				authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
-			assert.False(t, ok)
-			assert.Error(t, err)
+			assert.Equal(t, tc.wantOK, ok)
+			if tc.wantError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }

@@ -130,28 +130,6 @@ func NewAuditEvent(
 	}
 }
 
-// NewAuditEventWithID returns a new AuditEvent with the passed AuditID.
-func NewAuditEventWithID(
-	auditID string,
-	eventType string,
-	source EventSource,
-	outcome string,
-	subjects map[string]string,
-	component string,
-) *AuditEvent {
-	return &AuditEvent{
-		Metadata: EventMetadata{
-			AuditID: auditID,
-		},
-		Type:      eventType,
-		LoggedAt:  time.Now().UTC(),
-		Source:    source,
-		Outcome:   outcome,
-		Subjects:  subjects,
-		Component: component,
-	}
-}
-
 // WithDelegationChain sets the RFC 8693 delegation chain of the event.
 // A nil or zero chain (no hops, no truncation, no malformation — see
 // [coreaudit.DelegationChain.IsZero]) clears any previously set chain. A

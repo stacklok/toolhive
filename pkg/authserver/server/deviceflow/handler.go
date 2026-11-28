@@ -26,7 +26,7 @@ var _ fosite.TokenEndpointHandler = (*Handler)(nil)
 // embedded *fosite.Config on server.AuthorizationServerConfig satisfies this
 // (its own no-context adapter methods of the same name would otherwise
 // shadow the ctx-taking ones fosite's provider interfaces require — see
-// tokenexchange.Factory's identical concern).
+// tokenexchange.FactoryWithSharedTrustedIssuerValidator's identical concern).
 type deviceFlowConfig interface {
 	fosite.AccessTokenLifespanProvider
 	fosite.RefreshTokenLifespanProvider

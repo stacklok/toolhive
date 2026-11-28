@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	"github.com/stacklok/toolhive/pkg/authserver/subject"
+	"github.com/stacklok/toolhive/pkg/authserver/subjectresolver"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
@@ -148,4 +149,50 @@ func TestBuildJWTBearerFactoriesForConfig(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Len(t, factories, 2)
+}
+
+func TestValidateSingleIssuerPerProvider(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		providers map[string]subjectresolver.Provider
+		wantErr   string
+	}{
+		{
+			name: "one issuer for the provider",
+			providers: map[string]subjectresolver.Provider{
+				"https://idp.example.com": {Name: "idp", SubjectClaim: "sub"},
+			},
+		},
+		{
+			name: "two providers with one issuer each",
+			providers: map[string]subjectresolver.Provider{
+				"https://idp.example.com":   {Name: "idp", SubjectClaim: "sub"},
+				"https://other.example.com": {Name: "other", SubjectClaim: "sub"},
+			},
+		},
+		{
+			name: "two issuers for one provider",
+			providers: map[string]subjectresolver.Provider{
+				"https://idp.example.com":   {Name: "idp", SubjectClaim: "sub"},
+				"https://okta.example.com":  {Name: "idp", SubjectClaim: "uid"},
+				"https://other.example.com": {Name: "other", SubjectClaim: "sub"},
+			},
+			wantErr: `provider "idp" maps to more than one issuer (https://idp.example.com, https://okta.example.com); ` +
+				"a second issuer for one provider is not supported yet because rows are stamped with the sign-in issuer",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSingleIssuerPerProvider(tt.providers)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }

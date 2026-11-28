@@ -74,16 +74,6 @@ func NewRedisStorage(ctx context.Context, cfg redisconn.Config, keyPrefix string
 	}, nil
 }
 
-// newRedisStorageWithClient creates a RedisStorage with a pre-configured client.
-// Intended for tests only (bypasses Ping); production callers must use NewRedisStorage.
-func newRedisStorageWithClient(client redis.UniversalClient, keyPrefix string, ttl time.Duration) *RedisStorage {
-	return &RedisStorage{
-		client:    client,
-		keyPrefix: keyPrefix,
-		ttl:       ttl,
-	}
-}
-
 // validateSessionInvariants checks the per-storage invariants that the shared
 // toolhive-core redis package does not enforce (key-prefix conventions, TTL
 // bounds).

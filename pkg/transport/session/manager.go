@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/stacklok/toolhive-core/redisconn"
 )
 
 const (
@@ -87,24 +85,6 @@ func NewManager(ttl time.Duration, factory interface{}) *Manager {
 	return m
 }
 
-// NewTypedManager creates a session manager for a specific session type.
-func NewTypedManager(ttl time.Duration, sessionType SessionType) *Manager {
-	factory := func(id string) Session {
-		switch sessionType {
-		case SessionTypeSSE:
-			return NewSSESession(id)
-		case SessionTypeMCP:
-			return NewProxySession(id)
-		case SessionTypeStreamable:
-			return NewTypedProxySession(id, sessionType)
-		default:
-			return NewTypedProxySession(id, sessionType)
-		}
-	}
-
-	return NewManager(ttl, factory)
-}
-
 // NewManagerWithStorage creates a session manager with a custom storage backend.
 func NewManagerWithStorage(ttl time.Duration, factory Factory, storage Storage) *Manager {
 	m := &Manager{
@@ -115,29 +95,6 @@ func NewManagerWithStorage(ttl time.Duration, factory Factory, storage Storage) 
 	}
 	go m.cleanupRoutine()
 	return m
-}
-
-// NewManagerWithRedis creates a session manager backed by Redis.
-// ctx is used for the initial Ping during construction and should carry any
-// deadline appropriate for the connection attempt (e.g. a startup timeout).
-// cfg supplies the Redis connection configuration (delegated to the shared
-// toolhive-core redis package); keyPrefix namespaces the keys and must end
-// with ':'. ttl is applied as both the manager's cleanup interval and the
-// Redis key TTL. Returns an error if the Redis client cannot be constructed
-// (e.g. invalid config or TLS error). Callers that do not require Redis
-// should use NewManager or NewTypedManager instead.
-func NewManagerWithRedis(
-	ctx context.Context,
-	ttl time.Duration,
-	factory Factory,
-	cfg redisconn.Config,
-	keyPrefix string,
-) (*Manager, error) {
-	storage, err := NewRedisStorage(ctx, cfg, keyPrefix, ttl)
-	if err != nil {
-		return nil, fmt.Errorf("creating redis storage: %w", err)
-	}
-	return NewManagerWithStorage(ttl, factory, storage), nil
 }
 
 func (m *Manager) cleanupRoutine() {
@@ -315,11 +272,4 @@ func (m *Manager) Count() int {
 		return localStorage.Count()
 	}
 	return 0
-}
-
-func (m *Manager) cleanupExpiredOnce() error {
-	cutoff := time.Now().Add(-m.ttl)
-	ctx, cancel := context.WithTimeout(context.Background(), cleanupOperationTimeout)
-	defer cancel()
-	return m.storage.DeleteExpired(ctx, cutoff)
 }

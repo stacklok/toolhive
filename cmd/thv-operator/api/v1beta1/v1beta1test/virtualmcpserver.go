@@ -100,15 +100,6 @@ func WithVMCPStatus(status mcpv1beta1.VirtualMCPServerStatus) VirtualMCPServerOp
 	return func(v *mcpv1beta1.VirtualMCPServer) { v.Status = status }
 }
 
-// WithVMCPDeletionTimestamp marks the server as being deleted (with the given
-// finalizers so the fake client accepts the non-zero timestamp).
-func WithVMCPDeletionTimestamp(ts metav1.Time, finalizers ...string) VirtualMCPServerOption {
-	return func(v *mcpv1beta1.VirtualMCPServer) {
-		v.DeletionTimestamp = &ts
-		v.Finalizers = finalizers
-	}
-}
-
 // MutateVMCP is the escape hatch for spec or metadata fields that have no
 // dedicated option. It runs in option order. Prefer a dedicated option when one
 // exists; keep genuinely complex fixtures as inline literals.

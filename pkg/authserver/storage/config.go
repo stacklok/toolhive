@@ -63,19 +63,6 @@ const (
 	DefaultMaxDCRClients = 10000
 )
 
-// Config configures the storage backend.
-type Config struct {
-	// Type specifies the storage backend type. Defaults to memory.
-	Type Type
-}
-
-// DefaultConfig returns sensible defaults.
-func DefaultConfig() *Config {
-	return &Config{
-		Type: TypeMemory,
-	}
-}
-
 // RunConfig is the serializable storage configuration for RunConfig.
 // This is used when the config needs to be passed across process boundaries
 // (e.g., in Kubernetes operator).

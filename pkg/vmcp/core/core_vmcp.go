@@ -946,8 +946,7 @@ func advertisedToolsWith(
 // (and therefore executes) for agg's view: those whose every tool step is reachable
 // in the routing table, whose names do not collide with a backend tool, AND whose
 // explicit annotations do not contradict the derived safety floor. On a name
-// collision ALL composites are dropped so the backend tool wins, matching the legacy
-// compositeToolsDecorator (sessionmanager/factory.go:158-168, decorator.go:83-86).
+// collision ALL composites are dropped so the backend tool wins.
 // On an annotation contradiction the offending composite is dropped (with a warning)
 // so CallTool and ListTools share the same set.
 //

@@ -75,20 +75,3 @@ func readMarkerFileFromPath(path string) (*cliSourceMarker, error) {
 
 	return &marker, nil
 }
-
-// markerFileExists checks if the marker file exists without reading it.
-func markerFileExists() (bool, error) {
-	markerPath, err := getMarkerFilePath()
-	if err != nil {
-		return false, err
-	}
-
-	_, err = os.Stat(markerPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
-}

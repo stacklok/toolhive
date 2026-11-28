@@ -19,6 +19,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/subject"
@@ -46,8 +48,9 @@ type Provider struct {
 
 // Resolver resolves a subject.Ref to a local user ID.
 type Resolver struct {
-	providers map[string]Provider
-	store     IdentityStore
+	providers        map[string]Provider
+	store            IdentityStore
+	unstampedLogOnce sync.Once
 }
 
 var _ subject.Resolver = (*Resolver)(nil)
@@ -56,8 +59,10 @@ var _ subject.Resolver = (*Resolver)(nil)
 // Each entry asserts what Provider documents: that the issuer's SubjectClaim
 // values are the subjects the named upstream stores. New accepts several
 // issuers for the same provider name with different subject claims (an Okta
-// custom authorization server carries the sign-in subject in uid), but nothing
-// configures that yet; it belongs to the third-party issuers work.
+// custom authorization server carries the sign-in subject in uid), but the
+// server refuses to build such a mapping at startup, and nothing configures it
+// yet; it belongs to the third-party issuers work. Resolve compares rows with
+// the token's issuer, not the sign-in binding (see there).
 // It returns an error if the store is nil, no providers are given, an entry has
 // an empty issuer, name or subject claim, or subject.ValidateBindingClaim
 // refuses an entry's claim (the error wraps subject.ErrInvalidBindingClaim).
@@ -86,12 +91,17 @@ func New(providers map[string]Provider, store IdentityStore) (*Resolver, error) 
 
 // Resolve returns the local user ID for ref. A claim that is not the
 // provider's subject claim is refused here by design, so a value from another
-// claim is never looked up as a stored subject.
+// claim is never looked up as a stored subject. A stored row stamped with an
+// issuer or subject claim other than the provider's issuer and
+// SubjectClaim is also refused with subject.ErrUnknown (read-only, no
+// write). Pre-upgrade unstamped rows are accepted without
+// writing and logged once per resolver.
 //
 // It returns subject.ErrNotConfigured when the issuer has no provider or the
 // claim is not the provider's subject claim, subject.ErrUnknown when no
-// provider identity matches or the identity points at a user that no longer
-// exists, and subject.ErrUnavailable when the store cannot answer.
+// provider identity matches, the stored row's issuer or subject claim differs,
+// or the identity points at a user that no longer exists, and
+// subject.ErrUnavailable when the store cannot answer.
 func (r *Resolver) Resolve(ctx context.Context, ref subject.Ref) (string, error) {
 	p, ok := r.providers[ref.Issuer]
 	if !ok || ref.Claim != p.SubjectClaim {
@@ -107,6 +117,16 @@ func (r *Resolver) Resolve(ctx context.Context, ref subject.Ref) (string, error)
 	if identity == nil || identity.UserID == "" {
 		return "", subject.ErrUnknown
 	}
+	unstamped := identity.IsUnstamped()
+	// The row is compared with the token's issuer and the provider's subject
+	// claim, which equal the sign-in binding only while a provider has a single
+	// issuer. A cross-issuer mapping (for example an Okta custom authorization
+	// server with the subject in uid) will need Provider to carry the sign-in
+	// binding and compare against it; see "Delegated access: tokens and actors
+	// from third-party issuers".
+	if !identity.MatchesBinding(ref.Issuer, p.SubjectClaim) && !unstamped {
+		return "", subject.ErrUnknown
+	}
 	user, err := r.store.GetUser(ctx, identity.UserID)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
@@ -116,6 +136,17 @@ func (r *Resolver) Resolve(ctx context.Context, ref subject.Ref) (string, error)
 	}
 	if user == nil || user.ID == "" {
 		return "", subject.ErrUnknown
+	}
+	if unstamped {
+		r.unstampedLogOnce.Do(func() {
+			slog.Warn(
+				"resolved legacy unstamped provider identity without issuer and subject claim; "+
+					"row accepted read-only; sign-in stamps it when the storage supports compare-and-swap",
+				"provider_id", p.Name,
+				"issuer", ref.Issuer,
+				"subject_claim", ref.Claim,
+			)
+		})
 	}
 	return user.ID, nil
 }

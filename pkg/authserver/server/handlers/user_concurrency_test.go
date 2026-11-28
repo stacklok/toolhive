@@ -158,3 +158,138 @@ func TestUserResolver_RepeatLogins_SameUser(t *testing.T) {
 		})
 	}
 }
+
+func TestUserResolver_ConcurrentMismatchedReplacements_OneNewUser(t *testing.T) {
+	t.Parallel()
+	for name, newBackend := range resolveBackends() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := newBackend(t)
+			ctx := context.Background()
+
+			oldResolver := NewUserResolver(b.store,
+				WithCreateOnlyFor("upstream"),
+				WithIdentityBinding("upstream", "https://old-idp.example.com", "sub"),
+			)
+			newResolver := NewUserResolver(b.store,
+				WithCreateOnlyFor("upstream"),
+				WithIdentityBinding("upstream", "https://new-idp.example.com", "oid"),
+			)
+
+			for round := range resolveRaceRounds {
+				subject := fmt.Sprintf("replace-subject-%d", round)
+				oldUser, err := oldResolver.ResolveUser(ctx, "upstream", subject)
+				require.NoError(t, err)
+
+				start := make(chan struct{})
+				ids := make([]string, resolveRaceGoroutines)
+				errs := make([]error, resolveRaceGoroutines)
+				var wg sync.WaitGroup
+				for i := range resolveRaceGoroutines {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						<-start
+						user, rErr := newResolver.ResolveUser(ctx, "upstream", subject)
+						errs[i] = rErr
+						if rErr == nil {
+							ids[i] = user.ID
+						}
+					}()
+				}
+				close(start)
+				done := make(chan struct{})
+				go func() { wg.Wait(); close(done) }()
+				select {
+				case <-done:
+				case <-time.After(10 * time.Second):
+					t.Fatal("timeout waiting for concurrent replace callers")
+				}
+
+				for i := range ids {
+					require.NoError(t, errs[i], "round %d caller %d", round, i)
+					require.NotEmpty(t, ids[i])
+					require.NotEqual(t, oldUser.ID, ids[i], "round %d: must not adopt old user", round)
+					require.Equal(t, ids[0], ids[i], "round %d: callers resolved different new users", round)
+				}
+
+				// Old user remains untouched with zero linked identities; new user owns the single link.
+				oldKept, err := b.store.GetUser(ctx, oldUser.ID)
+				require.NoError(t, err)
+				require.Equal(t, oldUser.ID, oldKept.ID)
+
+				oldLinks, err := b.store.GetUserProviderIdentities(ctx, oldUser.ID)
+				require.NoError(t, err)
+				require.Empty(t, oldLinks, "round %d: old user must have no links after replace", round)
+
+				newLinks, err := b.store.GetUserProviderIdentities(ctx, ids[0])
+				require.NoError(t, err)
+				require.Len(t, newLinks, 1, "round %d: winner must have exactly one linked identity", round)
+				require.Equal(t, "https://new-idp.example.com", newLinks[0].Issuer)
+				require.Equal(t, "oid", newLinks[0].SubjectClaim)
+
+				// Every round keeps the untouched old user + 1 new user (2 users per round) and 1 link.
+				require.Equal(t, 2*(round+1), b.userCount(t), "round %d: orphaned or duplicate user", round)
+				require.Equal(t, round+1, b.linkCount(t), "round %d: duplicate link", round)
+			}
+		})
+	}
+}
+
+func TestUserResolver_ConcurrentUnstampedLogins_StampOnceSameUser(t *testing.T) {
+	t.Parallel()
+	for name, newBackend := range resolveBackends() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := newBackend(t)
+			ctx := context.Background()
+
+			legacyResolver := NewUserResolver(b.store)
+			boundResolver := NewUserResolver(b.store,
+				WithCreateOnlyFor("upstream"),
+				WithIdentityBinding("upstream", "https://idp.example.com", "sub"),
+			)
+
+			for round := range resolveRaceRounds {
+				subject := fmt.Sprintf("stamp-subject-%d", round)
+				legacyUser, err := legacyResolver.ResolveUser(ctx, "upstream", subject)
+				require.NoError(t, err)
+
+				start := make(chan struct{})
+				ids := make([]string, resolveRaceGoroutines)
+				errs := make([]error, resolveRaceGoroutines)
+				var wg sync.WaitGroup
+				for i := range resolveRaceGoroutines {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						<-start
+						user, rErr := boundResolver.ResolveUser(ctx, "upstream", subject)
+						errs[i] = rErr
+						if rErr == nil {
+							ids[i] = user.ID
+						}
+					}()
+				}
+				close(start)
+				done := make(chan struct{})
+				go func() { wg.Wait(); close(done) }()
+				select {
+				case <-done:
+				case <-time.After(10 * time.Second):
+					t.Fatal("timeout waiting for concurrent stamp callers")
+				}
+
+				for i := range ids {
+					require.NoError(t, errs[i], "round %d caller %d", round, i)
+					require.Equal(t, legacyUser.ID, ids[i], "round %d: must preserve legacy user", round)
+				}
+
+				row, err := b.store.GetProviderIdentity(ctx, "upstream", subject)
+				require.NoError(t, err)
+				require.Equal(t, "https://idp.example.com", row.Issuer)
+				require.Equal(t, "sub", row.SubjectClaim)
+			}
+		})
+	}
+}

@@ -172,7 +172,7 @@ func TestSessionOwnershipHTTP(t *testing.T) {
 	// The original owner connection, not a replacement, must still receive data.
 	notification, err := jsonrpc2.NewNotification("notifications/tools/list_changed", nil)
 	require.NoError(t, err)
-	proxy.serverStreams.dispatchTo(sid, notification)
+	proxy.serverStreams.deliverToMany([]string{sid}, notification)
 	scanner := bufio.NewScanner(stream.Body)
 	for scanner.Scan() {
 		if strings.HasPrefix(scanner.Text(), "data:") {

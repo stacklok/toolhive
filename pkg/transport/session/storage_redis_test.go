@@ -395,3 +395,13 @@ func TestRedisStorage(t *testing.T) {
 		})
 	})
 }
+
+// newRedisStorageWithClient creates a RedisStorage with a pre-configured
+// client, bypassing the Ping that NewRedisStorage performs.
+func newRedisStorageWithClient(client redis.UniversalClient, keyPrefix string, ttl time.Duration) *RedisStorage {
+	return &RedisStorage{
+		client:    client,
+		keyPrefix: keyPrefix,
+		ttl:       ttl,
+	}
+}

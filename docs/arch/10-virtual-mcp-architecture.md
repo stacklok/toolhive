@@ -1173,7 +1173,7 @@ converter reads the client secret from the referenced Secret.
 
 Exchanged tokens are cached to avoid repeated exchange calls.
 
-**Implementation**: `pkg/vmcp/auth/`, `pkg/vmcp/cache/`
+**Implementation**: `pkg/vmcp/auth/`, `pkg/auth/obo/`
 
 #### Delegated upstream authentication
 
@@ -1765,7 +1765,9 @@ OIDC configuration). Every other refusal is about the request and gets HTTP 403 
 JSON-RPC error with code 403 and no `WWW-Authenticate`, as the pre-dispatch gate
 answers a Cedar denial: `insufficient_scope` is what MCP clients read as a step-up
 hint, and no scope would make these requests acceptable. Both messages end with the
-reason. The refusal is audited like a Cedar denial (outcome `denied`), with the reason
+reason, and both carry it as a field for clients to read: a `reason` auth-param on the
+challenge and a `reason` member of the body on a 401 (`auth.BearerChallenge.WriteInvalidTokenReason`),
+`error.data.reason` on a 403. See [Authorization](../authz.md) for the values. The refusal is audited like a Cedar denial (outcome `denied`), with the reason
 in `metadata.extra.denial_reason`, for a stream-opening GET too. Logs carry the `jti`,
 the client, the entry's server, tool, method and operation ID, and the reason; never
 the token or the arguments. When the record, the route lookup or a list-call token's

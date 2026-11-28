@@ -420,7 +420,7 @@ func audienceIntersects(audience jwt.Audience, accepted []string) bool {
 //
 // shared is used as the JWTBearerAssertionValidator and is REQUIRED whenever
 // trustedIssuers is non-empty (an error is returned otherwise). The RFC 8693
-// token-exchange Factory and this one are usually enabled for the same trusted
+// token-exchange factory and this one are usually enabled for the same trusted
 // issuers, and each MultiIssuerTokenValidator registers its own per-issuer
 // jwkfetch.Cache and background refresh goroutines; sharing one instance avoids
 // doubling that cost, and — since the validator's JWKS workers are released
@@ -449,7 +449,7 @@ func jwtBearerGrantFactory(
 	if err != nil {
 		return nil, fmt.Errorf("JWT-bearer trusted issuers: %w", err)
 	}
-	// Unconditionally required (unlike the token-exchange Factory, which validly
+	// Unconditionally required (unlike the token-exchange factory, which validly
 	// supports self-issued-only): JWT-bearer issuance is meaningful only against
 	// trusted issuers, so there is no no-issuer case that would legitimately
 	// leave shared nil. Requiring it also keeps the validator's JWKS workers

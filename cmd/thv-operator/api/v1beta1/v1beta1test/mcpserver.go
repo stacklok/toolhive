@@ -156,15 +156,6 @@ func WithStatus(status mcpv1beta1.MCPServerStatus) MCPServerOption {
 	return func(m *mcpv1beta1.MCPServer) { m.Status = status }
 }
 
-// WithDeletionTimestamp marks the server as being deleted (with the given
-// finalizers so the fake client accepts the non-zero timestamp).
-func WithDeletionTimestamp(ts metav1.Time, finalizers ...string) MCPServerOption {
-	return func(m *mcpv1beta1.MCPServer) {
-		m.DeletionTimestamp = &ts
-		m.Finalizers = finalizers
-	}
-}
-
 // Mutate is the escape hatch for spec or metadata fields that have no dedicated
 // option (AuthzConfig, ResourceOverrides, Secrets, Volumes,
 // metadata.UID/Generation, …). It applies in argument order like any other

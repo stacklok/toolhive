@@ -132,15 +132,6 @@ func WithRemoteProxyStatus(status mcpv1beta1.MCPRemoteProxyStatus) MCPRemoteProx
 	return func(p *mcpv1beta1.MCPRemoteProxy) { p.Status = status }
 }
 
-// WithRemoteProxyDeletionTimestamp marks the proxy as being deleted (with the
-// given finalizers so the fake client accepts the non-zero timestamp).
-func WithRemoteProxyDeletionTimestamp(ts metav1.Time, finalizers ...string) MCPRemoteProxyOption {
-	return func(p *mcpv1beta1.MCPRemoteProxy) {
-		p.DeletionTimestamp = &ts
-		p.Finalizers = finalizers
-	}
-}
-
 // MutateRemoteProxy is the escape hatch for spec or metadata fields that have no
 // dedicated option (Resources, ResourceOverrides, EndpointPrefix,
 // TrustProxyHeaders, SessionAffinity, metadata.UID/Labels, …). It runs in option

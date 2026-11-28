@@ -1160,17 +1160,6 @@ func IsValidClient(clientType string) bool {
 	return false
 }
 
-// GetClientDescription returns the description for a given client type.
-// Returns an empty string if the client type is not found.
-func GetClientDescription(clientType ClientApp) string {
-	for _, config := range supportedClientIntegrations {
-		if config.ClientType == clientType {
-			return config.Description
-		}
-	}
-	return ""
-}
-
 // GetClientDeprecation returns the deprecation warning message for a client type
 // and whether the client is deprecated. The message is empty when the client is
 // not deprecated.

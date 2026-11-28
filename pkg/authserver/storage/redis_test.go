@@ -42,6 +42,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto/cimd"
 )
 
+// withRedisClock sets the clock that drives DCR cap index scores and every
+// exchange grant TTL and expiry decision, so tests can keep it in step with
+// miniredis's key TTLs.
+func withRedisClock(now func() time.Time) RedisStorageOption {
+	return func(s *RedisStorage) {
+		s.now = now
+	}
+}
+
 // --- Test Helpers ---
 
 func newTestRedisStorage(t *testing.T) (*RedisStorage, *miniredis.Miniredis) {
@@ -6201,6 +6210,181 @@ func TestRedisStorage_CreateProviderIdentity_FailedUserSetWriteLeavesNoLink(t *t
 	// The identity can be linked once the set is healthy again.
 	mr.Del(redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-1"))
 	require.NoError(t, s.CreateProviderIdentity(ctx, contractIdentity("user-1", "provider-a", "subject-1")))
+}
+
+func TestRedisStorage_ProviderIdentity_LegacyJSONDecodesUnstamped(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	// Old-format JSON without "issuer" or "subject_claim" members.
+	raw := `{"user_id":"user-legacy","provider_id":"default","provider_subject":"sub-1","linked_at":1700000000,"last_used_at":1700000100}`
+	key := redisProviderKey(s.keyPrefix, "default", "sub-1")
+	require.NoError(t, mr.Set(key, raw))
+
+	got, err := s.GetProviderIdentity(ctx, "default", "sub-1")
+	require.NoError(t, err)
+	assert.Equal(t, "user-legacy", got.UserID)
+	assert.True(t, got.IsUnstamped())
+	assert.Empty(t, got.Issuer)
+	assert.Empty(t, got.SubjectClaim)
+}
+
+func TestRedisStorage_CompareAndSwapProviderIdentity_WrongTypeSetFailsBeforeAnyWrite(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	now := time.Now()
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-old", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-new", CreatedAt: now, UpdatedAt: now}))
+
+	oldID := &ProviderIdentity{
+		UserID: "user-old", ProviderID: "provider-a", ProviderSubject: "subject-1",
+		Issuer: "https://old.example.com", SubjectClaim: "sub",
+		LinkedAt: now, LastUsedAt: now,
+	}
+	require.NoError(t, s.CreateProviderIdentity(ctx, oldID))
+
+	// Corrupt the new user's provider set with a non-set key so WRONGTYPE fires.
+	require.NoError(t, mr.Set(redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-new"), "not-a-set"))
+
+	newID := &ProviderIdentity{
+		UserID: "user-new", ProviderID: "provider-a", ProviderSubject: "subject-1",
+		Issuer: "https://new.example.com", SubjectClaim: "oid",
+		LinkedAt: now, LastUsedAt: now,
+	}
+	err := s.CompareAndSwapProviderIdentity(ctx, oldID, newID)
+	require.Error(t, err)
+
+	// Existing row must remain intact, not deleted.
+	got, err := s.GetProviderIdentity(ctx, "provider-a", "subject-1")
+	require.NoError(t, err)
+	assert.Equal(t, "user-old", got.UserID)
+	assert.Equal(t, "https://old.example.com", got.Issuer)
+	assert.Equal(t, "sub", got.SubjectClaim)
+}
+
+func TestRedisStorage_CompareAndSwapProviderIdentity_CorruptJSONFailsClosed(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	now := time.Now()
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-new", CreatedAt: now, UpdatedAt: now}))
+	key := redisProviderKey(s.keyPrefix, "provider-a", "subject-1")
+	require.NoError(t, mr.Set(key, "{not-valid-json"))
+
+	exp := &ProviderIdentity{UserID: "user-old", ProviderID: "provider-a", ProviderSubject: "subject-1"}
+	rep := &ProviderIdentity{
+		UserID: "user-new", ProviderID: "provider-a", ProviderSubject: "subject-1",
+		Issuer: "https://new.example.com", SubjectClaim: "sub",
+	}
+	err := s.CompareAndSwapProviderIdentity(ctx, exp, rep)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrProviderIdentityChanged)
+	assert.NotErrorIs(t, err, ErrNotFound)
+
+	// Non-string issuer field must also fail closed as corrupt JSON, not coerce to "".
+	require.NoError(t, mr.Set(key, `{"user_id":"user-old","provider_id":"provider-a","provider_subject":"subject-1","issuer":123}`))
+	err = s.CompareAndSwapProviderIdentity(ctx, exp, rep)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrProviderIdentityChanged)
+	assert.NotErrorIs(t, err, ErrNotFound)
+}
+
+func TestRedisStorage_StaleReverseIndexEntryDoesNotLeakOrDeleteNewOwner(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	now := time.Now()
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-old", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-new", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, s.CreateProviderIdentity(ctx, &ProviderIdentity{
+		UserID: "user-new", ProviderID: "provider-a", ProviderSubject: "subject-1",
+		Issuer: "https://new.example.com", SubjectClaim: "sub", LinkedAt: now, LastUsedAt: now,
+	}))
+
+	// Simulate a stale reverse-index entry left in user-old's set pointing at user-new's key.
+	providerKey := redisProviderKey(s.keyPrefix, "provider-a", "subject-1")
+	_, err := mr.SAdd(redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-old"), providerKey)
+	require.NoError(t, err)
+
+	// GetUserProviderIdentities(user-old) must skip the entry owned by user-new.
+	oldLinks, err := s.GetUserProviderIdentities(ctx, "user-old")
+	require.NoError(t, err)
+	assert.Empty(t, oldLinks)
+
+	// DeleteUser(user-old) must not delete user-new's live provider identity.
+	require.NoError(t, s.DeleteUser(ctx, "user-old"))
+	got, err := s.GetProviderIdentity(ctx, "provider-a", "subject-1")
+	require.NoError(t, err)
+	assert.Equal(t, "user-new", got.UserID)
+}
+
+func TestRedisStorage_CompareAndSwapProviderIdentity_MovesReverseIndexEntry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	now := time.Now()
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-old", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-new", CreatedAt: now, UpdatedAt: now}))
+	oldID := &ProviderIdentity{
+		UserID: "user-old", ProviderID: "provider-a", ProviderSubject: "subject-1",
+		Issuer: "https://old.example.com", SubjectClaim: "sub", LinkedAt: now, LastUsedAt: now,
+	}
+	require.NoError(t, s.CreateProviderIdentity(ctx, oldID))
+	newID := &ProviderIdentity{
+		UserID: "user-new", ProviderID: "provider-a", ProviderSubject: "subject-1",
+		Issuer: "https://new.example.com", SubjectClaim: "sub", LinkedAt: now, LastUsedAt: now,
+	}
+	require.NoError(t, s.CompareAndSwapProviderIdentity(ctx, oldID, newID))
+
+	providerKey := redisProviderKey(s.keyPrefix, "provider-a", "subject-1")
+	assert.False(t, setHas(mr, redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-old"), providerKey),
+		"the replaced user's reverse index must no longer list the link")
+	assert.True(t, setHas(mr, redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-new"), providerKey))
+}
+
+func TestRedisStorage_DeleteUser_DeletesUndecodableOwnRow(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	now := time.Now()
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-1", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, s.CreateProviderIdentity(ctx, &ProviderIdentity{
+		UserID: "user-1", ProviderID: "provider-a", ProviderSubject: "subject-1", LinkedAt: now, LastUsedAt: now,
+	}))
+	key := redisProviderKey(s.keyPrefix, "provider-a", "subject-1")
+	require.NoError(t, mr.Set(key, "{not-valid-json"))
+
+	require.NoError(t, s.DeleteUser(ctx, "user-1"))
+
+	assert.False(t, mr.Exists(key), "a row the deleting user's own index lists must not outlive it, even when corrupt")
+}
+
+func TestRedisStorage_MigrateLegacyUpstreamData_PreservesBindingFields(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		now := time.Now()
+		require.NoError(t, s.CreateUser(ctx, &User{ID: "user-migrate-bound", CreatedAt: now, UpdatedAt: now}))
+
+		legacyIdentity := &ProviderIdentity{
+			UserID: "user-migrate-bound", ProviderID: "oidc", ProviderSubject: "sub-bound",
+			Issuer: "https://idp.example.com", SubjectClaim: "oid",
+			LinkedAt: now, LastUsedAt: now,
+		}
+		require.NoError(t, s.CreateProviderIdentity(ctx, legacyIdentity))
+
+		require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "my-upstream", "oidc"))
+
+		migrated, err := s.GetProviderIdentity(ctx, "my-upstream", "sub-bound")
+		require.NoError(t, err)
+		assert.Equal(t, "https://idp.example.com", migrated.Issuer)
+		assert.Equal(t, "oid", migrated.SubjectClaim)
+	})
 }
 
 // setHas reports set membership, treating a missing set as empty.

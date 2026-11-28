@@ -4,14 +4,22 @@
 package authserver
 
 import (
+	"cmp"
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"net"
 	"net/http"
+	"net/url"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -117,12 +125,106 @@ func buildUpstreams(ctx context.Context, cfg Config) ([]handlers.NamedUpstream, 
 			closeUpstreamIdleConnections(upstreams)
 			return nil, fmt.Errorf("upstream factory returned a nil provider for upstream %q", upCfg.Name)
 		}
+		issuer, subjectClaim := upstreamIdentityBinding(upCfg)
 		upstreams = append(upstreams, handlers.NamedUpstream{
 			Name: upCfg.Name, DisplayName: upCfg.DisplayName, Provider: provider,
+			Issuer: issuer, SubjectClaim: subjectClaim,
 		})
 		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
 	}
 	return upstreams, nil
+}
+
+// upstreamIdentityBinding returns the (issuer, subjectClaim) stamped onto
+// provider-identity rows for upCfg. Every valid upstream gets a non-empty pair
+// so stamped rows are always distinct from legacy unstamped rows:
+//   - OIDC: the exact configured Issuer URL and SubjectClaim (default "sub"),
+//     matching the validated ID token. Config.signInUpstream and
+//     the run-config validation derive the same pair through oidcIdentityBinding.
+//   - Plain OAuth 2.0: "oauth2:<mode>:sha256:<hex>", where mode is token,
+//     userinfo or synthetic and the hash covers the lower-cased hostname of
+//     the endpoint that defines the subject (the token endpoint for token
+//     and synthetic, the userinfo endpoint for userinfo), plus the port only
+//     when it is not the scheme's default (443 for https, 80 for http). The
+//     subject claim is the extraction rule: "token:<path>",
+//     "userinfo:<json-fields>" (field order matters, the first non-empty field
+//     wins) or "synthetic".
+//
+// Only the host is hashed so that a change to the path, query, trailing slash,
+// host case, a written-out default port or a same-host endpoint move does not
+// give users new accounts, while moving to another host or a non-default port
+// does. Hashing keeps endpoint addresses out of storage and logs. The mode
+// prefix keeps plain OAuth 2.0 rows disjoint from OIDC issuers
+// and detects mode changes on the same upstream name. Synthesis mode sets
+// Identity.Synthetic=true and bypasses UserResolver, so it never writes
+// provider-identity rows; populating a distinct pair keeps the mapping total
+// across all valid configs.
+//
+// Returns ("", "") for unpopulated test-stub configs, or when the endpoint
+// cannot be parsed or has no host.
+func upstreamIdentityBinding(upCfg *UpstreamConfig) (issuer, subjectClaim string) {
+	if upCfg == nil {
+		return "", ""
+	}
+	switch {
+	case upCfg.OIDCConfig != nil && upCfg.OIDCConfig.Issuer != "":
+		return oidcIdentityBinding(upCfg.OIDCConfig.Issuer, upCfg.OIDCConfig.SubjectClaim)
+	case upCfg.OAuth2Config != nil:
+		oa := upCfg.OAuth2Config
+		mode, endpoint, claim := func() (string, string, string) {
+			switch {
+			case oa.IdentityFromToken != nil && oa.TokenEndpoint != "" && oa.IdentityFromToken.SubjectPath != "":
+				return "token", oa.TokenEndpoint, "token:" + oa.IdentityFromToken.SubjectPath
+			case oa.UserInfo != nil && oa.UserInfo.EndpointURL != "":
+				encoded, err := json.Marshal(oa.UserInfo.FieldMapping.GetSubjectFields())
+				if err != nil {
+					return "", "", ""
+				}
+				return "userinfo", oa.UserInfo.EndpointURL, "userinfo:" + string(encoded)
+			case oa.TokenEndpoint != "":
+				return "synthetic", oa.TokenEndpoint, "synthetic"
+			}
+			return "", "", ""
+		}()
+		if mode == "" {
+			return "", ""
+		}
+		issuer = oauth2BindingIssuer(mode, endpoint)
+		if issuer == "" {
+			return "", ""
+		}
+		return issuer, claim
+	}
+	return "", ""
+}
+
+// oidcIdentityBinding is the binding an OIDC upstream stamps: its issuer and
+// subject claim, which defaults to "sub". Stamping, the subject resolver and
+// the run-config validation (whose issuer field is IssuerURL) all derive the
+// binding here, so they cannot disagree on the default.
+func oidcIdentityBinding(issuer, subjectClaim string) (string, string) {
+	return issuer, cmp.Or(subjectClaim, upstream.DefaultSubjectClaim)
+}
+
+// defaultPorts maps a URL scheme to its default port, which the OAuth 2.0
+// binding ignores.
+var defaultPorts = map[string]string{"https": "443", "http": "80"}
+
+// oauth2BindingIssuer builds the stamped issuer for a plain OAuth 2.0 upstream
+// from the mode and the host of the endpoint that defines the subject. The
+// hash covers the lower-cased hostname, plus the port only when it is not the
+// scheme's default. It returns "" when the endpoint has no parseable host.
+func oauth2BindingIssuer(mode, endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	if port := u.Port(); port != "" && port != defaultPorts[strings.ToLower(u.Scheme)] {
+		host = net.JoinHostPort(host, port)
+	}
+	sum := sha256.Sum256([]byte(host))
+	return "oauth2:" + mode + ":sha256:" + hex.EncodeToString(sum[:])
 }
 
 // isNilProvider reports whether an OAuth2Provider is unusable — either a nil
@@ -1083,9 +1185,16 @@ func newSubjectResolver(cfg Config, store subjectresolver.IdentityStore) (subjec
 		return nil, errors.New(
 			"subject_mode resolve needs an OIDC identity provider as the first upstream")
 	}
-	resolver, err := subjectresolver.New(map[string]subjectresolver.Provider{
-		signIn.issuer: {Name: ResolveUpstreamName(cfg.Upstreams[0].Name), SubjectClaim: signIn.subjectClaim},
-	}, store)
+	providers := map[string]subjectresolver.Provider{
+		signIn.issuer: {
+			Name:         ResolveUpstreamName(cfg.Upstreams[0].Name),
+			SubjectClaim: signIn.subjectClaim,
+		},
+	}
+	if err := validateSingleIssuerPerProvider(providers); err != nil {
+		return nil, err
+	}
+	resolver, err := subjectresolver.New(providers, store)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create subject resolver: %w", err)
 	}
@@ -1093,6 +1202,29 @@ func newSubjectResolver(cfg Config, store subjectresolver.IdentityStore) (subjec
 		slog.Warn(warning, "issuer", signIn.issuer, "subject_claim", signIn.subjectClaim)
 	}
 	return resolver, nil
+}
+
+// validateSingleIssuerPerProvider refuses a resolver mapping in which one
+// provider name has more than one issuer. Rows are stamped with the sign-in
+// issuer and the resolver compares them with the token's issuer, so a second
+// issuer for the same provider would never match its rows.
+func validateSingleIssuerPerProvider(providers map[string]subjectresolver.Provider) error {
+	issuersByProvider := make(map[string][]string, len(providers))
+	for issuer, p := range providers {
+		issuersByProvider[p.Name] = append(issuersByProvider[p.Name], issuer)
+	}
+	for _, name := range slices.Sorted(maps.Keys(issuersByProvider)) {
+		issuers := issuersByProvider[name]
+		if len(issuers) < 2 {
+			continue
+		}
+		slices.Sort(issuers)
+		return fmt.Errorf(
+			"subject resolver: provider %q maps to more than one issuer (%s); "+
+				"a second issuer for one provider is not supported yet because rows are stamped with the sign-in issuer",
+			name, strings.Join(issuers, ", "))
+	}
+	return nil
 }
 
 // buildDeviceFlowFactory builds the RFC 8628 device authorization grant

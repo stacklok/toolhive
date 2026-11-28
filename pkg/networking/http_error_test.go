@@ -16,7 +16,6 @@ package networking
 
 import (
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -48,58 +47,12 @@ func TestHTTPError_Error(t *testing.T) {
 	assert.Equal(t, "HTTP 404 for URL http://example.com/api: not found", err.Error())
 }
 
-func TestIsHTTPError(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		err        error
-		statusCode int
-		expected   bool
-	}{
-		{
-			name:       "matching HTTPError",
-			err:        &HTTPError{StatusCode: 404, URL: "http://example.com"},
-			statusCode: 404,
-			expected:   true,
-		},
-		{
-			name:       "non-matching status code",
-			err:        &HTTPError{StatusCode: 404, URL: "http://example.com"},
-			statusCode: 500,
-			expected:   false,
-		},
-		{
-			name:       "any HTTPError with statusCode 0",
-			err:        &HTTPError{StatusCode: 403, URL: "http://example.com"},
-			statusCode: 0,
-			expected:   true,
-		},
-		{
-			name:       "non-HTTPError",
-			err:        errors.New("some other error"),
-			statusCode: 404,
-			expected:   false,
-		},
-		{
-			name:       "wrapped HTTPError",
-			err:        fmt.Errorf("wrapped: %w", &HTTPError{StatusCode: 500, URL: "http://example.com"}),
-			statusCode: 500,
-			expected:   true,
-		},
-		{
-			name:       "nil error",
-			err:        nil,
-			statusCode: 404,
-			expected:   false,
-		},
+// isHTTPError reports whether err is an HTTPError with the given status code.
+// A statusCode of 0 matches any HTTPError.
+func isHTTPError(err error, statusCode int) bool {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			result := IsHTTPError(tt.err, tt.statusCode)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
+	return statusCode == 0 || httpErr.StatusCode == statusCode
 }

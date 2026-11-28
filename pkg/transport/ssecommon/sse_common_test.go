@@ -154,38 +154,6 @@ func TestSSEMessage_ToSSEString_Integration(t *testing.T) {
 	assert.NotContains(t, result, "client-456")
 }
 
-func TestNewPendingSSEMessage(t *testing.T) {
-	t.Parallel()
-
-	originalMsg := NewSSEMessage("test", "data")
-
-	pendingMsg := NewPendingSSEMessage(originalMsg)
-
-	require.NotNil(t, pendingMsg)
-	assert.Same(t, originalMsg, pendingMsg.Message)
-	assert.WithinDuration(t, time.Now(), pendingMsg.CreatedAt, time.Second)
-}
-
-func TestPendingSSEMessage_CreatedAtIndependence(t *testing.T) {
-	t.Parallel()
-
-	// Create original message
-	originalMsg := NewSSEMessage("test", "data")
-	originalTime := originalMsg.CreatedAt
-
-	// Wait a bit to ensure different timestamps
-	time.Sleep(10 * time.Millisecond)
-
-	// Create pending message
-	pendingMsg := NewPendingSSEMessage(originalMsg)
-
-	// The pending message should have its own CreatedAt timestamp
-	assert.True(t, pendingMsg.CreatedAt.After(originalTime),
-		"Pending message should have a later CreatedAt timestamp")
-	assert.Equal(t, originalTime, pendingMsg.Message.CreatedAt,
-		"Original message CreatedAt should be unchanged")
-}
-
 func TestSSEClient_Structure(t *testing.T) {
 	t.Parallel()
 

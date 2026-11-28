@@ -39,15 +39,6 @@ func validateFilePath(path string) (string, error) {
 	return cleanPath, nil
 }
 
-// validateFileExists checks if a file exists and is accessible without cleaning the path.
-// This is useful when the path has already been cleaned.
-func validateFileExists(path string) error {
-	if _, err := os.Stat(path); err != nil {
-		return fmt.Errorf(errFileNotFound, err)
-	}
-	return nil
-}
-
 // readFile reads the contents of a file and returns the data.
 // This is a wrapper around os.ReadFile with consistent error messaging.
 func readFile(path string) ([]byte, error) {

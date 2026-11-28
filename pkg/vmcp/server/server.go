@@ -1246,12 +1246,6 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// SessionManager returns the session manager instance.
-// This is useful for testing and monitoring.
-func (s *Server) SessionManager() *transportsession.Manager {
-	return s.sessionManager
-}
-
 // MCPServer returns the underlying mcpcompat *server.MCPServer instance
 // servicing this vMCP server's /mcp endpoint.
 //

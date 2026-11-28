@@ -200,7 +200,6 @@ The table below maps every sub-package to its stability level per RFC THV-0059. 
 | `pkg/vmcp/cli` | Experimental | New in Phase 4; `Serve`, `Init`, `Validate` entry points may change before stabilisation |
 | `pkg/vmcp/callbinding` | Experimental | Call-bound access tokens: `Config`, `New` and `Binding` (shared by the server and the token validator through `Binding.TokenValidatorOption`), `ExpiredTokenAdmission` and `ValidateExpiredTokenAdmission` (admission after `exp`, off by default and set only in Go), the `Record` interface and `MemoryRecord`, `FromClaims` and `Token`, `ReadListResponse`, `ListResponse` and `ListParamsCarryCursor`, the refusal reasons. `ArgumentsSHA256` is a wire contract shared with the clients that request these tokens: it changes only with a new entry type |
 | `pkg/vmcp/composer` | Experimental | Composite tool DAG executor; workflow API not yet stable |
-| `pkg/vmcp/cache` | Internal | Token cache; not intended for external use |
 | `pkg/vmcp/conversion` | Internal | CRD-to-config conversion; K8s-specific, not for local embedding |
 | `pkg/vmcp/headerforward` | Internal | Per-backend HTTP header-forwarding round-tripper; the root `headerforward` package only; `pkg/vmcp/headerforward/wirefmt` is a separate wire-format helper used by aggregator/workloads/cli/operator |
 | `pkg/vmcp/k8s` | Internal | Kubernetes-specific discovery; not for local embedding |

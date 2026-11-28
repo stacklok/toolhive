@@ -17,8 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/exp/jsonrpc2"
-
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
@@ -733,7 +731,7 @@ func (cb *callBinding) listAnswer(
 		slog.DebugContext(r.Context(), "call binding: a list call was cancelled before it was answered",
 			"jti", token.JTI)
 		writeCallBindingError(w, parsed, http.StatusServiceUnavailable, mcpparser.CodeInternalError,
-			"Service unavailable: the list call was cancelled before it was answered")
+			"Service unavailable: the list call was cancelled before it was answered", nil)
 		return nil, false
 	}
 	body := buffered.body.Bytes()
@@ -808,7 +806,7 @@ func (*callBinding) listFailed(
 	slog.ErrorContext(r.Context(), "call binding: could not answer a list call: the handler gave no list",
 		"jti", token.JTI, "mcp_method", parsed.Method, "status", status, "error", err)
 	writeCallBindingError(w, parsed, http.StatusInternalServerError, mcpparser.CodeInternalError,
-		"Internal error: the list could not be limited to the access token's server")
+		"Internal error: the list could not be limited to the access token's server", nil)
 }
 
 // writeListResponse writes the answer to a list call.
@@ -1092,7 +1090,10 @@ func belongsToCall(r *http.Request, call callbinding.Call, requestID string) boo
 // records it as a denial with its reason. A reason in
 // callBindingTokenReasons gets 401 with an invalid_token challenge and an RFC
 // 6750 error body, as the token validator answers a token it refuses; every
-// other reason gets 403 with a JSON-RPC error and no challenge. The log
+// other reason gets 403 with a JSON-RPC error and no challenge. Both carry
+// the reason for a client to read: as the challenge's reason auth-param and
+// the body's reason member on a 401, as error.data.reason on a 403. The texts
+// keep the reason in parentheses for clients that match on them. The log
 // carries the token's jti, never the token or the arguments.
 func (cb *callBinding) refuse(
 	w http.ResponseWriter, r *http.Request, parsed *mcpparser.ParsedMCPRequest,
@@ -1112,11 +1113,18 @@ func (cb *callBinding) refuse(
 		"server", token.Entry.Server, "tool", token.Entry.Tool, "method", token.Entry.Method)
 
 	if slices.Contains(callBindingTokenReasons, reason) {
-		cb.binding.Challenge().WriteInvalidToken(w, "the access token is not accepted ("+reason+")")
+		cb.binding.Challenge().WriteInvalidTokenReason(w, "the access token is not accepted ("+reason+")", reason)
 		return
 	}
 	writeCallBindingError(w, parsed, http.StatusForbidden, mcpparser.JSONRPCCodeDenied,
-		"Forbidden: the access token does not permit this request ("+reason+")")
+		"Forbidden: the access token does not permit this request ("+reason+")",
+		&callBindingRefusalData{Reason: reason})
+}
+
+// callBindingRefusalData is the data member of a 403 refusal's JSON-RPC
+// error.
+type callBindingRefusalData struct {
+	Reason string `json:"reason"`
 }
 
 // unavailable answers 503 when the check cannot be completed. The token is
@@ -1133,20 +1141,51 @@ func (*callBinding) unavailable(
 	slog.Log(r.Context(), level, "call binding: could not check a call-bound token",
 		"step", step, "jti", token.JTI, "error", err)
 	writeCallBindingError(w, parsed, http.StatusServiceUnavailable, mcpparser.CodeInternalError,
-		"Service unavailable: the access token could not be checked")
+		"Service unavailable: the access token could not be checked", nil)
+}
+
+// callBindingErrorResponse is a JSON-RPC error response. It is not a
+// jsonrpc2.Response because jsonrpc2.NewError cannot carry data. Its members
+// are in the order jsonrpc2.EncodeMessage writes them, and ID is omitted when
+// absent, never null.
+type callBindingErrorResponse struct {
+	JSONRPC string                `json:"jsonrpc"`
+	ID      any                   `json:"id,omitempty"`
+	Error   callBindingErrorValue `json:"error"`
+}
+
+type callBindingErrorValue struct {
+	Code    int64  `json:"code"`
+	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
 // writeCallBindingError writes a JSON-RPC error answering parsed, without an
-// ID when the request has none.
+// ID when the request has none, and with data when it is not nil.
 func writeCallBindingError(
 	w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, status int, code int64, message string,
+	data any,
 ) {
-	resp := &jsonrpc2.Response{Error: jsonrpc2.NewError(code, message)}
+	resp := callBindingErrorResponse{
+		JSONRPC: "2.0",
+		Error:   callBindingErrorValue{Code: code, Message: message, Data: data},
+	}
 	if parsed != nil {
-		if id, err := mcpparser.ConvertToJSONRPC2ID(parsed.ID); err == nil {
-			resp.ID = id
+		// ConvertToJSONRPC2ID reads the ID as jsonrpc2 does: a string or an
+		// integer, or no ID.
+		if id, err := mcpparser.ConvertToJSONRPC2ID(parsed.ID); err == nil && id.IsValid() {
+			resp.ID = id.Raw()
 		}
 	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		// Unreachable: every member is a string, an integer or
+		// callBindingRefusalData.
+		slog.Error("call binding: could not encode a JSON-RPC error", "error", err)
+		body = []byte(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error"}}`)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	//nolint:gosec // G104: writing a JSON-RPC error response to an HTTP client
-	_ = mcpparser.WriteJSONRPCError(w, status, resp)
+	_, _ = w.Write(body)
 }

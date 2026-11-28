@@ -5,7 +5,6 @@
 package ui
 
 import (
-	"fmt"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -28,60 +27,13 @@ var (
 	ColorBg = lipgloss.Color("#1e2030")
 )
 
-// Background shades for status pills.
-var (
-	bgRunning  = lipgloss.Color("#1a3320")
-	bgStopped  = lipgloss.Color("#1e2030")
-	bgError    = lipgloss.Color("#3d1a1e")
-	bgStarting = lipgloss.Color("#2e2400")
-	bgWarning  = lipgloss.Color("#2e2400")
-)
-
 var (
 	dotRunning  = lipgloss.NewStyle().Foreground(ColorGreen).Render("●")
 	dotStopped  = lipgloss.NewStyle().Foreground(ColorDim).Render("○")
 	dotError    = lipgloss.NewStyle().Foreground(ColorRed).Render("●")
 	dotWarning  = lipgloss.NewStyle().Foreground(ColorYellow).Render("●")
 	dotStarting = lipgloss.NewStyle().Foreground(ColorBlue).Render("◌")
-
-	pillRunning = lipgloss.NewStyle().
-			Background(bgRunning).Foreground(ColorGreen).
-			Padding(0, 1).Render("● running")
-	pillStopped = lipgloss.NewStyle().
-			Background(bgStopped).Foreground(ColorDim2).
-			Padding(0, 1).Render("● stopped")
-	pillError = lipgloss.NewStyle().
-			Background(bgError).Foreground(ColorRed).
-			Padding(0, 1).Render("● error")
-	pillStarting = lipgloss.NewStyle().
-			Background(bgStarting).Foreground(ColorYellow).
-			Padding(0, 1).Render("◌ starting")
-	pillStopping = lipgloss.NewStyle().
-			Background(bgWarning).Foreground(ColorYellow).
-			Padding(0, 1).Render("◌ stopping")
-	pillUnhealthy = lipgloss.NewStyle().
-			Background(bgWarning).Foreground(ColorYellow).
-			Padding(0, 1).Render("● unhealthy")
-	pillRemoving = lipgloss.NewStyle().
-			Background(bgWarning).Foreground(ColorYellow).
-			Padding(0, 1).Render("◌ removing")
-	pillUnknown = lipgloss.NewStyle().
-			Background(bgStopped).Foreground(ColorDim).
-			Padding(0, 1).Render("○ unknown")
-	pillUnauthed = lipgloss.NewStyle().
-			Background(bgWarning).Foreground(ColorYellow).
-			Padding(0, 1).Render("⚠ unauthed")
-	pillAuthRetrying = lipgloss.NewStyle().
-				Background(bgWarning).Foreground(ColorYellow).
-				Padding(0, 1).Render("🔄 retrying")
-
-	keyStyle  = lipgloss.NewStyle().Foreground(ColorDim2)
-	portStyle = lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
-	dimStyle  = lipgloss.NewStyle().Foreground(ColorDim)
 )
-
-// PillWidth is the fixed visible width of a status pill (for column alignment).
-const PillWidth = 13 // "● unhealthy" + 2 padding = longest
 
 // RenderStatusDot returns a colored bullet for the given WorkloadStatus.
 func RenderStatusDot(status rt.WorkloadStatus) string {
@@ -110,67 +62,6 @@ func RenderStatusDot(status rt.WorkloadStatus) string {
 		return dotStopped
 	}
 	return dotStopped
-}
-
-// RenderStatusPill returns a badge with background color for the given status.
-func RenderStatusPill(status rt.WorkloadStatus) string {
-	switch status {
-	case rt.WorkloadStatusRunning:
-		return pillRunning
-	case rt.WorkloadStatusStopped:
-		return pillStopped
-	case rt.WorkloadStatusError:
-		return pillError
-	case rt.WorkloadStatusStarting:
-		return pillStarting
-	case rt.WorkloadStatusStopping:
-		return pillStopping
-	case rt.WorkloadStatusUnhealthy:
-		return pillUnhealthy
-	case rt.WorkloadStatusRemoving:
-		return pillRemoving
-	case rt.WorkloadStatusUnknown:
-		return pillUnknown
-	case rt.WorkloadStatusUnauthenticated:
-		return pillUnauthed
-	case rt.WorkloadStatusAuthRetrying:
-		return pillAuthRetrying
-	case rt.WorkloadStatusPolicyStopped:
-		return pillStopped
-	default:
-		return pillUnknown
-	}
-}
-
-// RenderGroupChip returns a bordered group name tag.
-func RenderGroupChip(group string) string {
-	if group == "" {
-		return dimStyle.Render("—")
-	}
-	text := lipgloss.NewStyle().Foreground(ColorDim2).Render(group)
-	lbracket := lipgloss.NewStyle().Foreground(ColorDim).Render("[")
-	rbracket := lipgloss.NewStyle().Foreground(ColorDim).Render("]")
-	return lbracket + text + rbracket
-}
-
-// RenderKey returns a dim-styled label for key-value displays.
-func RenderKey(key string) string {
-	return keyStyle.Render(key)
-}
-
-// RenderPort returns a bold cyan port number string.
-func RenderPort(port string) string {
-	return portStyle.Render(port)
-}
-
-// RenderDim returns a dim-styled string.
-func RenderDim(s string) string {
-	return dimStyle.Render(s)
-}
-
-// RenderText returns a text-colored string.
-func RenderText(s string) string {
-	return lipgloss.NewStyle().Foreground(ColorText).Render(s)
 }
 
 // VisibleLen returns the number of visible characters in s, stripping ANSI
@@ -208,103 +99,4 @@ func PadToWidth(s string, w int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", w-visible)
-}
-
-// RenderServerTypeBadge returns a styled badge for container vs remote server type.
-func RenderServerTypeBadge(isRemote bool) string {
-	if isRemote {
-		return lipgloss.NewStyle().
-			Background(lipgloss.Color("#1a1040")).
-			Foreground(ColorPurple).
-			Padding(0, 1).
-			Render("remote")
-	}
-	return lipgloss.NewStyle().
-		Background(lipgloss.Color("#0d1a3a")).
-		Foreground(ColorBlue).
-		Padding(0, 1).
-		Render("container")
-}
-
-// RenderTierBadge returns a styled badge for the registry tier.
-func RenderTierBadge(tier string) string {
-	switch strings.ToLower(tier) {
-	case "official":
-		return lipgloss.NewStyle().
-			Background(lipgloss.Color("#2e2400")).
-			Foreground(ColorYellow).
-			Padding(0, 1).
-			Render("official")
-	case "community":
-		return lipgloss.NewStyle().
-			Background(lipgloss.Color("#1e2030")).
-			Foreground(ColorDim2).
-			Padding(0, 1).
-			Render("community")
-	case "deprecated":
-		return lipgloss.NewStyle().
-			Background(bgError).
-			Foreground(ColorRed).
-			Padding(0, 1).
-			Render("deprecated")
-	default:
-		return lipgloss.NewStyle().
-			Foreground(ColorDim).
-			Render(tier)
-	}
-}
-
-// RenderStars returns a yellow star count string.
-func RenderStars(n int) string {
-	if n == 0 {
-		return lipgloss.NewStyle().Foreground(ColorDim).Render("—")
-	}
-	return lipgloss.NewStyle().Foreground(ColorYellow).Render(fmt.Sprintf("★ %d", n))
-}
-
-// RenderLogLine colorizes a log line based on detected severity level.
-func RenderLogLine(line string) string {
-	upper := strings.ToUpper(line)
-	switch {
-	case containsLevel(upper, "ERROR", "FATAL", "CRIT"):
-		return lipgloss.NewStyle().Foreground(ColorRed).Render(line)
-	case containsLevel(upper, "WARN", "WARNING"):
-		return lipgloss.NewStyle().Foreground(ColorYellow).Render(line)
-	case containsLevel(upper, "DEBUG", "TRACE"):
-		return lipgloss.NewStyle().Foreground(ColorDim2).Render(line)
-	case containsLevel(upper, "INFO"):
-		return lipgloss.NewStyle().Foreground(ColorText).Render(line)
-	default:
-		return lipgloss.NewStyle().Foreground(ColorDim2).Render(line)
-	}
-}
-
-// containsLevel checks whether the line contains one of the given level tokens.
-func containsLevel(upper string, levels ...string) bool {
-	for _, lvl := range levels {
-		// Match common patterns: level=INFO, [INFO], INFO:, INFO space
-		if strings.Contains(upper, "LEVEL="+lvl) ||
-			strings.Contains(upper, "["+lvl+"]") ||
-			strings.Contains(upper, lvl+":") ||
-			strings.Contains(upper, " "+lvl+" ") ||
-			strings.HasPrefix(upper, lvl+" ") {
-			return true
-		}
-	}
-	return false
-}
-
-// RenderSection renders a section heading (e.g. "Permissions").
-func RenderSection(title string) string {
-	return "\n" + lipgloss.NewStyle().Foreground(ColorPurple).Bold(true).Render(title)
-}
-
-// PadLeftToWidth right-aligns s within width w by prepending spaces.
-// If s is already wider, it is returned unchanged.
-func PadLeftToWidth(s string, w int) string {
-	visible := VisibleLen(s)
-	if visible >= w {
-		return s
-	}
-	return strings.Repeat(" ", w-visible) + s
 }

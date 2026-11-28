@@ -15,7 +15,6 @@
 package networking
 
 import (
-	"errors"
 	"fmt"
 )
 
@@ -43,17 +42,4 @@ func NewHTTPError(statusCode int, url, message string) error {
 		URL:        url,
 		Message:    message,
 	}
-}
-
-// IsHTTPError checks if an error is an HTTPError with the specified status code.
-// If statusCode is 0, it matches any HTTPError.
-func IsHTTPError(err error, statusCode int) bool {
-	var httpErr *HTTPError
-	if !errors.As(err, &httpErr) {
-		return false
-	}
-	if statusCode == 0 {
-		return true
-	}
-	return httpErr.StatusCode == statusCode
 }

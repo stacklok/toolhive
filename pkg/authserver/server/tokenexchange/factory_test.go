@@ -75,7 +75,7 @@ func TestFactory(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			f, err := Factory(tt.delegationLifespan, nil, tt.configuredDelegateClients, nil)
+			f, err := FactoryWithSharedTrustedIssuerValidator(tt.delegationLifespan, nil, tt.configuredDelegateClients, nil, nil)
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
@@ -89,7 +89,7 @@ func TestFactory(t *testing.T) {
 }
 
 // buildTestAuthServerConfig returns a minimally-valid
-// *server.AuthorizationServerConfig for exercising the closure Factory
+// *server.AuthorizationServerConfig for exercising the closure the factory
 // returns. AllowedAudiences is non-empty so it doubles as a valid
 // ExpectedAudience target for a TrustedIssuer in the tests below.
 func buildTestAuthServerConfig(t *testing.T) *server.AuthorizationServerConfig {
@@ -114,7 +114,7 @@ func buildTestAuthServerConfig(t *testing.T) *server.AuthorizationServerConfig {
 }
 
 // fakeClientManager is a no-op fosite.ClientManager (the entirety of
-// fosite.Storage) so fakeFactoryStorage satisfies the Factory closure's
+// fosite.Storage) so fakeFactoryStorage satisfies the factory closure's
 // storage fosite.Storage parameter without needing a real client store —
 // the closure only type-asserts storage to oauth2.AccessTokenStorage, it
 // never calls a ClientManager method.
@@ -138,12 +138,11 @@ type fakeFactoryStorage struct {
 }
 
 // TestFactory_ValidatorSelection asserts how a SubjectTokenValidator reaches
-// the Handler: the bare Factory uses the self-issued validator when there are
-// no trusted issuers, and fails closed when trusted issuers are configured
-// (it cannot own a MultiIssuerTokenValidator's JWKS workers for shutdown);
-// trusted-issuer setups must supply a shared, closeable validator via
-// FactoryWithSharedTrustedIssuerValidator, which is then the exact instance the
-// Handler uses.
+// the Handler: with no shared validator the factory uses the self-issued
+// validator when there are no trusted issuers, and fails closed when trusted
+// issuers are configured (it cannot own a MultiIssuerTokenValidator's JWKS
+// workers for shutdown); trusted-issuer setups must supply a shared, closeable
+// validator, which is then the exact instance the Handler uses.
 func TestFactory_ValidatorSelection(t *testing.T) {
 	t.Parallel()
 
@@ -156,7 +155,7 @@ func TestFactory_ValidatorSelection(t *testing.T) {
 	t.Run("no trusted issuers builds self-issued validator", func(t *testing.T) {
 		t.Parallel()
 
-		f, err := Factory(15*time.Minute, nil, nil, nil)
+		f, err := FactoryWithSharedTrustedIssuerValidator(15*time.Minute, nil, nil, nil, nil)
 		require.NoError(t, err)
 
 		cfg := buildTestAuthServerConfig(t)
@@ -164,17 +163,18 @@ func TestFactory_ValidatorSelection(t *testing.T) {
 		require.NoError(t, err)
 
 		handler, ok := result.(*Handler)
-		require.True(t, ok, "Factory closure must return *Handler, got %T", result)
+		require.True(t, ok, "factory closure must return *Handler, got %T", result)
 		assert.IsType(t, &SelfIssuedTokenValidator{}, handler.validator)
 	})
 
-	t.Run("bare Factory with trusted issuers fails closed", func(t *testing.T) {
+	t.Run("trusted issuers without a shared validator fail closed", func(t *testing.T) {
 		t.Parallel()
 
-		// The bare Factory has no way to release a MultiIssuerTokenValidator's
-		// JWKS workers, so it must reject trusted issuers outright rather than
-		// build a leaked validator inside the compose-time closure.
-		_, err := Factory(15*time.Minute, []TrustedIssuer{validIssuer}, nil, nil)
+		// Without a shared validator the factory has no way to release a
+		// MultiIssuerTokenValidator's JWKS workers, so it must reject trusted
+		// issuers outright rather than build a leaked validator inside the
+		// compose-time closure.
+		_, err := FactoryWithSharedTrustedIssuerValidator(15*time.Minute, []TrustedIssuer{validIssuer}, nil, nil, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "require a shared validator")
 	})
@@ -202,10 +202,10 @@ func TestFactory_ValidatorSelection(t *testing.T) {
 func TestFactory_ClientPolicyMustNameConfiguredClient(t *testing.T) {
 	t.Parallel()
 
-	_, err := Factory(15*time.Minute, nil, []string{"broker"}, map[string]ConfiguredClientPolicy{"ghost": {}})
+	_, err := FactoryWithSharedTrustedIssuerValidator(15*time.Minute, nil, []string{"broker"}, map[string]ConfiguredClientPolicy{"ghost": {}}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a configured delegate client")
 
-	_, err = Factory(15*time.Minute, nil, []string{"broker"}, map[string]ConfiguredClientPolicy{"broker": {}})
+	_, err = FactoryWithSharedTrustedIssuerValidator(15*time.Minute, nil, []string{"broker"}, map[string]ConfiguredClientPolicy{"broker": {}}, nil)
 	require.NoError(t, err)
 }

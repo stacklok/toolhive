@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -2634,4 +2635,49 @@ func TestCallbackHandler_OnlyFirstUpstreamEstablishesUsers(t *testing.T) {
 			assert.Contains(t, location, "code=")
 		})
 	}
+}
+
+func TestCallbackHandler_BindingMismatchIsAccessDenied(t *testing.T) {
+	t.Parallel()
+
+	handler, storState, _, _ := multiUpstreamTestSetup(t)
+	state := "mismatch-state"
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state",
+		PKCEChallenge:        "challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        state,
+		UpstreamPKCEVerifier: "verifier-123456789012345678901234567890",
+		UpstreamNonce:        "nonce",
+		UpstreamProviderName: "provider-2",
+		SessionID:            "mismatch-session",
+		SingleLeg:            true,
+		CreatedAt:            time.Now(),
+	}
+	storState.users["linked-user"] = &storage.User{ID: "linked-user"}
+	linked := &storage.ProviderIdentity{
+		UserID: "linked-user", ProviderID: "provider-2", ProviderSubject: "user-from-provider2",
+		Issuer: "https://old-idp.example.com", SubjectClaim: "sub",
+	}
+	storState.providerIdentities["provider-2:user-from-provider2"] = linked
+	handler.userResolver = NewUserResolver(handler.storage,
+		WithCreateOnlyFor("provider-1"),
+		WithIdentityBinding("provider-2", "https://new-idp.example.com", "sub"),
+	)
+	cookie := bindPending(t, storState, state, pending)
+
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, newCallbackRequest("code=upstream-code&state="+state, cookie))
+
+	require.Equal(t, http.StatusSeeOther, rec.Code)
+	location, err := url.Parse(rec.Header().Get("Location"))
+	require.NoError(t, err)
+	assert.Equal(t, "access_denied", location.Query().Get("error"))
+	assert.Contains(t, location.Query().Get("error_description"), "different issuer or subject claim")
+	assert.NotContains(t, location.Query().Get("error_description"), "cannot create users")
+	assert.Len(t, storState.users, 1, "no user may be created")
+	assert.Same(t, linked, storState.providerIdentities["provider-2:user-from-provider2"], "the row must not be replaced")
 }

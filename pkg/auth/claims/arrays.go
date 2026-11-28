@@ -4,25 +4,15 @@
 // Package claims provides shared helpers for decoding JWT/OIDC claim values.
 package claims
 
-import (
-	"slices"
-
-	oauthclaims "github.com/stacklok/toolhive/pkg/oauthproto/claims"
-)
-
-// DecodeStringArray preserves the historical host-package API while the strict
-// OAuth claim decoder is owned by pkg/oauthproto/claims.
-func DecodeStringArray(raw any) ([]string, error) {
-	return oauthclaims.DecodeStringArray(raw)
-}
+import "slices"
 
 // DecodeStringArrayLenient decodes a claim value using the permissive contract
 // the Cedar authorizer has always applied to group/role claims, where a claim
 // that is present but partially malformed must still yield whatever usable
 // names it carries rather than failing the whole authorization decision.
 //
-// It differs from DecodeStringArray in three ways, each of which Cedar depends
-// on today:
+// It differs from the strict oauthproto/claims.DecodeStringArray in three
+// ways, each of which Cedar depends on today:
 //
 //   - non-string elements of a []any are dropped instead of raising an error,
 //     so an array of all non-strings decodes to a non-nil empty slice;
@@ -35,12 +25,12 @@ func DecodeStringArray(raw any) ([]string, error) {
 //
 // recognized reports whether raw was a supported array shape at all. A false
 // value means the claim holds a scalar, object, or other unsupported type;
-// the caller decides whether to log and ignore it. As with DecodeStringArray,
+// the caller decides whether to log and ignore it. As with the strict decoder,
 // the result never aliases the input.
 //
-// New security-relevant callers should prefer DecodeStringArray: dropping
-// malformed elements silently is only appropriate where the existing
-// behavior must be preserved.
+// New security-relevant callers should prefer
+// oauthproto/claims.DecodeStringArray: dropping malformed elements silently is
+// only appropriate where the existing behavior must be preserved.
 func DecodeStringArrayLenient(raw any) (values []string, recognized bool) {
 	switch v := raw.(type) {
 	case []string:

@@ -28,6 +28,28 @@ const (
 
 var exchangeGrantNow = time.Unix(1_800_000_000, 0)
 
+// validateTopLevelEntry decodes raw and applies validateTopLevelDecoded.
+func validateTopLevelEntry(
+	raw json.RawMessage, policy ConfiguredClientPolicy, now time.Time,
+) (json.RawMessage, time.Time, error) {
+	entry, err := decodeExchangeGrantEntry(raw)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	return validateTopLevelDecoded(entry, policy, now)
+}
+
+// validateChildEntry decodes raw and applies validateChildDecoded.
+func validateChildEntry(
+	raw json.RawMessage, source *storage.ExchangeGrant, policy ConfiguredClientPolicy, now time.Time,
+) (json.RawMessage, time.Time, error) {
+	entry, err := decodeExchangeGrantEntry(raw)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	return validateChildDecoded(entry, source, policy, now)
+}
+
 func exchangeGrantPolicy() ConfiguredClientPolicy {
 	return ConfiguredClientPolicy{ExchangeRefreshTokens: map[string]time.Duration{
 		oauthproto.TokenTypeIDJAG:        testIDJAGCap,

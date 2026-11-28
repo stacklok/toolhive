@@ -50,28 +50,6 @@ func (r *Registry) Register(info *Info) {
 	r.runtimes[info.Name] = info
 }
 
-// Get returns a copy of the Info for the given name, or nil if not found.
-func (r *Registry) Get(name string) *Info {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	info, ok := r.runtimes[name]
-	if !ok {
-		return nil
-	}
-	cp := *info
-	return &cp
-}
-
-// IsRegistered returns true if a runtime with the given name is registered.
-func (r *Registry) IsRegistered(name string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	_, exists := r.runtimes[name]
-	return exists
-}
-
 // All returns copies of all registered runtimes as a slice.
 func (r *Registry) All() []*Info {
 	r.mu.RLock()

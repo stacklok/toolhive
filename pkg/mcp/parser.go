@@ -11,10 +11,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"mime"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"golang.org/x/exp/jsonrpc2"
 )
@@ -274,22 +272,6 @@ func WithAuthzDenialMarker(ctx context.Context, marker *AuthzDenialMarker) conte
 func AuthzDenialMarkerFromContext(ctx context.Context) (*AuthzDenialMarker, bool) {
 	marker, ok := ctx.Value(authzDenialMarkerContextKey{}).(*AuthzDenialMarker)
 	return marker, ok && marker != nil
-}
-
-// RequestHasJSONContentType reports whether r declares an application/json
-// Content-Type. Media types are case-insensitive per RFC 9110 8.3.1, so the
-// header is parsed with mime.ParseMediaType and compared with EqualFold; the
-// case-sensitive prefix match this replaces also wrongly accepted longer
-// types such as "application/jsonx".
-//
-// Deprecated: Content-Type must not gate MCP admission. Use DecodeMessage or
-// ParsingMiddleware to validate every POST in an MCP chain instead.
-func RequestHasJSONContentType(r *http.Request) bool {
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil {
-		return false
-	}
-	return strings.EqualFold(mediaType, "application/json")
 }
 
 // GetParsedMCPRequest retrieves the parsed MCP request from the request context.
@@ -687,43 +669,6 @@ func GetMCPMethod(ctx context.Context) string {
 func GetMCPResourceID(ctx context.Context) string {
 	if parsed := GetParsedMCPRequest(ctx); parsed != nil {
 		return parsed.ResourceID
-	}
-	return ""
-}
-
-// GetMCPArguments is a convenience function to get the MCP arguments from the context.
-func GetMCPArguments(ctx context.Context) map[string]interface{} {
-	if parsed := GetParsedMCPRequest(ctx); parsed != nil {
-		return parsed.Arguments
-	}
-	return nil
-}
-
-// GetMCPMeta is a convenience function to get the MCP _meta field from the context.
-// Returns nil if no parsed request is available or if _meta field is not present.
-func GetMCPMeta(ctx context.Context) map[string]interface{} {
-	if parsed := GetParsedMCPRequest(ctx); parsed != nil {
-		return parsed.Meta
-	}
-	return nil
-}
-
-// GetMCPClientInfo is a convenience function to get the Modern (stateless MCP)
-// per-request clientInfo from the context.
-// Returns nil if no parsed request is available or clientInfo is not present.
-func GetMCPClientInfo(ctx context.Context) map[string]interface{} {
-	if parsed := GetParsedMCPRequest(ctx); parsed != nil {
-		return parsed.ClientInfo
-	}
-	return nil
-}
-
-// GetMCPProtocolVersion is a convenience function to get the Modern (stateless
-// MCP) per-request protocol version from the context.
-// Returns "" if no parsed request is available or protocolVersion is not present.
-func GetMCPProtocolVersion(ctx context.Context) string {
-	if parsed := GetParsedMCPRequest(ctx); parsed != nil {
-		return parsed.ProtocolVersion
 	}
 	return ""
 }

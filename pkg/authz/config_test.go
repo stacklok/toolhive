@@ -361,67 +361,6 @@ func TestNewConfig(t *testing.T) {
 	}
 }
 
-func TestGetMiddlewareFromFile(t *testing.T) {
-	t.Parallel()
-
-	t.Run("Valid config file", func(t *testing.T) {
-		t.Parallel()
-
-		// Create a temporary file with a valid configuration
-		tempFile, err := os.CreateTemp("", "authz-middleware-*.json")
-		require.NoError(t, err)
-		defer os.Remove(tempFile.Name())
-
-		// Create a valid configuration using the v1.0 schema
-		cedarConfig := cedar.Config{
-			Version: "1.0",
-			Type:    cedar.ConfigType,
-			Options: &cedar.ConfigOptions{
-				Policies:     []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`},
-				EntitiesJSON: "[]",
-			},
-		}
-		config := mustNewConfig(t, cedarConfig)
-
-		// Marshal and write the configuration
-		configJSON, err := json.Marshal(config)
-		require.NoError(t, err)
-		_, err = tempFile.Write(configJSON)
-		require.NoError(t, err)
-		tempFile.Close()
-
-		// Get middleware from file
-		middleware, err := GetMiddlewareFromFile("testserver", tempFile.Name(), nil)
-		require.NoError(t, err)
-		require.NotNil(t, middleware)
-	})
-
-	t.Run("Non-existent file", func(t *testing.T) {
-		t.Parallel()
-
-		_, err := GetMiddlewareFromFile("testserver", "/nonexistent/path/config.json", nil)
-		assert.Error(t, err)
-	})
-
-	t.Run("Invalid config file", func(t *testing.T) {
-		t.Parallel()
-
-		// Create a temporary file with invalid configuration
-		tempFile, err := os.CreateTemp("", "authz-middleware-invalid-*.json")
-		require.NoError(t, err)
-		defer os.Remove(tempFile.Name())
-
-		// Write invalid JSON
-		_, err = tempFile.WriteString(`{"invalid": "config"}`)
-		require.NoError(t, err)
-		tempFile.Close()
-
-		// Get middleware from file should fail
-		_, err = GetMiddlewareFromFile("testserver", tempFile.Name(), nil)
-		assert.Error(t, err)
-	})
-}
-
 func TestCreateMiddlewareFromConfigErrors(t *testing.T) {
 	t.Parallel()
 

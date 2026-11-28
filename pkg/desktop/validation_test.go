@@ -646,35 +646,6 @@ func TestReadMarkerFileFromPathWithReadError(t *testing.T) {
 }
 
 //nolint:paralleltest // subtests modify HOME env var
-func TestMarkerFileExists(t *testing.T) {
-	t.Run("returns true when marker exists", func(t *testing.T) { //nolint:paralleltest // modifies HOME
-		dir := t.TempDir()
-
-		// Create the .toolhive directory and marker file
-		thDir := filepath.Join(dir, ".toolhive")
-		require.NoError(t, os.MkdirAll(thDir, 0755))
-		markerPath := filepath.Join(thDir, ".cli-source")
-		require.NoError(t, os.WriteFile(markerPath, []byte("{}"), 0600))
-
-		setHomeDir(t, dir)
-
-		exists, err := markerFileExists()
-		require.NoError(t, err)
-		assert.True(t, exists)
-	})
-
-	t.Run("returns false when marker does not exist", func(t *testing.T) { //nolint:paralleltest // modifies HOME
-		dir := t.TempDir()
-
-		setHomeDir(t, dir)
-
-		exists, err := markerFileExists()
-		require.NoError(t, err)
-		assert.False(t, exists)
-	})
-}
-
-//nolint:paralleltest // subtests modify HOME env var
 func TestReadMarkerFile(t *testing.T) {
 	t.Run("reads marker from home directory", func(t *testing.T) { //nolint:paralleltest // modifies HOME
 		dir := t.TempDir()

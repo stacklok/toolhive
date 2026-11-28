@@ -4,12 +4,16 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
@@ -320,7 +324,7 @@ func TestUserResolver_CreateUserWithIdentity_LinkFailure(t *testing.T) {
 		{
 			name:    "already exists but winner user read fails returns an error",
 			linkErr: alreadyExists, owner: "winner", wantDelete: true, userReadErr: storage.ErrNotFound,
-			wantErr: "re-read winner",
+			wantErr: "winner of the identity link race",
 		},
 		{
 			// The write committed but its reply was lost, so a retry saw
@@ -465,5 +469,400 @@ func TestUserResolver_WithCreateOnlyFor(t *testing.T) {
 			require.Equal(t, tt.wantUsers, stor.Stats().Users, "a refused call must create no user")
 			require.Equal(t, tt.wantUsers, stor.Stats().ProviderIdentities, "a refused call must create no link")
 		})
+	}
+}
+
+// nonSwappingUserStorage wraps a UserStorage without implementing
+// storage.ProviderIdentitySwapper or Unwrap, mirroring an external storage
+// decorator.
+type nonSwappingUserStorage struct {
+	storage.UserStorage
+}
+
+// unwrappingExternalStorage wraps a full storage.Storage and exposes Unwrap(),
+// but does not implement ProviderIdentitySwapper itself. ProviderIdentitySwapperFor
+// must NOT peel past external decorators.
+type unwrappingExternalStorage struct {
+	storage.Storage
+}
+
+func (s unwrappingExternalStorage) Unwrap() storage.Storage { return s.Storage }
+
+func TestUserResolver_IdentityBinding(t *testing.T) {
+	t.Parallel()
+
+	const (
+		provider  = "default"
+		subject   = "sub-1"
+		oldIssuer = "https://old-idp.example.com"
+		newIssuer = "https://new-idp.example.com"
+		oldClaim  = "sub"
+		newClaim  = "oid"
+	)
+
+	t.Run("creates stamped row and matches same binding", func(t *testing.T) {
+		t.Parallel()
+		stor := storage.NewMemoryStorage()
+		t.Cleanup(func() { require.NoError(t, stor.Close()) })
+		ctx := context.Background()
+
+		r := NewUserResolver(stor, WithCreateOnlyFor(provider), WithIdentityBinding(provider, oldIssuer, oldClaim))
+		u1, err := r.ResolveUser(ctx, provider, subject)
+		require.NoError(t, err)
+
+		row, err := stor.GetProviderIdentity(ctx, provider, subject)
+		require.NoError(t, err)
+		assert.Equal(t, oldIssuer, row.Issuer)
+		assert.Equal(t, oldClaim, row.SubjectClaim)
+
+		u2, err := r.ResolveUser(ctx, provider, subject)
+		require.NoError(t, err)
+		assert.Equal(t, u1.ID, u2.ID)
+	})
+
+	t.Run("issuer or claim change creates new user and leaves old user untouched", func(t *testing.T) {
+		t.Parallel()
+		cases := []struct {
+			name    string
+			nextIss string
+			nextClm string
+		}{
+			{name: "issuer changed", nextIss: newIssuer, nextClm: oldClaim},
+			{name: "subject claim changed", nextIss: oldIssuer, nextClm: newClaim},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				stor := storage.NewMemoryStorage()
+				t.Cleanup(func() { require.NoError(t, stor.Close()) })
+				ctx := context.Background()
+
+				oldRes := NewUserResolver(stor, WithCreateOnlyFor(provider), WithIdentityBinding(provider, oldIssuer, oldClaim))
+				oldUser, err := oldRes.ResolveUser(ctx, provider, subject)
+				require.NoError(t, err)
+
+				newRes := NewUserResolver(stor, WithCreateOnlyFor(provider), WithIdentityBinding(provider, tc.nextIss, tc.nextClm))
+				newUser, err := newRes.ResolveUser(ctx, provider, subject)
+				require.NoError(t, err)
+				assert.NotEqual(t, oldUser.ID, newUser.ID)
+
+				// Old user still exists untouched.
+				keptOld, err := stor.GetUser(ctx, oldUser.ID)
+				require.NoError(t, err)
+				assert.Equal(t, oldUser.ID, keptOld.ID)
+
+				// Row now points at new user with the new binding.
+				row, err := stor.GetProviderIdentity(ctx, provider, subject)
+				require.NoError(t, err)
+				assert.Equal(t, newUser.ID, row.UserID)
+				assert.Equal(t, tc.nextIss, row.Issuer)
+				assert.Equal(t, tc.nextClm, row.SubjectClaim)
+
+				// Subsequent sign-in resolves the new user.
+				again, err := newRes.ResolveUser(ctx, provider, subject)
+				require.NoError(t, err)
+				assert.Equal(t, newUser.ID, again.ID)
+			})
+		}
+	})
+
+	t.Run("mismatch on later upstream refuses without replacing row", func(t *testing.T) {
+		t.Parallel()
+		stor := storage.NewMemoryStorage()
+		t.Cleanup(func() { require.NoError(t, stor.Close()) })
+		ctx := context.Background()
+
+		// Seed a row on a later upstream under old binding.
+		oldUser, err := NewUserResolver(stor, WithIdentityBinding("later", oldIssuer, oldClaim)).ResolveUser(ctx, "later", subject)
+		require.NoError(t, err)
+
+		r := NewUserResolver(stor,
+			WithCreateOnlyFor("first"),
+			WithIdentityBinding("later", newIssuer, oldClaim),
+		)
+		user, err := r.ResolveUser(ctx, "later", subject)
+		require.ErrorIs(t, err, ErrIdentityBindingMismatch)
+		require.NotErrorIs(t, err, ErrUpstreamCannotCreateUsers)
+		require.Nil(t, user)
+
+		// Existing row and user must be untouched.
+		row, err := stor.GetProviderIdentity(ctx, "later", subject)
+		require.NoError(t, err)
+		assert.Equal(t, oldUser.ID, row.UserID)
+		assert.Equal(t, oldIssuer, row.Issuer)
+		assert.Equal(t, 1, stor.Stats().Users)
+	})
+
+	t.Run("decorated storage unwraps to ProviderIdentitySwapper", func(t *testing.T) {
+		t.Parallel()
+		base := storage.NewMemoryStorage()
+		t.Cleanup(func() { require.NoError(t, base.Close()) })
+		decorated, err := storage.NewUserKeyedUpstreamStorage(base)
+		require.NoError(t, err)
+		ctx := context.Background()
+
+		oldResolver := NewUserResolver(decorated, WithIdentityBinding(provider, oldIssuer, oldClaim))
+		oldUser, err := oldResolver.ResolveUser(ctx, provider, subject)
+		require.NoError(t, err)
+
+		newResolver := NewUserResolver(decorated, WithIdentityBinding(provider, newIssuer, oldClaim))
+		newUser, err := newResolver.ResolveUser(ctx, provider, subject)
+		require.NoError(t, err)
+		assert.NotEqual(t, oldUser.ID, newUser.ID)
+	})
+
+	t.Run("external store without ProviderIdentitySwapper", func(t *testing.T) {
+		t.Parallel()
+		t.Run("unstamped row matches without writing", func(t *testing.T) {
+			t.Parallel()
+			base := storage.NewMemoryStorage()
+			t.Cleanup(func() { require.NoError(t, base.Close()) })
+			ctx := context.Background()
+
+			// Seed an unstamped row.
+			u, err := NewUserResolver(base).ResolveUser(ctx, provider, subject)
+			require.NoError(t, err)
+
+			wrapped := nonSwappingUserStorage{UserStorage: base}
+			r := NewUserResolver(wrapped, WithIdentityBinding(provider, oldIssuer, oldClaim))
+			got, err := r.ResolveUser(ctx, provider, subject)
+			require.NoError(t, err)
+			assert.Equal(t, u.ID, got.ID)
+
+			// Row remains unstamped because wrapped does not expose ProviderIdentitySwapper.
+			row, err := base.GetProviderIdentity(ctx, provider, subject)
+			require.NoError(t, err)
+			assert.True(t, row.IsUnstamped())
+		})
+
+		t.Run("stamped mismatch fails closed without creating orphan user", func(t *testing.T) {
+			t.Parallel()
+			base := storage.NewMemoryStorage()
+			t.Cleanup(func() { require.NoError(t, base.Close()) })
+			ctx := context.Background()
+
+			_, err := NewUserResolver(base, WithIdentityBinding(provider, oldIssuer, oldClaim)).ResolveUser(ctx, provider, subject)
+			require.NoError(t, err)
+
+			wrapped := nonSwappingUserStorage{UserStorage: base}
+			r := NewUserResolver(wrapped, WithIdentityBinding(provider, newIssuer, oldClaim))
+			got, err := r.ResolveUser(ctx, provider, subject)
+			require.ErrorIs(t, err, ErrIdentityBindingMismatch)
+			assert.Nil(t, got)
+			assert.Equal(t, 1, base.Stats().Users, "must not create an orphan user when swap is unsupported")
+		})
+		t.Run("external decorator exposing Unwrap is not bypassed", func(t *testing.T) {
+			t.Parallel()
+			base := storage.NewMemoryStorage()
+			t.Cleanup(func() { require.NoError(t, base.Close()) })
+			ctx := context.Background()
+
+			u, err := NewUserResolver(base).ResolveUser(ctx, provider, subject)
+			require.NoError(t, err)
+
+			ext := unwrappingExternalStorage{Storage: base}
+			r := NewUserResolver(ext, WithIdentityBinding(provider, oldIssuer, oldClaim))
+			got, err := r.ResolveUser(ctx, provider, subject)
+			require.NoError(t, err)
+			assert.Equal(t, u.ID, got.ID)
+
+			// Row stays unstamped because ProviderIdentitySwapperFor does not peel ext.
+			row, err := base.GetProviderIdentity(ctx, provider, subject)
+			require.NoError(t, err)
+			assert.True(t, row.IsUnstamped())
+		})
+	})
+
+	t.Run("resolveLinkFailure never adopts a mismatching row", func(t *testing.T) {
+		t.Parallel()
+		t.Run("rolls back candidate on definite non-commit", func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			m := mocks.NewMockUserStorage(ctrl)
+			ctx := context.Background()
+
+			var createdID string
+			gomock.InOrder(
+				m.EXPECT().GetProviderIdentity(gomock.Any(), provider, subject).Return(nil, storage.ErrNotFound),
+				m.EXPECT().CreateUser(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, u *storage.User) error {
+					createdID = u.ID
+					return nil
+				}),
+				m.EXPECT().CreateProviderIdentity(gomock.Any(), gomock.Any()).Return(storage.ErrAlreadyExists),
+				m.EXPECT().GetProviderIdentity(gomock.Any(), provider, subject).Return(&storage.ProviderIdentity{
+					UserID: "other-idp-user", ProviderID: provider, ProviderSubject: subject,
+					Issuer: oldIssuer, SubjectClaim: oldClaim,
+				}, nil),
+				m.EXPECT().DeleteUser(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id string) error {
+					require.Equal(t, createdID, id)
+					return nil
+				}),
+			)
+
+			r := NewUserResolver(m, WithIdentityBinding(provider, newIssuer, oldClaim))
+			user, err := r.ResolveUser(ctx, provider, subject)
+			require.Error(t, err)
+			assert.Nil(t, user)
+		})
+
+		t.Run("does not roll back candidate on ambiguous transport error", func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			m := mocks.NewMockUserStorage(ctrl)
+			ctx := context.Background()
+
+			gomock.InOrder(
+				m.EXPECT().GetProviderIdentity(gomock.Any(), provider, subject).Return(nil, storage.ErrNotFound),
+				m.EXPECT().CreateUser(gomock.Any(), gomock.Any()).Return(nil),
+				m.EXPECT().CreateProviderIdentity(gomock.Any(), gomock.Any()).Return(errors.New("i/o timeout")),
+				m.EXPECT().GetProviderIdentity(gomock.Any(), provider, subject).Return(&storage.ProviderIdentity{
+					UserID: "other-idp-user", ProviderID: provider, ProviderSubject: subject,
+					Issuer: oldIssuer, SubjectClaim: oldClaim,
+				}, nil),
+				// No DeleteUser expectation: ambiguous error must leave candidate intact.
+			)
+
+			r := NewUserResolver(m, WithIdentityBinding(provider, newIssuer, oldClaim))
+			user, err := r.ResolveUser(ctx, provider, subject)
+			require.Error(t, err)
+			assert.Nil(t, user)
+		})
+	})
+
+	t.Run("validateNamedUpstreams rejects half-populated binding", func(t *testing.T) {
+		t.Parallel()
+		mockProv := &mockIDPProvider{}
+		require.Error(t, validateNamedUpstreams([]NamedUpstream{{Name: "a", Provider: mockProv, Issuer: oldIssuer}}))
+		require.Error(t, validateNamedUpstreams([]NamedUpstream{{Name: "a", Provider: mockProv, SubjectClaim: oldClaim}}))
+		require.NoError(t, validateNamedUpstreams([]NamedUpstream{
+			{Name: "a", Provider: mockProv, Issuer: oldIssuer, SubjectClaim: oldClaim},
+		}))
+	})
+}
+
+//nolint:paralleltest // captures the process-global slog default
+func TestUserResolver_UnstampedRowStampsAndWarnsOnce(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { require.NoError(t, stor.Close()) })
+	ctx := context.Background()
+
+	// Seed two unstamped rows.
+	u1, err := NewUserResolver(stor).ResolveUser(ctx, "default", "sub-1")
+	require.NoError(t, err)
+	u2, err := NewUserResolver(stor).ResolveUser(ctx, "default", "sub-2")
+	require.NoError(t, err)
+
+	r := NewUserResolver(stor, WithIdentityBinding("default", "https://idp.example.com", "sub"))
+	got1, err := r.ResolveUser(ctx, "default", "sub-1")
+	require.NoError(t, err)
+	assert.Equal(t, u1.ID, got1.ID)
+
+	got2, err := r.ResolveUser(ctx, "default", "sub-2")
+	require.NoError(t, err)
+	assert.Equal(t, u2.ID, got2.ID)
+
+	for _, sub := range []string{"sub-1", "sub-2"} {
+		row, getErr := stor.GetProviderIdentity(ctx, "default", sub)
+		require.NoError(t, getErr)
+		assert.Equal(t, "https://idp.example.com", row.Issuer)
+		assert.Equal(t, "sub", row.SubjectClaim)
+	}
+
+	assert.Equal(t, 1, strings.Count(buf.String(), "stamped legacy provider identity"),
+		"must log once per resolver when stamping unstamped rows")
+	assert.NotContains(t, buf.String(), "sub-1", "warning must not log provider subject")
+	assert.NotContains(t, buf.String(), u1.ID, "warning must not log user ID")
+}
+
+//nolint:paralleltest // captures the process-global slog default
+func TestUserResolver_ReplacedRowWarnsWithoutIdentifiers(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { require.NoError(t, stor.Close()) })
+	ctx := context.Background()
+
+	old, err := NewUserResolver(stor, WithIdentityBinding("default", "https://old-idp.example.com", "sub")).
+		ResolveUser(ctx, "default", "sub-1")
+	require.NoError(t, err)
+
+	replaced, err := NewUserResolver(stor, WithIdentityBinding("default", "https://new-idp.example.com", "sub")).
+		ResolveUser(ctx, "default", "sub-1")
+	require.NoError(t, err)
+	require.NotEqual(t, old.ID, replaced.ID)
+
+	out := buf.String()
+	assert.Contains(t, out, "level=WARN")
+	assert.Equal(t, 1, strings.Count(out, "replaced mismatched provider identity with new user"))
+	assert.Contains(t, out, "provider_id=default")
+	assert.NotContains(t, out, "sub-1", "warning must not log provider subject")
+	assert.NotContains(t, out, old.ID, "warning must not log the old user ID")
+	assert.NotContains(t, out, replaced.ID, "warning must not log the new user ID")
+}
+
+func TestWithIdentityBinding_PanicsOnEmptyArg(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() { WithIdentityBinding("", "https://idp.example.com", "sub") })
+	assert.Panics(t, func() { WithIdentityBinding("default", "", "sub") })
+	assert.Panics(t, func() { WithIdentityBinding("default", "https://idp.example.com", "") })
+}
+
+//nolint:paralleltest // mutates the process-global slog default (slog.SetDefault)
+func TestUserResolver_UnstampedWithoutSwapperLogsInfoOnce(t *testing.T) {
+	const (
+		provider = "default"
+		issuer   = "https://idp.example.com"
+		claim    = "sub"
+	)
+	base := storage.NewMemoryStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	ctx := context.Background()
+	subjects := []string{"sub-1", "sub-2"}
+	var seededIDs []string
+	for _, subject := range subjects {
+		u, err := NewUserResolver(base).ResolveUser(ctx, provider, subject)
+		require.NoError(t, err)
+		seededIDs = append(seededIDs, u.ID)
+	}
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	r := NewUserResolver(nonSwappingUserStorage{UserStorage: base}, WithIdentityBinding(provider, issuer, claim))
+	linesAt := func(level, msg string) int {
+		n := 0
+		for _, line := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(line, "level="+level) && strings.Contains(line, msg) {
+				n++
+			}
+		}
+		return n
+	}
+	const infoMsg = "without the ProviderIdentitySwapper capability"
+	const debugMsg = "leaving it unstamped"
+
+	_, err := r.ResolveUser(ctx, provider, subjects[0])
+	require.NoError(t, err)
+	assert.Equal(t, 1, linesAt("INFO", infoMsg))
+	assert.Equal(t, 0, linesAt("DEBUG", debugMsg))
+	assert.Contains(t, logs.String(), "provider_id=default")
+
+	_, err = r.ResolveUser(ctx, provider, subjects[1])
+	require.NoError(t, err)
+	assert.Equal(t, 1, linesAt("INFO", infoMsg), "later unstamped sign-ins stay at DEBUG")
+	assert.Equal(t, 1, linesAt("DEBUG", debugMsg))
+
+	for _, secret := range append(append([]string{}, subjects...), seededIDs...) {
+		assert.NotContains(t, logs.String(), secret)
 	}
 }

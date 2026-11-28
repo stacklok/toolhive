@@ -22,6 +22,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/plugins/pluginsvc"
+	"github.com/stacklok/toolhive/pkg/projecttxn"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	gitmocks "github.com/stacklok/toolhive/pkg/skills/gitresolver/mocks"
@@ -44,9 +45,9 @@ func TestProjectTxRun_SerializesAcrossProcesses(t *testing.T) {
 	projectRoot := t.TempDir()
 	readyPath := filepath.Join(t.TempDir(), "child-ready")
 	markerPath := filepath.Join(t.TempDir(), "child-entered")
-	lockPath, err := projectTxLockPath(projectRoot)
+	lockPath, err := projecttxn.LockPath(projectRoot)
 	require.NoError(t, err)
-	require.Contains(t, lockPath, filepath.Join(stateHome, "toolhive", projectTxLockDir))
+	require.Contains(t, lockPath, filepath.Join(stateHome, "toolhive", "skills-project-locks"))
 
 	firstEntered := make(chan struct{})
 	releaseFirst := make(chan struct{})
@@ -153,7 +154,7 @@ func TestProjectTxRun_CanceledWaiterDoesNotEnter(t *testing.T) {
 
 	projectRoot := t.TempDir()
 	tx := &projectTx{}
-	unlock, err := tx.lock(t.Context(), projectRoot)
+	unlock, err := projecttxn.Lock(t.Context(), projectRoot)
 	require.NoError(t, err)
 	var unlockOnce sync.Once
 	release := func() { unlockOnce.Do(unlock) }
@@ -186,7 +187,7 @@ func TestProjectTxRun_WaitsBeyondInternalTimeoutWhileCallerIsActive(t *testing.T
 
 	projectRoot := t.TempDir()
 	tx := &projectTx{}
-	unlock, err := tx.lock(t.Context(), projectRoot)
+	unlock, err := projecttxn.Lock(t.Context(), projectRoot)
 	require.NoError(t, err)
 	var unlockOnce sync.Once
 	release := func() { unlockOnce.Do(unlock) }
@@ -402,13 +403,12 @@ func TestSyncVsUninstall_SerializedOnProjectTx(t *testing.T) {
 
 	var inSync atomic.Bool
 	var overlapped atomic.Bool
-	syncer := svc.(*service) //nolint:forcetypeassert
 
 	// Hold the project tx the way Sync does, with a barrier so uninstall
 	// can attempt to enter while sync is "in progress".
 	syncDone := make(chan struct{})
 	go func() {
-		unlock, lockErr := syncer.projectTx.lock(context.Background(), projectRoot)
+		unlock, lockErr := projecttxn.Lock(context.Background(), projectRoot)
 		if lockErr != nil {
 			panic(lockErr)
 		}
@@ -458,13 +458,12 @@ func TestUpgradeVsUninstall_SerializedOnProjectTx(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	upgrader := svc.(*service) //nolint:forcetypeassert
 	var inUpgrade atomic.Bool
 	var overlapped atomic.Bool
 
 	upgradeDone := make(chan struct{})
 	go func() {
-		unlock, lockErr := upgrader.projectTx.lock(context.Background(), projectRoot)
+		unlock, lockErr := projecttxn.Lock(context.Background(), projectRoot)
 		if lockErr != nil {
 			panic(lockErr)
 		}

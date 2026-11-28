@@ -10,7 +10,7 @@ import (
 	"go.starlark.net/starlark"
 )
 
-func TestExecute(t *testing.T) {
+func TestExecuteWithStats(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -141,7 +141,7 @@ return d
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := Execute(tt.script, tt.globals, tt.stepLimit)
+			result, err := ExecuteWithStats(tt.script, tt.globals, tt.stepLimit, nil)
 
 			if tt.wantErr != "" {
 				require.Error(t, err)

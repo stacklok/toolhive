@@ -173,46 +173,6 @@ func renderJSONTree(vis []visItem, cursor, scrollOff, width, visH int) string {
 	return sb.String()
 }
 
-// nodeToAny reconstructs a Go value from a jsonNode tree (for re-serialization).
-func nodeToAny(node *jsonNode) any {
-	switch node.kind {
-	case kindObject:
-		m := make(map[string]any, len(node.children))
-		for _, child := range node.children {
-			m[child.key] = nodeToAny(child)
-		}
-		return m
-	case kindArray:
-		s := make([]any, len(node.children))
-		for i, child := range node.children {
-			s[i] = nodeToAny(child)
-		}
-		return s
-	case kindString:
-		var s string
-		_ = json.Unmarshal([]byte(node.value), &s)
-		return s
-	case kindNumber:
-		var n float64
-		_ = json.Unmarshal([]byte(node.value), &n)
-		return n
-	case kindBool:
-		return node.value == "true"
-	case kindNull:
-		return nil
-	}
-	return nil
-}
-
-// nodeToJSON serializes the selected node back to indented JSON.
-func nodeToJSON(node *jsonNode) string {
-	b, err := json.MarshalIndent(nodeToAny(node), "", "  ")
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
 // renderJSONItem converts a single visItem to a syntax-colored terminal line.
 //
 //nolint:gocyclo // switch on kind + collapsed/empty sub-cases; splitting would obscure the rendering logic

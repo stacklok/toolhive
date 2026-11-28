@@ -307,39 +307,6 @@ func TestServerStreamRegistry_ManySessionsStreamCount(t *testing.T) {
 	assert.Equal(t, 10, r.streamCount())
 }
 
-// TestServerStreamRegistry_DispatchToHitsOnlyTarget verifies dispatchTo
-// delivers a message to the single stream registered for its route key, and
-// no other currently-registered stream receives it -- the property routeProgress
-// and routeResourceUpdated depend on to avoid cross-session leakage.
-func TestServerStreamRegistry_DispatchToHitsOnlyTarget(t *testing.T) {
-	t.Parallel()
-
-	r := newServerStreamRegistry()
-	target := r.register("target-session")
-	other := r.register("other-session")
-	t.Cleanup(func() {
-		r.deregister("target-session", target)
-		r.deregister("other-session", other)
-	})
-
-	msg := newTestNotification(t, "notifications/progress")
-	r.dispatchTo("target-session", msg)
-
-	assert.Equal(t, msg, recvWithTimeout(t, target.data))
-	assertNoDelivery(t, other.data)
-}
-
-// TestServerStreamRegistry_DispatchToUnknownKeyIsNoop verifies dispatchTo for
-// a route key with no registered stream neither panics nor blocks.
-func TestServerStreamRegistry_DispatchToUnknownKeyIsNoop(t *testing.T) {
-	t.Parallel()
-
-	r := newServerStreamRegistry()
-	assert.NotPanics(t, func() {
-		r.dispatchTo("no-such-session", newTestNotification(t, "notifications/progress"))
-	})
-}
-
 // TestServerStreamRegistry_DeliverToMany verifies deliverToMany delivers a
 // message to every present stream among routeKeys, and does not deliver it to
 // a registered stream whose session is NOT in routeKeys.
@@ -362,4 +329,12 @@ func TestServerStreamRegistry_DeliverToMany(t *testing.T) {
 	assert.Equal(t, msg, recvWithTimeout(t, subA.data))
 	assert.Equal(t, msg, recvWithTimeout(t, subB.data))
 	assertNoDelivery(t, notSub.data)
+}
+
+// streamCount reports how many sessions currently have a registered stream.
+func (r *serverStreamRegistry) streamCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return len(r.streams)
 }

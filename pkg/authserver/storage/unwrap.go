@@ -15,3 +15,41 @@ func Unwrap(stor Storage) Storage {
 		stor = unwrapper.Unwrap()
 	}
 }
+
+// storageDecorator is implemented by ToolHive's own storage decorators. They
+// leave provider-identity rows to the Storage they wrap, so a capability
+// lookup may look underneath them. Its method is unexported, so a wrapper
+// defined outside this package carries it only by embedding one of these
+// decorators. Embedding the Storage interface or a concrete store does not, so
+// that wrapper stops the lookup even if it has Unwrap and must implement the
+// capability itself to offer it.
+type storageDecorator interface {
+	Unwrap() Storage
+	storageDecorator()
+}
+
+func (*UserKeyedUpstreamStorage) storageDecorator() {}
+func (*ClientAdmissionStorage) storageDecorator()   {}
+func (*SPIFFEStorageDecorator) storageDecorator()   {}
+func (*CIMDStorageDecorator) storageDecorator()     {}
+func (cimdShapeGuardStorage) storageDecorator()     {}
+
+// ProviderIdentitySwapperFor returns the outermost ProviderIdentitySwapper on
+// stor. Unwrap says how to walk a decorator stack; storageDecorator says it is
+// safe to look underneath. The walk follows only storageDecorator, never
+// Unwrap alone, so a wrapper written outside this package is not bypassed to
+// write directly to the store beneath it, since it may serve identity rows
+// itself. Do not simplify this to Unwrap.
+func ProviderIdentitySwapperFor(stor UserStorage) ProviderIdentitySwapper {
+	for stor != nil {
+		if swapper, ok := stor.(ProviderIdentitySwapper); ok {
+			return swapper
+		}
+		d, ok := stor.(storageDecorator)
+		if !ok {
+			return nil
+		}
+		stor = d.Unwrap()
+	}
+	return nil
+}

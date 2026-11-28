@@ -227,28 +227,6 @@ const (
 // Option is a functional option for configuring TransparentProxy
 type Option func(*TransparentProxy)
 
-// withHealthCheckInterval sets the health check interval.
-// This is primarily useful for testing with shorter intervals.
-// Ignores non-positive intervals; default will be used.
-func withHealthCheckInterval(interval time.Duration) Option {
-	return func(p *TransparentProxy) {
-		if interval > 0 {
-			p.healthCheckInterval = interval
-		}
-	}
-}
-
-// withHealthCheckRetryDelay sets the health check retry delay.
-// This is primarily useful for testing with shorter delays.
-// Ignores non-positive delays; default will be used.
-func withHealthCheckRetryDelay(delay time.Duration) Option {
-	return func(p *TransparentProxy) {
-		if delay > 0 {
-			p.healthCheckRetryDelay = delay
-		}
-	}
-}
-
 // WithRemoteBasePath sets the base path prefix from the remote URL.
 // When set, incoming request paths are rewritten to include this prefix
 // before forwarding to the remote server.
@@ -285,40 +263,6 @@ func WithStripConsentCookie() Option {
 func WithStateless() Option {
 	return func(p *TransparentProxy) {
 		p.stateless = true
-	}
-}
-
-// withHealthCheckPingTimeout sets the health check ping timeout.
-// This is primarily useful for testing with shorter timeouts.
-// Ignores non-positive timeouts; default will be used.
-func withHealthCheckPingTimeout(timeout time.Duration) Option {
-	return func(p *TransparentProxy) {
-		if timeout > 0 {
-			p.healthCheckPingTimeout = timeout
-		}
-	}
-}
-
-// withHealthCheckFailureThreshold sets the consecutive failure count that triggers
-// onHealthCheckFailed.
-// This is primarily useful for testing with lower thresholds.
-// Ignores non-positive values; default will be used.
-func withHealthCheckFailureThreshold(threshold int) Option {
-	return func(p *TransparentProxy) {
-		if threshold > 0 {
-			p.healthCheckFailureThreshold = threshold
-		}
-	}
-}
-
-// withShutdownTimeout sets the graceful shutdown timeout for the HTTP server.
-// This is primarily useful for testing with shorter timeouts.
-// Ignores non-positive timeouts; default will be used.
-func withShutdownTimeout(timeout time.Duration) Option {
-	return func(p *TransparentProxy) {
-		if timeout > 0 {
-			p.shutdownTimeout = timeout
-		}
 	}
 }
 

@@ -34,7 +34,8 @@ func Factory(deviceStorage authstorage.DeviceCodeStorage, minInterval time.Durat
 			// The embedded *fosite.Config, not config itself:
 			// AuthorizationServerConfig's own no-context adapter methods of the
 			// same name shadow the ctx-taking ones fosite's provider interfaces
-			// require (see tokenexchange.Factory's identical concern).
+			// require (see the identical concern in
+			// tokenexchange.FactoryWithSharedTrustedIssuerValidator).
 			Config:      config.Config,
 			MinInterval: minInterval,
 		}, nil

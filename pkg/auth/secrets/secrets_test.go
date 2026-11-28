@@ -6,6 +6,7 @@ package secrets
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -289,6 +290,19 @@ func TestProcessSecret(t *testing.T) {
 	}
 }
 
+// processSecretForType resolves the token type configuration the same way
+// ProcessSecret does and then delegates to processSecretWithProvider, so the
+// tests can inject a mock secrets provider.
+func processSecretForType(
+	workloadName, secretValue string, secretManager secrets.Provider, tokenType TokenType,
+) (string, error) {
+	tokenConfig, ok := tokenTypeConfigs[tokenType]
+	if !ok {
+		return "", fmt.Errorf("unknown token type: %s", tokenType)
+	}
+	return processSecretWithProvider(workloadName, secretValue, secretManager, tokenConfig)
+}
+
 func TestProcessSecretWithProvider(t *testing.T) {
 	t.Parallel()
 
@@ -481,7 +495,7 @@ func TestProcessSecretWithProvider(t *testing.T) {
 			mockProvider := mocks.NewMockProvider(ctrl)
 			tc.mockSetup(mockProvider)
 
-			result, err := ProcessSecretWithProvider(tc.workloadName, tc.secretValue, mockProvider, tc.tokenType)
+			result, err := processSecretForType(tc.workloadName, tc.secretValue, mockProvider, tc.tokenType)
 
 			if tc.expectError {
 				assert.Error(t, err)

@@ -55,8 +55,8 @@ type serverStream struct {
 // All fields are guarded by mu; do not add another synchronization primitive
 // over streams (see the "one synchronization primitive per data structure"
 // style rule). The only channel operation performed while mu is held is a
-// non-blocking select-send in broadcast, dispatchTo, and deliverToMany, which
-// cannot deadlock.
+// non-blocking select-send in broadcast and deliverToMany, which cannot
+// deadlock.
 type serverStreamRegistry struct {
 	mu      sync.Mutex
 	streams map[string]*serverStream
@@ -132,34 +132,10 @@ func (r *serverStreamRegistry) broadcast(msg jsonrpc2.Message) {
 	}
 }
 
-// dispatchTo delivers msg to the single stream registered for routeKey (a
-// session ID), if one is currently connected. Delivery is non-blocking and
-// best-effort, matching broadcast: an absent stream (no GET SSE connection for
-// that session right now) or a full one both simply drop msg, logged at
-// Debug/Warn respectively, rather than blocking or erroring. Callers use this
-// for messages that are correlated to exactly one session (e.g. a
-// resources/updated notification's subscribers) and MUST NOT ever reach a
-// different session's stream.
-func (r *serverStreamRegistry) dispatchTo(routeKey string, msg jsonrpc2.Message) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	s, ok := r.streams[routeKey]
-	if !ok {
-		slog.Debug("no server stream registered for route key; dropping notification", "route_key", routeKey)
-		return
-	}
-	select {
-	case s.data <- msg:
-	default:
-		slog.Warn("server stream channel full; dropping notification", "route_key", routeKey)
-	}
-}
-
 // deliverToMany delivers msg to each of routeKeys' streams that is currently
 // registered, taking mu once for the whole batch rather than once per key.
 // Delivery to each present stream is non-blocking and best-effort, matching
-// broadcast/dispatchTo. Callers use this for messages correlated to a known,
+// broadcast. Callers use this for messages correlated to a known,
 // bounded set of sessions (e.g. a resource's subscribers) -- routeKeys not
 // present in the registry are silently skipped (no connected GET stream right
 // now), not an error.
@@ -179,14 +155,6 @@ func (r *serverStreamRegistry) deliverToMany(routeKeys []string, msg jsonrpc2.Me
 			slog.Warn("server stream channel full; dropping notification", "route_key", routeKey)
 		}
 	}
-}
-
-// streamCount reports how many sessions currently have a registered stream.
-func (r *serverStreamRegistry) streamCount() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	return len(r.streams)
 }
 
 // closeAll signals every currently registered stream to stop (by closing its

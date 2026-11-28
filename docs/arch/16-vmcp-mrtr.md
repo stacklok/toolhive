@@ -247,7 +247,8 @@ suspended state is vMCP's own. Two triggers:
 For a **Legacy** downstream client, neither suspends anything: the existing
 blocking seams answer mid-call on the live session, and composites keep
 executing synchronously inside one `tools/call` (RFC-0083 Alternative 3 —
-the pod-local `InMemoryWorkflowStateStore` remains correct).
+the pod-local store from `composer.NewInMemoryStateStore` remains
+correct).
 
 For a **Modern** downstream client there is no session to block on, so the
 workflow must **suspend**: vMCP returns `input_required` to the client with

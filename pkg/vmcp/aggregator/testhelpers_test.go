@@ -21,6 +21,7 @@ func newTestBackend(id string, opts ...func(*vmcp.Backend)) vmcp.Backend {
 	return b
 }
 
+//nolint:unparam // url is currently always localhost:8081, but kept parameterized for test flexibility
 func withBackendURL(url string) func(*vmcp.Backend) {
 	return func(b *vmcp.Backend) {
 		b.BaseURL = url

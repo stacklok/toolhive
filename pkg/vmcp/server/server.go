@@ -405,6 +405,16 @@ type Server struct {
 	// health change can fan out to every session (#5786). The zero value is
 	// usable; see serve_health_resync.go for registration/pruning lifecycle.
 	healthResync healthResyncRegistry
+
+	// sessionToolBackends records, per session, the backend ID that owns each
+	// advertised tool name. A partial tools resync uses it to reconcile per
+	// backend: it keeps the previous tools owned by failed backends and replaces
+	// the tools owned by backends that answered, so removals propagate for
+	// healthy backends even while another backend keeps failing (#6829). Populated
+	// on registration and every tools resync; the entry is removed on session
+	// termination. Guarded by sessionToolBackendsMu.
+	sessionToolBackendsMu sync.Mutex
+	sessionToolBackends   map[string]map[string]string
 }
 
 // buildSessionDataStorage constructs the DataStorage backend from cfg.
@@ -1424,13 +1434,17 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 	// pods. The call-time binding check (enforceSessionBinding, run before
 	// core.CallTool/ReadResource) remains a second layer for embedders without that middleware.
 	identity, _ := auth.IdentityFromContext(ctx)
-	adaptedTools, err := s.serveSessionTools(ctx, sessionID, identity)
+	adaptedTools, backendByName, err := s.serveSessionTools(ctx, sessionID, identity)
 	if err != nil || len(adaptedTools) == 0 {
 		slog.Debug("lazyInjectSessionTools: no tools available for session", "session_id", sessionID)
 		return
 	}
 	if err := setSessionToolsDirect(sess, adaptedTools); err != nil {
 		slog.Warn("lazyInjectSessionTools: failed to inject tools", "session_id", sessionID, "error", err)
+		return
+	}
+	if backendByName != nil {
+		s.recordSessionToolBackends(sessionID, backendByName)
 	}
 }
 
@@ -1472,6 +1486,7 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	defer func() {
 		if retErr != nil {
 			s.healthResync.remove(sessionID)
+			s.removeSessionToolBackends(sessionID)
 			if _, termErr := s.vmcpSessionMgr.Terminate(sessionID); termErr != nil {
 				slog.Warn("failed to clean up session after error",
 					"session_id", sessionID,

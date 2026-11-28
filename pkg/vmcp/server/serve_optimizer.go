@@ -67,18 +67,21 @@ func withSharedEmbeddings(
 // the core's advertised set, or — when the optimizer is enabled — the find_tool /
 // call_tool meta-tools built over that set. Both session registration
 // (injectCoreSessionCapabilities) and cross-pod re-injection (lazyInjectSessionTools)
-// call it, so the two paths advertise an identical set for the same identity.
+// call it, so the two paths advertise an identical set for the same identity. The
+// returned backend map (tool name → backend ID) is nil in optimizer mode, where the
+// advertised set is the backend-independent meta-tools.
 func (s *Server) serveSessionTools(
 	ctx context.Context, sessionID string, identity *auth.Identity,
-) ([]server.ServerTool, error) {
-	coreTools, err := s.coreSessionTools(ctx, sessionID, identity)
+) ([]server.ServerTool, map[string]string, error) {
+	coreTools, backendByName, err := s.coreSessionTools(ctx, sessionID, identity)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if s.optimizerFactory == nil {
-		return coreTools, nil
+		return coreTools, backendByName, nil
 	}
-	return s.optimizerSessionTools(ctx, sessionID, coreTools)
+	metaTools, err := s.optimizerSessionTools(ctx, sessionID, coreTools)
+	return metaTools, nil, err
 }
 
 // optimizerSessionTools builds a per-session optimizer over coreTools (the core's

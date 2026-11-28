@@ -161,25 +161,30 @@ func NewDecorator(inner core.VMCP, cfg *Config) core.VMCP {
 // definition in its place and the backend tool would never reach its own Cedar
 // admission (#5845). The defensive skips in virtualTool/bindTools remain as
 // belt-and-braces for the same name.
-func (d *decorator) innerTools(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, error) {
-	tools, err := d.VMCP.ListTools(ctx, identity)
+//
+// It reads through inner.ListToolsWithPartial rather than inner.ListTools so a
+// caller that needs the failed-backend IDs (ListToolsWithPartial below) receives
+// them from the same aggregation the tools came from; ListTools/LookupTool ignore
+// them.
+func (d *decorator) innerTools(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, []string, error) {
+	tools, failedBackends, err := d.VMCP.ListToolsWithPartial(ctx, identity)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, t := range tools {
 		if t.Name == script.ExecuteToolScriptName {
-			return nil, fmt.Errorf("%w: %q advertised by backend %q",
+			return nil, nil, fmt.Errorf("%w: %q advertised by backend %q",
 				ErrReservedToolName, script.ExecuteToolScriptName, t.BackendID)
 		}
 	}
-	return tools, nil
+	return tools, failedBackends, nil
 }
 
 // ListTools returns inner's tools plus the execute_tool_script virtual tool. The
 // virtual tool's description is generated from inner's (identity-filtered) tools, so
 // it lists exactly what the script may call for this identity.
 func (d *decorator) ListTools(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, error) {
-	tools, err := d.innerTools(ctx, identity)
+	tools, _, err := d.innerTools(ctx, identity)
 	if err != nil {
 		return nil, err
 	}
@@ -190,6 +195,22 @@ func (d *decorator) ListTools(ctx context.Context, identity *auth.Identity) ([]v
 	return out, nil
 }
 
+// ListToolsWithPartial mirrors ListTools but also forwards inner's failed-backend
+// IDs, so a caller that reconciles per backend on a partial sweep sees the same
+// failure set the tools were derived from. It funnels through innerTools so the
+// reserved execute_tool_script collision guard applies exactly as it does on
+// ListTools/LookupTool/CallTool.
+func (d *decorator) ListToolsWithPartial(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, []string, error) {
+	tools, failedBackends, err := d.innerTools(ctx, identity)
+	if err != nil {
+		return nil, nil, err
+	}
+	out := make([]vmcp.Tool, 0, len(tools)+1)
+	out = append(out, tools...)
+	out = append(out, virtualTool(tools))
+	return out, failedBackends, nil
+}
+
 // LookupTool resolves execute_tool_script to its virtual definition and defers every
 // other name to inner. ListTools advertises the virtual tool, so LookupTool must
 // resolve it too — otherwise the advertised set and the validation seam would disagree.
@@ -197,7 +218,7 @@ func (d *decorator) LookupTool(ctx context.Context, identity *auth.Identity, nam
 	if name != script.ExecuteToolScriptName {
 		return d.VMCP.LookupTool(ctx, identity, name)
 	}
-	tools, err := d.innerTools(ctx, identity)
+	tools, _, err := d.innerTools(ctx, identity)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +355,7 @@ func (d *decorator) runScript(
 	// innerTools fails loud on a reserved-name collision, so a shadowing backend tool
 	// surfaces as a transport error here rather than silently binding under the wrong
 	// admission (#5845).
-	tools, err := d.innerTools(ctx, identity)
+	tools, _, err := d.innerTools(ctx, identity)
 	if err != nil {
 		run.failure = fmt.Errorf("codemode: list tools for script execution: %w", err)
 		return nil, run.failure

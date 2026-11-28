@@ -229,6 +229,23 @@ type AggregationMetadata struct {
 
 	// ConflictStrategy is the strategy used for conflict resolution.
 	ConflictStrategy vmcp.ConflictResolutionStrategy
+
+	// FailedBackends lists the IDs of the backends whose live capability query
+	// failed and whose capabilities are therefore absent from the result. It is
+	// empty for a complete sweep. Sorted for deterministic output.
+	FailedBackends []string
+
+	// Partial reports whether the capability sweep was incomplete: at least one
+	// backend in the aggregated set failed its live capability query, so its
+	// capabilities are absent from the result. It is true iff FailedBackends is
+	// non-empty. A partial result is the best currently-known view and is safe to
+	// serve for a fresh read, but it must not REPLACE an established view — e.g. a
+	// session resync that replaces its tool store on a partial sweep would drop
+	// the failed backend's tools until the next health transition (see
+	// server.resyncSessionTools). FailedBackends lets a resync reconcile per
+	// backend instead: keep a failed backend's previous capabilities and apply
+	// removals for the backends that did answer.
+	Partial bool
 }
 
 // ConflictResolver handles tool name conflicts across backends.

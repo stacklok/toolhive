@@ -147,7 +147,7 @@ func optimizerMetaHandlers(
 	t *testing.T, srv *Server, sessionID string,
 ) map[string]server.ToolHandlerFunc {
 	t.Helper()
-	tools, err := srv.serveSessionTools(context.Background(), sessionID, nil)
+	tools, _, err := srv.serveSessionTools(context.Background(), sessionID, nil)
 	require.NoError(t, err)
 	handlers := make(map[string]server.ToolHandlerFunc, len(tools))
 	for _, tool := range tools {

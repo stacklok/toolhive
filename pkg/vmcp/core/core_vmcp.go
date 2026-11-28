@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -387,6 +388,95 @@ func (c *coreVMCP) ListPrompts(ctx context.Context, identity *auth.Identity) ([]
 	return c.admission.FilterPrompts(ctx, identity, agg.Prompts)
 }
 
+// ListToolsWithPartial returns the tools advertised to identity and the partial
+// flag from ONE aggregated view, so a caller needing both never pairs ListTools
+// with Discover (two reads that can diverge). It runs only the tool filter — the
+// same admission path ListTools uses — not the resource/template/prompt filters
+// Discover runs.
+func (c *coreVMCP) ListToolsWithPartial(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, []string, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
+	agg, err := c.aggregatedView(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	tools, err := c.admission.FilterTools(ctx, identity, c.advertisedTools(agg))
+	if err != nil {
+		return nil, nil, err
+	}
+	return tools, aggFailedBackends(agg, "tools/list"), nil
+}
+
+// ListResourcesWithPartial returns the resources and resource templates
+// advertised to identity, and the failed-backend IDs, from ONE aggregated view.
+// The two lists are returned together because a resources list_changed resync
+// must apply a single partial decision to both stores.
+func (c *coreVMCP) ListResourcesWithPartial(
+	ctx context.Context, identity *auth.Identity,
+) ([]vmcp.Resource, []vmcp.ResourceTemplate, []string, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
+	agg, err := c.aggregatedView(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	resources, err := c.admission.FilterResources(ctx, identity, agg.Resources)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	templates, err := c.filterResourceTemplates(ctx, identity, agg.ResourceTemplates)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return resources, templates, aggFailedBackends(agg, "resources/list", "resources/templates/list"), nil
+}
+
+// ListPromptsWithPartial returns the prompts advertised to identity and the
+// failed-backend IDs from ONE aggregated view. See ListToolsWithPartial.
+func (c *coreVMCP) ListPromptsWithPartial(ctx context.Context, identity *auth.Identity) ([]vmcp.Prompt, []string, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
+	agg, err := c.aggregatedView(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	prompts, err := c.admission.FilterPrompts(ctx, identity, agg.Prompts)
+	if err != nil {
+		return nil, nil, err
+	}
+	return prompts, aggFailedBackends(agg, "prompts/list"), nil
+}
+
+// aggFailedBackends returns, sorted, the IDs of the backends whose items of one
+// kind are unknown in agg: those that failed their capability query (recorded in
+// the metadata) and those that answered but could not list one of methods now
+// (agg.UnavailableLists). Both must keep their previous items on a resync, since
+// an empty list for them means "unknown", not "none". It returns nil when agg is
+// absent or nothing failed.
+func aggFailedBackends(agg *aggregator.AggregatedCapabilities, methods ...string) []string {
+	if agg == nil {
+		return nil
+	}
+	failed := map[string]struct{}{}
+	if agg.Metadata != nil {
+		for _, id := range agg.Metadata.FailedBackends {
+			failed[id] = struct{}{}
+		}
+	}
+	for id, unavailable := range agg.UnavailableLists {
+		for _, method := range methods {
+			if slices.Contains(unavailable, method) {
+				failed[id] = struct{}{}
+				break
+			}
+		}
+	}
+	if len(failed) == 0 {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(failed))
+}
+
 // Discover aggregates backend capabilities ONCE and derives all four
 // capability-presence flags from that single view, applying the exact same
 // admission-filter code paths ListTools/ListResources/ListResourceTemplates/
@@ -425,6 +515,7 @@ func (c *coreVMCP) Discover(ctx context.Context, identity *auth.Identity) (Disco
 		HasResources:         len(resources) > 0,
 		HasResourceTemplates: len(templates) > 0,
 		HasPrompts:           len(prompts) > 0,
+		Partial:              agg.Metadata != nil && agg.Metadata.Partial,
 	}, nil
 }
 

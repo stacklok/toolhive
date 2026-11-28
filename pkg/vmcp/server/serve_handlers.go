@@ -63,7 +63,9 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 
 	// serveSessionTools returns the core's advertised tools, or — when the optimizer
 	// is enabled on this path — the find_tool/call_tool meta-tools built over them.
-	tools, err := s.serveSessionTools(ctx, sessionID, identity)
+	// backendByName (nil in optimizer mode) records which backend owns each tool, so
+	// a later partial resync can reconcile per backend.
+	tools, backendByName, err := s.serveSessionTools(ctx, sessionID, identity)
 	if err != nil {
 		slog.Error("failed to list core tools for session", "session_id", sessionID, "error", err)
 		return err
@@ -107,6 +109,9 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 			slog.Error("failed to add session tools", "session_id", sessionID, "error", err)
 			return err
 		}
+		if backendByName != nil {
+			s.recordSessionToolBackends(sessionID, backendByName)
+		}
 	}
 
 	slog.Info("session capabilities injected from core",
@@ -121,19 +126,39 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 // coreSessionTools queries the core for the tools advertised to identity and
 // adapts them to SDK ServerTools whose handlers route through core.CallTool. The
 // core owns conflict resolution and backend-name translation, so the SDK tool name
-// is forwarded as-is to core.CallTool.
+// is forwarded as-is to core.CallTool. The returned backend map (tool name →
+// backend ID) lets callers track which backend owns each tool for per-backend
+// resync reconcile.
 //
 // The backend display name is resolved here (once per session, from the same
 // ListTools aggregation) and captured in the handler closure, so the handler can
 // label the audit event without a per-request lookup (see coreToolHandler).
 func (s *Server) coreSessionTools(
 	ctx context.Context, sessionID string, identity *auth.Identity,
-) ([]server.ServerTool, error) {
+) ([]server.ServerTool, map[string]string, error) {
 	domainTools, err := s.core.ListTools(ctx, identity)
 	if err != nil {
-		return nil, fmt.Errorf("core ListTools: %w", err)
+		return nil, nil, fmt.Errorf("core ListTools: %w", err)
 	}
+	sdkTools, err := s.adaptCoreTools(ctx, sessionID, domainTools)
+	if err != nil {
+		return nil, nil, err
+	}
+	return sdkTools, toolBackends(domainTools), nil
+}
 
+// adaptCoreTools adapts the core's advertised domain tools to SDK ServerTools whose
+// handlers route through core.CallTool. It is the adaptation half of coreSessionTools,
+// split out so the list_changed resync path can adapt tools it already fetched via
+// core.ListToolsWithPartial (which returns the tools and the partial flag from a single
+// aggregation) rather than re-listing them.
+//
+// The backend display name is resolved here (once per session, from the same
+// aggregation) and captured in the handler closure, so the handler can label the audit
+// event without a per-request lookup (see coreToolHandler).
+func (s *Server) adaptCoreTools(
+	ctx context.Context, sessionID string, domainTools []vmcp.Tool,
+) ([]server.ServerTool, error) {
 	sdkTools := make([]server.ServerTool, 0, len(domainTools))
 	for _, domainTool := range domainTools {
 		schemaJSON, err := json.Marshal(domainTool.InputSchema)
@@ -177,7 +202,17 @@ func (s *Server) coreSessionResources(
 	if err != nil {
 		return nil, fmt.Errorf("core ListResources: %w", err)
 	}
+	return s.adaptCoreResources(ctx, sessionID, domainResources), nil
+}
 
+// adaptCoreResources adapts the core's advertised domain resources to SDK
+// ServerResources whose handlers route through core.ReadResource. It is the
+// adaptation half of coreSessionResources, split out so the list_changed resync
+// path can adapt resources it already fetched via core.ListResourcesWithPartial
+// rather than re-listing them.
+func (s *Server) adaptCoreResources(
+	ctx context.Context, sessionID string, domainResources []vmcp.Resource,
+) []server.ServerResource {
 	sdkResources := make([]server.ServerResource, 0, len(domainResources))
 	for _, domainResource := range domainResources {
 		sdkResources = append(sdkResources, server.NewServerResourceWithResult(
@@ -190,7 +225,7 @@ func (s *Server) coreSessionResources(
 			s.coreResourceHandler(sessionID, domainResource.URI, s.backendDisplayName(ctx, domainResource.BackendID)),
 		))
 	}
-	return sdkResources, nil
+	return sdkResources
 }
 
 // coreSessionResourceTemplates queries the core for the resource templates
@@ -210,7 +245,15 @@ func (s *Server) coreSessionResourceTemplates(
 	if err != nil {
 		return nil, fmt.Errorf("core ListResourceTemplates: %w", err)
 	}
+	return s.adaptCoreResourceTemplates(ctx, sessionID, domainTemplates), nil
+}
 
+// adaptCoreResourceTemplates adapts the core's advertised domain resource templates
+// to SDK ServerResourceTemplates whose handlers route through core.ReadResource. It is
+// the adaptation half of coreSessionResourceTemplates, split out for the resync path.
+func (s *Server) adaptCoreResourceTemplates(
+	ctx context.Context, sessionID string, domainTemplates []vmcp.ResourceTemplate,
+) []server.ServerResourceTemplate {
 	sdkTemplates := make([]server.ServerResourceTemplate, 0, len(domainTemplates))
 	for _, domainTemplate := range domainTemplates {
 		sdkTemplates = append(sdkTemplates, server.NewServerResourceTemplateWithResult(
@@ -224,7 +267,7 @@ func (s *Server) coreSessionResourceTemplates(
 				sessionID, s.backendDisplayName(ctx, domainTemplate.BackendID)),
 		))
 	}
-	return sdkTemplates, nil
+	return sdkTemplates
 }
 
 // coreSessionPrompts queries the core for the prompts advertised to identity and
@@ -238,7 +281,15 @@ func (s *Server) coreSessionPrompts(
 	if err != nil {
 		return nil, fmt.Errorf("core ListPrompts: %w", err)
 	}
+	return s.adaptCorePrompts(ctx, sessionID, domainPrompts), nil
+}
 
+// adaptCorePrompts adapts the core's advertised domain prompts to SDK ServerPrompts
+// whose handlers route through core.GetPrompt. It is the adaptation half of
+// coreSessionPrompts, split out for the resync path.
+func (s *Server) adaptCorePrompts(
+	ctx context.Context, sessionID string, domainPrompts []vmcp.Prompt,
+) []server.ServerPrompt {
 	sdkPrompts := make([]server.ServerPrompt, 0, len(domainPrompts))
 	for _, domainPrompt := range domainPrompts {
 		arguments := make([]mcp.PromptArgument, 0, len(domainPrompt.Arguments))
@@ -258,7 +309,7 @@ func (s *Server) coreSessionPrompts(
 			Handler: s.corePromptHandler(sessionID, domainPrompt.Name, s.backendDisplayName(ctx, domainPrompt.BackendID)),
 		})
 	}
-	return sdkPrompts, nil
+	return sdkPrompts
 }
 
 // coreToolHandler builds the SDK handler for a Serve-path tool. It labels the audit
@@ -618,6 +669,7 @@ func (s *Server) terminateOnBindingFailure(sessionID, capability string, err err
 	slog.Warn("caller authorization failed, terminating session",
 		"session_id", sessionID, "capability", capability, "error", err)
 	s.healthResync.remove(sessionID)
+	s.removeSessionToolBackends(sessionID)
 	if _, termErr := s.vmcpSessionMgr.Terminate(sessionID); termErr != nil {
 		slog.Error("failed to terminate session after auth failure",
 			"session_id", sessionID, "error", termErr)

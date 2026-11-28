@@ -32,6 +32,15 @@ import (
 // node is generous for a vMCP instance; tune if real workloads exceed it.
 const capabilityCacheMaxEntries = 1024
 
+// partialCapabilityCacheTTL bounds how long a PARTIAL aggregation is memoized. A
+// partial sweep means at least one backend failed its live capability query, so
+// the view may be stale almost immediately (a brief blip is common); caching it
+// for the full TTL would keep the failed backend's tools returning not-found for
+// the whole window even after it recovers. A short fixed TTL re-sweeps soon,
+// without disabling caching entirely — a user whose backend always fails would
+// otherwise re-sweep every backend on every call.
+const partialCapabilityCacheTTL = 5 * time.Second
+
 // cachingAggregator wraps an Aggregator and memoizes AggregateCapabilities for a bounded
 // TTL, so the Serve path does not re-sweep every backend's tools/list on every tool call.
 //
@@ -87,6 +96,10 @@ type cachingAggregator struct {
 type cacheEntry struct {
 	caps *AggregatedCapabilities
 	at   time.Time
+	// ttl is this entry's own freshness window: the configured ttl for a
+	// complete view, or partialCapabilityCacheTTL for a partial one (set in
+	// store).
+	ttl time.Duration
 }
 
 // leaderContextError marks a shared sweep that failed because the context of the caller
@@ -230,10 +243,11 @@ func newCachingAggregator(next Aggregator, ttl time.Duration, now func() time.Ti
 	return &cachingAggregator{Aggregator: next, ttl: ttl, now: now, cache: cache}
 }
 
-// lookup returns the cached view for key if it exists and is younger than the TTL.
+// lookup returns the cached view for key if it exists and is younger than its own TTL
+// (the configured ttl for a complete view, or partialCapabilityCacheTTL for a partial one).
 func (c *cachingAggregator) lookup(key string) (*AggregatedCapabilities, bool) {
 	e, ok := c.cache.Get(key)
-	if !ok || c.now().Sub(e.at) >= c.ttl {
+	if !ok || c.now().Sub(e.at) >= e.ttl {
 		return nil, false
 	}
 	return e.caps, true
@@ -313,14 +327,22 @@ func (c *cachingAggregator) sweep(
 }
 
 // store caches caps under key if no InvalidateAll has run since gen was read. Holding mu
-// across the check and the Add keeps an InvalidateAll from landing between them.
+// across the check and the Add keeps an InvalidateAll from landing between them. A partial
+// sweep is memoized for a short fixed TTL rather than the full one: its incompleteness may
+// be transient, and serving it for the full window would keep a briefly-failed backend's
+// capabilities absent long after it recovers (#6829). The partial TTL is clamped to the
+// configured ttl so a partial view never outlives a complete one.
 func (c *cachingAggregator) store(key string, gen uint64, caps *AggregatedCapabilities) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.gen != gen {
 		return
 	}
-	c.cache.Add(key, cacheEntry{caps: caps, at: c.now()})
+	ttl := c.ttl
+	if caps.Metadata != nil && caps.Metadata.Partial {
+		ttl = min(c.ttl, partialCapabilityCacheTTL)
+	}
+	c.cache.Add(key, cacheEntry{caps: caps, at: c.now(), ttl: ttl})
 }
 
 // pruneExpired removes every entry whose age is at least the TTL, so a key that is never
@@ -335,7 +357,7 @@ func (c *cachingAggregator) store(key string, gen uint64, caps *AggregatedCapabi
 func (c *cachingAggregator) pruneExpired() {
 	now := c.now()
 	for _, k := range c.cache.Keys() {
-		if e, ok := c.cache.Peek(k); ok && now.Sub(e.at) >= c.ttl {
+		if e, ok := c.cache.Peek(k); ok && now.Sub(e.at) >= e.ttl {
 			c.cache.Remove(k)
 		}
 	}

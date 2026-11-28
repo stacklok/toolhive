@@ -65,6 +65,14 @@ func (f *fakeCore) ListTools(ctx context.Context, id *auth.Identity) ([]vmcp.Too
 	return f.listTools(ctx, id)
 }
 
+// ListToolsWithPartial delegates to ListTools (the failed-backend IDs are not
+// exercised by the decorator tests); the decorator's innerTools now reads through
+// this method, so the nil embedded core.VMCP must not promote it.
+func (f *fakeCore) ListToolsWithPartial(ctx context.Context, id *auth.Identity) ([]vmcp.Tool, []string, error) {
+	tools, err := f.ListTools(ctx, id)
+	return tools, nil, err
+}
+
 func (f *fakeCore) LookupTool(ctx context.Context, id *auth.Identity, name string) (*vmcp.Tool, error) {
 	return f.lookupTool(ctx, id, name)
 }

@@ -155,6 +155,14 @@ type fakeCore struct {
 	backendStatus    map[string]vmcp.BackendHealthStatus
 	unavailableLists map[string][]string
 
+	// toolsFailedBackends, resourcesFailedBackends, promptsFailedBackends, when
+	// non-empty, make the corresponding List*WithPartial report a partial backend
+	// sweep naming those failed backends, so the resync per-backend reconcile
+	// paths (#6829) can be exercised.
+	toolsFailedBackends     []string
+	resourcesFailedBackends []string
+	promptsFailedBackends   []string
+
 	listToolsCalls             atomic.Int32
 	listResourcesCalls         atomic.Int32
 	listResourceTemplatesCalls atomic.Int32
@@ -259,6 +267,15 @@ func (f *fakeCore) ListTools(ctx context.Context, identity *auth.Identity) ([]vm
 	return f.listsFor(identity).tools, nil
 }
 
+// ListToolsWithPartial mirrors ListTools but also reports toolsFailedBackends, so
+// the resync path (which reads tools + failed-backend IDs from one aggregation)
+// can be exercised without a live core.
+func (f *fakeCore) ListToolsWithPartial(ctx context.Context, _ *auth.Identity) ([]vmcp.Tool, []string, error) {
+	f.listToolsCalls.Add(1)
+	f.lastListToolsCtx.Store(&ctxBox{ctx: ctx})
+	return f.tools, f.toolsFailedBackends, nil
+}
+
 func (f *fakeCore) CallTool(
 	ctx context.Context, identity *auth.Identity, name string, args map[string]any, _ map[string]any,
 ) (*vmcp.ToolCallResult, error) {
@@ -346,6 +363,21 @@ func (f *fakeCore) ListResources(ctx context.Context, identity *auth.Identity) (
 	return f.listsFor(identity).resources, nil
 }
 
+// ListResourcesWithPartial mirrors ListResources + ListResourceTemplates but also
+// reports resourcesFailedBackends, so the resync path can be exercised without a
+// live core.
+func (f *fakeCore) ListResourcesWithPartial(
+	ctx context.Context, identity *auth.Identity,
+) ([]vmcp.Resource, []vmcp.ResourceTemplate, []string, error) {
+	f.listResourcesCalls.Add(1)
+	f.listResourceTemplatesCalls.Add(1)
+	f.recordListSubject("resources/list", identity)
+	f.recordListSubject("resources/templates/list", identity)
+	f.lastListResourcesCtx.Store(&ctxBox{ctx: ctx})
+	l := f.listsFor(identity)
+	return l.resources, l.resourceTemplates, f.resourcesFailedBackends, nil
+}
+
 func (f *fakeCore) ListResourceTemplates(_ context.Context, identity *auth.Identity) ([]vmcp.ResourceTemplate, error) {
 	f.listResourceTemplatesCalls.Add(1)
 	f.recordListSubject("resources/templates/list", identity)
@@ -369,6 +401,14 @@ func (f *fakeCore) ListPrompts(ctx context.Context, identity *auth.Identity) ([]
 	f.recordListSubject("prompts/list", identity)
 	f.lastListPromptsCtx.Store(&ctxBox{ctx: ctx})
 	return f.listsFor(identity).prompts, nil
+}
+
+// ListPromptsWithPartial mirrors ListPrompts but also reports
+// promptsFailedBackends, so the resync path can be exercised without a live core.
+func (f *fakeCore) ListPromptsWithPartial(ctx context.Context, _ *auth.Identity) ([]vmcp.Prompt, []string, error) {
+	f.listPromptsCalls.Add(1)
+	f.lastListPromptsCtx.Store(&ctxBox{ctx: ctx})
+	return f.prompts, f.promptsFailedBackends, nil
 }
 
 func (f *fakeCore) GetPrompt(
@@ -2351,7 +2391,7 @@ func TestServeResolvesBackendNameEndToEnd(t *testing.T) {
 
 	// Rebuild the tools the way registration did: the handler closure carries the
 	// registry-resolved backend name.
-	tools, err := srv.coreSessionTools(context.Background(), sessionID, nil)
+	tools, _, err := srv.coreSessionTools(context.Background(), sessionID, nil)
 	require.NoError(t, err)
 	require.Len(t, tools, 1)
 

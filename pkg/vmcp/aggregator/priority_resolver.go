@@ -70,6 +70,7 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 			resolved[toolName] = &ResolvedTool{
 				ResolvedName:              toolName,
 				OriginalName:              toolName,
+				Title:                     candidate.Tool.Title,
 				Description:               candidate.Tool.Description,
 				InputSchema:               candidate.Tool.InputSchema,
 				OutputSchema:              candidate.Tool.OutputSchema,
@@ -101,6 +102,7 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 		resolved[toolName] = &ResolvedTool{
 			ResolvedName:              toolName,
 			OriginalName:              toolName,
+			Title:                     winner.Tool.Title,
 			Description:               winner.Tool.Description,
 			InputSchema:               winner.Tool.InputSchema,
 			OutputSchema:              winner.Tool.OutputSchema,

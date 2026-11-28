@@ -136,6 +136,9 @@ type ResolvedTool struct {
 	// OriginalName is the tool's name in the backend.
 	OriginalName string
 
+	// Title is an optional human-readable display name for the tool.
+	Title string
+
 	// Description is the tool description (may be overridden).
 	Description string
 

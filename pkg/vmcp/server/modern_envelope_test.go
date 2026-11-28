@@ -940,6 +940,20 @@ func TestModernDescriptorFieldMapping(t *testing.T) {
 			want: `{"name": "noop", "inputSchema": {"type": "object"}, "annotations": {}}`,
 		},
 		{
+			name: "tool preserves top-level title without annotations.title",
+			build: func(t *testing.T) any {
+				t.Helper()
+				wireTool, err := modernToolFromDomain(vmcp.Tool{
+					Name:        "get_weather",
+					Title:       "Weather Information Provider",
+					InputSchema: map[string]any{"type": "object"},
+				})
+				require.NoError(t, err)
+				return wireTool
+			},
+			want: `{"name": "get_weather", "title": "Weather Information Provider", "inputSchema": {"type": "object"}, "annotations": {}}`,
+		},
+		{
 			name: "resource",
 			build: func(*testing.T) any {
 				return modernResourceFromDomain(vmcp.Resource{

@@ -497,3 +497,135 @@ func TestApplyAnnotationOverrides_DoesNotMutateInput(t *testing.T) {
 	assert.Equal(t, "Original", base.Title)
 	assert.Equal(t, boolPtr(true), base.ReadOnlyHint)
 }
+
+func TestRegression_AggregatorAndResolvers_PreserveTopLevelToolTitle(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	toolA := vmcp.Tool{
+		Name:        "search",
+		Title:       "Semantic Search",
+		Description: "Search items",
+		BackendID:   "b1",
+	}
+	toolB := vmcp.Tool{
+		Name:        "search",
+		Title:       "Secondary Search",
+		Description: "Secondary search items",
+		BackendID:   "b2",
+	}
+
+	adapted := processBackendTools(ctx, "b1", []vmcp.Tool{toolA}, &config.WorkloadToolConfig{
+		Overrides: map[string]*config.ToolOverride{
+			"search": {Description: "Overridden description"},
+		},
+	})
+	require.Len(t, adapted, 1)
+	assert.Equal(t, "Semantic Search", adapted[0].Title)
+
+	prefixResolved, err := NewPrefixConflictResolver("{workload}_").ResolveToolConflicts(
+		ctx, map[string][]vmcp.Tool{"b1": {toolA}},
+	)
+	require.NoError(t, err)
+	require.Contains(t, prefixResolved, "b1_search")
+	assert.Equal(t, "Semantic Search", prefixResolved["b1_search"].Title)
+
+	priorityResolver, err := NewPriorityConflictResolver([]string{"b1", "b2"})
+	require.NoError(t, err)
+	priorityResolved, err := priorityResolver.ResolveToolConflicts(
+		ctx, map[string][]vmcp.Tool{"b1": {toolA}, "b2": {toolB}},
+	)
+	require.NoError(t, err)
+	require.Contains(t, priorityResolved, "search")
+	assert.Equal(t, "Semantic Search", priorityResolved["search"].Title)
+
+	manualResolver, err := NewManualConflictResolver([]*config.WorkloadToolConfig{{
+		Workload: "b1",
+		Overrides: map[string]*config.ToolOverride{
+			"search": {Name: "custom_search", Description: "Custom"},
+		},
+	}})
+	require.NoError(t, err)
+	manualResolved, err := manualResolver.ResolveToolConflicts(ctx, map[string][]vmcp.Tool{"b1": {toolA}})
+	require.NoError(t, err)
+	require.Contains(t, manualResolved, "custom_search")
+	assert.Equal(t, "Semantic Search", manualResolved["custom_search"].Title)
+
+	agg := NewDefaultAggregator(nil, nil, nil, nil)
+	defaultResolved, err := agg.ResolveConflicts(ctx, map[string]*BackendCapabilities{
+		"b1": {BackendID: "b1", Tools: []vmcp.Tool{toolA}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "Semantic Search", defaultResolved.Tools["search"].Title)
+
+	registry := vmcp.NewImmutableRegistry([]vmcp.Backend{{
+		ID:            "b1",
+		Name:          "Backend 1",
+		BaseURL:       "http://b1:8080",
+		TransportType: "streamable-http",
+		HealthStatus:  vmcp.BackendHealthy,
+	}})
+	merged, err := agg.MergeCapabilities(ctx, defaultResolved, registry)
+	require.NoError(t, err)
+	require.Len(t, merged.Tools, 1)
+	assert.Equal(t, "Semantic Search", merged.Tools[0].Title)
+}
+
+func TestRegression_AnnotationsTitleOverride_OverridesBackendTopLevelTitle(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	backendTool := vmcp.Tool{
+		Name:        "search",
+		Title:       "Backend Top-Level Title",
+		Description: "Search items",
+		BackendID:   "b1",
+		Annotations: &vmcp.ToolAnnotations{Title: "Backend Annotation Title"},
+	}
+
+	adapted := processBackendTools(ctx, "b1", []vmcp.Tool{backendTool}, &config.WorkloadToolConfig{
+		Overrides: map[string]*config.ToolOverride{
+			"search": {
+				Annotations: &config.ToolAnnotationsOverride{
+					Title: stringPtr("Operator Override Title"),
+				},
+			},
+		},
+	})
+	require.Len(t, adapted, 1)
+	assert.Equal(t, "Operator Override Title", adapted[0].Title)
+	require.NotNil(t, adapted[0].Annotations)
+	assert.Equal(t, "Operator Override Title", adapted[0].Annotations.Title)
+
+	// Non-title annotation overrides must preserve the backend top-level title.
+	preserved := processBackendTools(ctx, "b1", []vmcp.Tool{backendTool}, &config.WorkloadToolConfig{
+		Overrides: map[string]*config.ToolOverride{
+			"search": {
+				Annotations: &config.ToolAnnotationsOverride{
+					ReadOnlyHint: boolPtr(true),
+				},
+			},
+		},
+	})
+	require.Len(t, preserved, 1)
+	assert.Equal(t, "Backend Top-Level Title", preserved[0].Title)
+
+	manualResolver, err := NewManualConflictResolver([]*config.WorkloadToolConfig{{
+		Workload: "b1",
+		Overrides: map[string]*config.ToolOverride{
+			"search": {
+				Name: "custom_search",
+				Annotations: &config.ToolAnnotationsOverride{
+					Title: stringPtr("Manual Override Title"),
+				},
+			},
+		},
+	}})
+	require.NoError(t, err)
+	manualResolved, err := manualResolver.ResolveToolConflicts(ctx, map[string][]vmcp.Tool{"b1": {backendTool}})
+	require.NoError(t, err)
+	require.Contains(t, manualResolved, "custom_search")
+	assert.Equal(t, "Manual Override Title", manualResolved["custom_search"].Title)
+	require.NotNil(t, manualResolved["custom_search"].Annotations)
+	assert.Equal(t, "Manual Override Title", manualResolved["custom_search"].Annotations.Title)
+}

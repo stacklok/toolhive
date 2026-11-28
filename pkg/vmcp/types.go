@@ -377,6 +377,9 @@ type Tool struct {
 	// Name is the tool name (may conflict with other backends).
 	Name string
 
+	// Title is an optional human-readable display name for the tool (per MCP specification).
+	Title string
+
 	// Description describes what the tool does.
 	Description string
 

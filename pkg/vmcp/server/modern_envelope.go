@@ -476,6 +476,7 @@ func modernToolFromDomain(t vmcp.Tool) (mcp.Tool, error) {
 	}
 	wireTool := mcp.Tool{
 		Name:           t.Name,
+		Title:          t.Title,
 		Description:    t.Description,
 		RawInputSchema: schemaJSON,
 		// A tool with no annotations still marshals "annotations":{}

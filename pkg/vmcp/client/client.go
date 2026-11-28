@@ -1498,6 +1498,7 @@ func newCapabilityListFromMCP(
 
 		capabilities.Tools = append(capabilities.Tools, vmcp.Tool{
 			Name:         tool.Name,
+			Title:        tool.Title,
 			Description:  tool.Description,
 			InputSchema:  inputSchema,
 			OutputSchema: conversion.ConvertToolOutputSchema(tool.OutputSchema),

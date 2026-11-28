@@ -143,6 +143,7 @@ func (s *Server) coreSessionTools(
 
 		tool := mcp.Tool{
 			Name:           domainTool.Name,
+			Title:          domainTool.Title,
 			Description:    domainTool.Description,
 			RawInputSchema: schemaJSON,
 			Annotations:    conversion.ToMCPToolAnnotations(domainTool.Annotations),

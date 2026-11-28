@@ -167,3 +167,80 @@ func assertNoFabricatedEmptyType(t *testing.T, schema map[string]any, toolName s
 			"%s's projected InputSchema must not fabricate an empty top-level \"type\"", toolName)
 	}
 }
+
+func TestRegression_ListCapabilities_PreservesTopLevelToolTitle(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var req jsonRPCRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		switch req.Method {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result: json.RawMessage(`{
+					"protocolVersion": "2024-11-05",
+					"capabilities": {"tools": {}},
+					"serverInfo": {"name": "title-backend", "version": "1.0.0"}
+				}`),
+			})
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result: json.RawMessage(`{
+					"tools": [{
+						"name": "get_weather",
+						"title": "Weather Information Provider",
+						"description": "Returns current weather",
+						"inputSchema": {"type": "object"}
+					}]
+				}`),
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  json.RawMessage(`{}`),
+			})
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	h := newProbeClient(t)
+	h.clientFactory = func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
+		c, err := client.NewStreamableHttpClient(target.BaseURL, mcptransport.WithHTTPTimeout(30*time.Second))
+		if err != nil {
+			return nil, err
+		}
+		if err := c.Start(ctx); err != nil {
+			return nil, err
+		}
+		return c, nil
+	}
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "title-backend",
+		WorkloadName:  "Title Backend",
+		BaseURL:       srv.URL,
+		TransportType: "streamable-http",
+	}
+	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+
+	caps, err := h.ListCapabilities(context.Background(), target)
+	require.NoError(t, err)
+	require.Len(t, caps.Tools, 1)
+	assert.Equal(t, "get_weather", caps.Tools[0].Name)
+	assert.Equal(t, "Weather Information Provider", caps.Tools[0].Title)
+	assert.Nil(t, caps.Tools[0].Annotations)
+}

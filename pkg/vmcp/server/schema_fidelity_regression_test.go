@@ -4,12 +4,15 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // TestRegression_ToolSchemaWithTypeObject_ProjectedIntact guards schema
@@ -143,4 +146,127 @@ func TestRegression_ToolSchemaWithoutTypeObject_ProjectedIntact(t *testing.T) {
 		"properties must be preserved; got %v", inputSchema)
 	assert.Equal(t, originalSchema["required"], inputSchema["required"],
 		"required must be preserved; got %v", inputSchema)
+}
+
+func TestRegression_ServeToolsList_PreservesTopLevelTitle(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{tools: []vmcp.Tool{{
+		Name:        "get_weather",
+		Title:       "Weather Information Provider",
+		Description: "Get weather info",
+		InputSchema: map[string]any{"type": "object"},
+	}}}
+	_, sessionID, baseURL := registerServeSession(t, fc)
+
+	resp := postServeMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "tools/list",
+		"params":  map[string]any{},
+	}, sessionID)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode, "tools/list should succeed")
+
+	env, body := readServeJSONRPC(t, resp)
+	result, ok := env["result"].(map[string]any)
+	require.True(t, ok, "tools/list must have a result; body: %s", string(body))
+
+	tools, ok := result["tools"].([]any)
+	require.True(t, ok, "result.tools must be an array; result: %v", result)
+	require.Len(t, tools, 1)
+
+	toolMap, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "get_weather", toolMap["name"])
+	assert.Equal(t, "Weather Information Provider", toolMap["title"])
+}
+
+type listCapsBackendClient struct {
+	vmcp.BackendClient
+	caps *vmcp.CapabilityList
+}
+
+func (c *listCapsBackendClient) ListCapabilities(context.Context, *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
+	return c.caps, nil
+}
+
+func TestRegression_ServeToolsList_OperatorAnnotationsTitleOverridesBackendTitle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	overrideTitle := "Operator Display Title"
+	aggConfig := &config.AggregationConfig{
+		Tools: []*config.WorkloadToolConfig{{
+			Workload: "b1",
+			Overrides: map[string]*config.ToolOverride{
+				"get_weather": {
+					Annotations: &config.ToolAnnotationsOverride{
+						Title: &overrideTitle,
+					},
+				},
+			},
+		}},
+	}
+
+	backend := vmcp.Backend{
+		ID:            "b1",
+		Name:          "Backend 1",
+		BaseURL:       "http://b1:8080",
+		TransportType: "streamable-http",
+		HealthStatus:  vmcp.BackendHealthy,
+	}
+	client := &listCapsBackendClient{
+		caps: &vmcp.CapabilityList{
+			Tools: []vmcp.Tool{{
+				Name:        "get_weather",
+				Title:       "Backend Display Title",
+				Description: "Get weather info",
+				InputSchema: map[string]any{"type": "object"},
+				Annotations: &vmcp.ToolAnnotations{Title: "Backend Annotation Title"},
+				BackendID:   "b1",
+			}},
+		},
+	}
+
+	agg := aggregator.NewDefaultAggregator(client, nil, aggConfig, nil)
+	caps, err := agg.QueryCapabilities(ctx, backend)
+	require.NoError(t, err)
+	resolved, err := agg.ResolveConflicts(ctx, map[string]*aggregator.BackendCapabilities{
+		"b1": caps,
+	})
+	require.NoError(t, err)
+
+	registry := vmcp.NewImmutableRegistry([]vmcp.Backend{backend})
+	merged, err := agg.MergeCapabilities(ctx, resolved, registry)
+	require.NoError(t, err)
+	require.Len(t, merged.Tools, 1)
+
+	fc := &fakeCore{tools: merged.Tools}
+	_, sessionID, baseURL := registerServeSession(t, fc)
+
+	resp := postServeMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      4,
+		"method":  "tools/list",
+		"params":  map[string]any{},
+	}, sessionID)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode, "tools/list should succeed")
+
+	env, body := readServeJSONRPC(t, resp)
+	result, ok := env["result"].(map[string]any)
+	require.True(t, ok, "tools/list must have a result; body: %s", string(body))
+
+	tools, ok := result["tools"].([]any)
+	require.True(t, ok, "result.tools must be an array; result: %v", result)
+	require.Len(t, tools, 1)
+
+	toolMap, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "get_weather", toolMap["name"])
+	assert.Equal(t, "Operator Display Title", toolMap["title"])
+	annotations, ok := toolMap["annotations"].(map[string]any)
+	require.True(t, ok, "annotations must be an object; tool: %v", toolMap)
+	assert.Equal(t, "Operator Display Title", annotations["title"])
 }

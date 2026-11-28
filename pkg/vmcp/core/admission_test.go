@@ -611,14 +611,16 @@ func TestNewAdmission(t *testing.T) {
 		assert.False(t, ok)
 	})
 
-	t.Run("cedar config lists tools through the tool:read fallback", func(t *testing.T) {
+	t.Run("non-native authorizer lists tools through the tool:read fallback", func(t *testing.T) {
 		t.Parallel()
-		// Cedar denies every tool:read check. Without the decorator in the factory
-		// path, FilterTools would hide every tool. Keeping weather proves the fallback.
-		adm, err := newAdmission(
-			cedarAuthzConfig(t, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`),
-			"test-vmcp")
-		require.NoError(t, err)
+		// The stub does not answer tool:read itself (no ToolReadNative), so it denies
+		// tool:read and allows tool:call. Only the decorator in newCedarAdmission can make
+		// weather visible; without it FilterTools would hide every tool. Cedar answers
+		// tool:read natively and never takes this path, so the stub is what tests it.
+		stub := &mockAuthorizer{allowed: map[authorizers.MCPOperation]bool{
+			authorizers.MCPOperationCall: true,
+		}}
+		adm := newCedarAdmission(stub)
 
 		filtered, err := adm.FilterTools(context.Background(), cedarIdentity(), []vmcp.Tool{
 			{Name: "weather"},

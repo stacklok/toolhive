@@ -145,7 +145,7 @@ func (a *Authorizer) authorizeToolRead(
 	if err != nil {
 		return false, err
 	}
-	if erroredForbid(a.readSet, readDiag) {
+	if len(readDiag.Errors) > 0 {
 		return false, fmt.Errorf("authorization error: %v", readDiag.Errors)
 	}
 

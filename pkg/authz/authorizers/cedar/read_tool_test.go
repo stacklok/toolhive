@@ -240,12 +240,21 @@ func TestToolRead_CedarErrorsFailClosed(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			name: "permit error on the read check does not hide a call grant",
+			name: "permit error on the read check returns an error and hides the tool",
+			policies: []string{
+				`permit(principal, action == Action::"read_tool", resource) when { context.missing == "x" };`,
+			},
+			wantOK:    false,
+			wantError: true,
+		},
+		{
+			name: "permit error on the read check hides even a call grant",
 			policies: []string{
 				`permit(principal, action == Action::"call_tool", resource);`,
 				`permit(principal, action == Action::"read_tool", resource) when { context.missing == "x" };`,
 			},
-			wantOK: true,
+			wantOK:    false,
+			wantError: true,
 		},
 	}
 	for _, tc := range tests {
@@ -306,4 +315,27 @@ func TestToolRead_UpdatePoliciesRebuildsReadSet(t *testing.T) {
 
 	require.NoError(t, a.(*Authorizer).UpdatePolicies([]string{"permit(principal, action == Action::\"call_tool\", resource == Tool::\"other\");"}))
 	assert.False(t, read(), "read_tool permit removed by update hides weather again")
+
+	require.NoError(t, a.(*Authorizer).UpdatePolicies([]string{
+		`permit(principal, action == Action::"read_tool", resource);`,
+		`forbid(principal, action == Action::"read_tool", resource == Tool::"weather");`,
+	}))
+	assert.False(t, read(), "read_tool forbid added by update hides weather")
+}
+
+// With no identity attached, AuthorizeWithJWTClaims fails at the missing-principal guard
+// before any policy is evaluated.
+func TestAuthorizer_ToolReadWithoutIdentityReturnsErrMissingPrincipal(t *testing.T) {
+	t.Parallel()
+
+	a, err := NewCedarAuthorizer(ConfigOptions{
+		Policies:     []string{"permit(principal, action, resource);"},
+		EntitiesJSON: "[]",
+	}, "")
+	require.NoError(t, err)
+
+	ok, err := a.AuthorizeWithJWTClaims(
+		context.Background(), authorizers.MCPFeatureTool, authorizers.MCPOperationCall, "weather", nil)
+	assert.False(t, ok)
+	require.ErrorIs(t, err, ErrMissingPrincipal)
 }

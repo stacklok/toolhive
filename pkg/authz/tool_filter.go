@@ -14,8 +14,9 @@ import (
 
 // authorizedToolIndexes returns the positions, in tools, of the tools the caller
 // (identified by JWT claims in ctx) is authorized to read, so a filter can keep
-// the matching raw descriptors. Visibility is decided by tool:read; the
-// authorizer decorator makes tool:call imply tool:read. If authorizer is nil,
+// the matching raw descriptors. Visibility is decided by tool:read; for an authorizer
+// that does not decide tool:read itself, the decorator makes tool:call imply tool:read
+// (Cedar decides tool:read itself). If authorizer is nil,
 // every position is returned.
 func authorizedToolIndexes(ctx context.Context, a authorizers.Authorizer, tools []mcp.Tool) []int {
 	return authorizedToolIndexesWithin(ctx, a, tools, MaxDerivedAuthzBudget)

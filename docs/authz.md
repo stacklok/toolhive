@@ -342,7 +342,7 @@ In the context of MCP servers, the following entities are used:
     - `Action::"get_skill"`: Get a skill
 
   Note: List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) are always
-  allowed, but the response is filtered by the user's permissions for the corresponding operation. `tools/list` uses the `tool:read` check, which a `tool:call` grant also satisfies (see List operations below).
+  allowed, but the response is filtered by the user's permissions for the corresponding operation. `tools/list` uses the `tool:read` check, which a `tool:call` grant also satisfies for authorizers that do not decide `tool:read` themselves; Cedar does (see List operations below).
   Define policies for the specific operations (call_tool, get_prompt, read_resource, get_skill)
   and the list responses will automatically show only the items the user is authorized to access.
 
@@ -600,7 +600,7 @@ List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) 
 They are always allowed but the response is automatically filtered based on the user's permissions
 for the corresponding operations:
 
-- `tools/list` shows only tools the user can read. The read check is `tool:read`, and a `tool:call` grant also satisfies it, so a user who can call a tool can also see it. `tool:read` never grants `tool:call`.
+- `tools/list` shows only tools the user can read. The read check is `tool:read`. For authorizers that do not decide `tool:read` themselves (the HTTP PDP), a `tool:call` grant also satisfies it. Cedar decides `tool:read` itself (see below). `tool:read` never grants `tool:call`.
   - **Cedar:** a tool is listed when a `call_tool` policy allows it and no `read_tool` forbid matches, or when a permit whose action names `Action::"read_tool"` allows it and no `call_tool` or `read_tool` forbid matches. A `call_tool` forbid hides its tool from `tools/list`. A permit or forbid counts for visibility only when its action names `read_tool` directly (`action == Action::"read_tool"`, `action in [...]`, or a set). An unscoped `action` permit grants no visibility. A policy set with no `read_tool` policy lists the same tools as before. A Cedar error on either check hides the tool. A forbid that mentions `read_tool` only in its conditions, not in its scope, does not hide tools and logs a warning at load. An argument-conditioned `call_tool` permit does not make its tool visible in `tools/list`: the list check passes no arguments, so the permit does not match and the tool stays hidden. Add a `read_tool` permit to list the tool.
   - **HTTP PDP:** by default the PDP is asked only `mcp:tool:call`, so a call-only forbid keeps hiding its tool and visibility is unchanged. Each tool costs one PDP decision. Set `pdp.forward_tool_read: true` to ask `mcp:tool:read` instead: a tool is then listed when the PDP allows read, with one decision per tool and no call fallback. With that flag, the PDP must answer `mcp:tool:read`; an error from it hides the tool. With `forward_tool_read: true`, a PDP that allows `tool:read` and forbids `tool:call` for one tool lists that tool, and calls to it are still refused. With that flag the PDP must allow `tool:read` wherever it allows `tool:call`.
   - **vMCP:** filtering uses the same `tool:read` check as the single-server path, so the same visibility rules apply.

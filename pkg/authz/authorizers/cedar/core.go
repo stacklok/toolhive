@@ -1336,11 +1336,11 @@ func (a *Authorizer) authorizeToolCall(
 	groups []string,
 ) (bool, error) {
 	principal, resource, contextMap, entities, err := a.toolRequest(
-		ctx, clientID, toolName, "Action::call_tool", "call", claimsMap, attrsMap, groups)
+		ctx, clientID, toolName, callToolActionEntity, "call", claimsMap, attrsMap, groups)
 	if err != nil {
 		return false, err
 	}
-	return a.IsAuthorized(principal, "Action::call_tool", resource, contextMap, entities)
+	return a.IsAuthorized(principal, callToolActionEntity, resource, contextMap, entities)
 }
 
 // toolRequest builds the principal, resource, context and entities for a tool

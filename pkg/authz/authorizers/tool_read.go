@@ -10,9 +10,11 @@ import (
 // ToolCallImpliesRead decorates an Authorizer so that tool:call implies tool:read.
 //
 // A tool:read check is answered by the inner authorizer first. If that does not
-// allow it, the decorator asks the inner authorizer the tool:call question. The
-// implication is one-way: a tool:call check never falls back to tool:read, so a
-// tool:read grant can never allow invocation.
+// allow it, the decorator asks the inner authorizer the tool:call question. An
+// inner authorizer that implements ToolReadNative and answers true (Cedar) decides
+// tool:read itself, so the fallback does not apply to it. The implication is
+// one-way: a tool:call check never falls back to tool:read, so a tool:read grant
+// can never allow invocation.
 type ToolCallImpliesRead struct {
 	inner Authorizer
 }

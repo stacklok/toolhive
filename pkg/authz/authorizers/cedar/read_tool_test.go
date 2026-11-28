@@ -8,9 +8,11 @@ import (
 	"testing"
 
 	cedar "github.com/cedar-policy/cedar-go"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
@@ -239,18 +241,32 @@ func TestReadToolPolicySet_Filtering(t *testing.T) {
 	assert.Equal(t, 1, countPolicies(readToolPolicySet(ps)))
 }
 
-// No identity on a call-side check: the error surfaces through authorizeToolCall.
-func TestAuthorizer_CallWithoutIdentityErrors(t *testing.T) {
+// UpdatePolicies must rebuild the read set with the call set: a read_tool permit added
+// by an update lists the tool, and removing it hides the tool again.
+func TestToolRead_UpdatePoliciesRebuildsReadSet(t *testing.T) {
 	t.Parallel()
 
 	a, err := NewCedarAuthorizer(ConfigOptions{
-		Policies:     []string{"permit(principal, action, resource);"},
+		Policies:     []string{"permit(principal, action == Action::\"call_tool\", resource == Tool::\"other\");"},
 		EntitiesJSON: "[]",
 	}, "")
 	require.NoError(t, err)
 
-	ok, err := a.AuthorizeWithJWTClaims(
-		context.Background(), authorizers.MCPFeatureTool, authorizers.MCPOperationCall, "weather", nil)
-	assert.False(t, ok)
-	assert.Error(t, err)
+	read := func() bool {
+		t.Helper()
+		ctx := auth.WithIdentity(context.Background(), &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{Subject: "test-user", Claims: jwt.MapClaims{"sub": "test-user"}},
+		})
+		ok, err := a.AuthorizeWithJWTClaims(ctx, authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
+		require.NoError(t, err)
+		return ok
+	}
+
+	assert.False(t, read(), "no read_tool policy: weather is not listed")
+
+	require.NoError(t, a.(*Authorizer).UpdatePolicies([]string{`permit(principal, action == Action::"read_tool", resource);`}))
+	assert.True(t, read(), "read_tool permit added by update lists weather")
+
+	require.NoError(t, a.(*Authorizer).UpdatePolicies([]string{"permit(principal, action == Action::\"call_tool\", resource == Tool::\"other\");"}))
+	assert.False(t, read(), "read_tool permit removed by update hides weather again")
 }

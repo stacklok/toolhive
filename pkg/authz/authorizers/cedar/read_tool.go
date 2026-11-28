@@ -141,9 +141,15 @@ func (a *Authorizer) authorizeToolRead(
 		return false, fmt.Errorf("authorization error: %v", callDiag.Errors)
 	}
 	// A call_tool permit that errors counts as a non-match, so a read_tool permit can still
-	// list the tool. Log each one so a typo or missing argument does not go unnoticed.
+	// list the tool. Log the first error per policy so a typo or missing argument does not
+	// go unnoticed; later errors for the same policy are not logged again until the
+	// policies are reloaded.
 	for _, e := range callDiag.Errors {
-		slog.Warn("cedar call_tool permit errored during tools/list visibility; treated as not matching",
+		if _, loaded := a.permitErrWarned.LoadOrStore(string(e.PolicyID), struct{}{}); loaded {
+			continue
+		}
+		slog.Warn("cedar call_tool permit errored during tools/list visibility; treated as not matching; "+
+			"not logged again until policies are reloaded",
 			"policy", e.PolicyID, "tool", toolName, "error", e.Message)
 	}
 

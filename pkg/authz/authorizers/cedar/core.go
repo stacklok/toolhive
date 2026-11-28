@@ -198,6 +198,9 @@ type Authorizer struct {
 	// readSet holds only the policies that name Action::"read_tool" in their action
 	// scope. It decides tool:read visibility (see authorizeToolRead).
 	readSet *cedar.PolicySet
+	// permitErrWarned holds the policy IDs whose call_tool permit error was already logged
+	// at Warn. It is cleared by UpdatePolicies, so each error is logged once per policy set.
+	permitErrWarned sync.Map
 	// Cedar entities
 	entities cedar.EntityMap
 	// Entity factory for creating entities
@@ -489,6 +492,10 @@ func (a *Authorizer) UpdatePolicies(policies []string) error {
 
 	a.policySet = newPolicySet
 	a.readSet = readToolPolicySet(newPolicySet)
+	a.permitErrWarned.Range(func(k, _ any) bool {
+		a.permitErrWarned.Delete(k)
+		return true
+	})
 	return nil
 }
 

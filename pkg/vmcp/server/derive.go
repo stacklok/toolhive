@@ -69,6 +69,8 @@ func deriveServerConfig(
 	sessionManagerConfig *sessionmanager.FactoryConfig,
 ) *ServerConfig {
 	return &ServerConfig{
+		ScopeAuthorization:      cfg.ScopeAuthorization,
+		ScopeChallenge:          cfg.ScopeChallenge,
 		Name:                    cfg.Name,
 		Version:                 cfg.Version,
 		GroupRef:                cfg.GroupRef,
@@ -130,13 +132,14 @@ func deriveCoreConfig(
 	elicitation vmcp.ElicitationRequester,
 ) *core.Config {
 	return &core.Config{
-		Aggregator:      agg,
-		Router:          rt,
-		BackendRegistry: backendRegistry,
-		BackendClient:   backendClient,
-		WorkflowDefs:    workflowDefs,
-		Authz:           authzCfg,
-		ServerName:      cfg.Name,
+		ScopeAuthorization: cfg.ScopeAuthorization,
+		Aggregator:         agg,
+		Router:             rt,
+		BackendRegistry:    backendRegistry,
+		BackendClient:      backendClient,
+		WorkflowDefs:       workflowDefs,
+		Authz:              authzCfg,
+		ServerName:         cfg.Name,
 		// Cross-cutting (also on ServerConfig) — R3, not a clean partition:
 		TelemetryProvider:    cfg.TelemetryProvider,
 		AuditConfig:          cfg.AuditConfig,

@@ -34,6 +34,11 @@ import (
 )
 
 const (
+	// MetadataKeyClientName preserves the bounded initialize client name across replicas.
+	MetadataKeyClientName = "vmcp.client.name"
+	// MetadataKeyClientVersion preserves the version; neither field carries authorization grants.
+	MetadataKeyClientVersion = "vmcp.client.version"
+
 	// MetadataKeyTerminated is the session metadata key that marks a placeholder
 	// session as explicitly terminated by the client.
 	MetadataKeyTerminated = "terminated"
@@ -1038,6 +1043,13 @@ func (sm *Manager) loadSession(ctx context.Context, sessionID string) (vmcpsessi
 	// cache never serves a session that no longer exists in storage.
 	updateCtx, updateCancel := context.WithTimeout(context.WithoutCancel(ctx), restoreMetadataWriteTimeout)
 	defer updateCancel()
+	// The factory rebuilds backend and binding metadata; retain only these
+	// transport-owned profile fields alongside the freshly reconstructed values.
+	for _, key := range []string{MetadataKeyClientName, MetadataKeyClientVersion} {
+		if value, ok := metadata[key]; ok {
+			restored.SetMetadata(key, value)
+		}
+	}
 	updated, updateErr := sm.storage.Update(updateCtx, sessionID, restored.GetMetadata())
 	if updateErr != nil {
 		slog.Warn("Manager.loadSession: failed to persist restored session metadata",

@@ -46,6 +46,8 @@ func populatedLegacyConfig() *Config {
 		AuthMiddleware:          passthrough,
 		AuthzMiddleware:         passthrough,
 		AuthInfoHandler:         http.NewServeMux(),
+		ScopeAuthorization:      &vmcp.ScopeAuthorizationConfig{Tools: map[string]vmcp.OAuthScopeSet{"test": {"read"}}},
+		ScopeChallenge:          &ScopeChallengeConfig{ResourceURL: "https://gateway.example/mcp"},
 		PassthroughHeaders:      []string{"X-Tenant-Id"},
 		Instructions:            &instructions.Config{Value: "policy"},
 		AuthServer:              &asrunner.EmbeddedAuthServer{},
@@ -88,6 +90,8 @@ func TestDeriveServerConfigProjectsTransportFields(t *testing.T) {
 	// Func/handler/pointer fields projected by reference.
 	assert.NotNil(t, got.AuthMiddleware)
 	assert.Same(t, cfg.AuthInfoHandler, got.AuthInfoHandler)
+	assert.Same(t, cfg.ScopeAuthorization, got.ScopeAuthorization)
+	assert.Same(t, cfg.ScopeChallenge, got.ScopeChallenge)
 	assert.Equal(t, cfg.PassthroughHeaders, got.PassthroughHeaders)
 	assert.Same(t, cfg.Instructions, got.Instructions)
 	assert.Same(t, cfg.AuthServer, got.AuthServer)
@@ -148,6 +152,7 @@ func TestDeriveCoreConfigAssemblesCollaborators(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	cfg := &Config{
 		Name:                 "core-name",
+		ScopeAuthorization:   &vmcp.ScopeAuthorizationConfig{Tools: map[string]vmcp.OAuthScopeSet{"test": {"read"}}},
 		TelemetryProvider:    &telemetry.Provider{},
 		AuditConfig:          &audit.Config{},
 		AuditSubjectEnricher: stubSubjectEnricher,
@@ -171,6 +176,7 @@ func TestDeriveCoreConfigAssemblesCollaborators(t *testing.T) {
 	assert.Same(t, authzCfg, got.Authz)
 	assert.Same(t, elicitation, got.Elicitation)
 	assert.Same(t, cfg.HealthMonitorConfig, got.HealthMonitorConfig)
+	assert.Same(t, cfg.ScopeAuthorization, got.ScopeAuthorization)
 	assert.Equal(t, workflowDefs, got.WorkflowDefs)
 
 	// ServerName uses the raw cfg.Name for authz parity (no transport default applied).
@@ -217,6 +223,7 @@ func TestDeriveCoreConfigMapsAllFields(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	cfg := &Config{
 		Name:                 "core-name",
+		ScopeAuthorization:   &vmcp.ScopeAuthorizationConfig{Tools: map[string]vmcp.OAuthScopeSet{"test": {"read"}}},
 		TelemetryProvider:    &telemetry.Provider{},
 		AuditConfig:          &audit.Config{},
 		AuditSubjectEnricher: stubSubjectEnricher,
@@ -234,10 +241,7 @@ func TestDeriveCoreConfigMapsAllFields(t *testing.T) {
 		vmcpmocks.NewMockElicitationRequester(ctrl),
 	)
 
-	// Scope authorization is available to core embedders; transport configuration
-	// is introduced separately. The existing server path leaves it disabled.
-	assert.Nil(t, got.ScopeAuthorization)
-	assertAllFieldsPopulated(t, *got, "core.Config", map[string]struct{}{"ScopeAuthorization": {}})
+	assertAllFieldsPopulated(t, *got, "core.Config", nil)
 }
 
 // TestDeriveConfigsTreatInputAsReadOnly verifies neither helper mutates cfg. server.New

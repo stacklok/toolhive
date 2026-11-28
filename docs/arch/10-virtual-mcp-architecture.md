@@ -1792,10 +1792,47 @@ the policy and rejects composite workflows when it is configured. Missing scopes
 produce `vmcp.InsufficientScopeError` with the complete operation requirement;
 malformed claims and Cedar refusals remain ordinary authorization failures.
 
-This core capability is opt-in for library embedders. Gateway configuration and
-HTTP challenge rendering are separate composition responsibilities; existing CLI
-and operator deployments do not enable it yet. The core never forwards backend
-authentication headers or determines which authorization server grants new scopes.
+This core capability is opt-in for library embedders. `server.New` projects
+`server.Config.ScopeAuthorization` into the core and transport; embedders using
+`core.New` and `server.Serve` separately supply the same policy to both. Existing
+CLI and operator deployments do not enable it yet. The core never forwards
+backend authentication headers or determines which authorization server grants
+new scopes.
+
+### Scope challenge rendering
+
+The transport owns `ScopeChallengeConfig`, independently of the core scope policy.
+It validates the canonical public resource URL, authentication/metadata handlers,
+response mode, and configured client profiles before allocating transport
+resources. Core refusal remains authoritative: changing response encoding never
+changes Cedar precedence, the current-request scope decision, or whether a tool
+executes.
+
+Legacy tool calls are checked inside session ownership and before SDK dispatch,
+where HTTP headers can still be written. Modern calls use the same renderer after
+protocol and argument validation. The standard response is HTTP 403 with the full
+scope requirement and gateway protected-resource metadata. The forced
+`tool-result` mode returns HTTP 200 with an error result and authentication
+metadata. It sets the existing denial marker so that the audit outcome remains
+`denied`.
+
+Opt-in `auto` selects tool-result encoding for exact configured client name/version
+profiles and HTTP 403 for everything else. Legacy initialization captures bounded
+client information through the existing factory decorator before the manager
+persists or caches the session. Restoration preserves
+those keys, and lookup after ownership neither refreshes the TTL nor restores
+backend connections. Modern requests use their per-request client information.
+There is no user/token-keyed profile cache or separate global client map.
+
+Client information is a self-reported formatting hint, never authorization
+evidence. The opt-in matcher is a deliberate compatibility exception to the MCP
+schema's advice against behavior changes based on client information. Discovery
+always annotates mapped tools with their actual OAuth scope requirements, keeping
+the descriptors independent of response mode. No backend authentication headers
+are translated, and no denied operation is retried automatically. See
+[the embedding contract](../authz.md#incoming-scope-challenges-for-vmcp-embedders)
+for response modes and client verification requirements. YAML, CLI, and operator
+activation remain outside this transport API.
 
 ## Health Monitoring
 

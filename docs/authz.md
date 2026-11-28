@@ -191,6 +191,79 @@ for the binding rules and upgrade requirements.
 See the [Virtual MCP architecture](arch/10-virtual-mcp-architecture.md#authorization-enforcement-core-admission-seam--pre-dispatch-gate)
 for details.
 
+### Incoming scope challenges for vMCP embedders
+
+Go applications embedding vMCP can require incoming-token scopes for individual
+direct tools through `server.Config.ScopeAuthorization` and configure refusal
+encoding through the separate `ScopeChallenge` field. Existing deployments leave
+these fields unset. Standalone YAML, CLI, and operator configuration do not expose
+this feature yet.
+
+Rules use exact final advertised tool names. All configured scopes are required;
+unmapped tools retain their existing behavior. Scopes come from the current
+validated identity, using the selected claim (`scope` by default). Cedar runs
+first: its denials remain ordinary authorization failures. Otherwise permitted
+tools remain discoverable when only upgradeable scopes are missing, and a denied
+call never executes the backend tool.
+
+Configure these fields on an existing authenticated `server.Config`:
+
+```go
+cfg.ScopeAuthorization = &vmcp.ScopeAuthorizationConfig{
+	Tools: map[string]vmcp.OAuthScopeSet{
+		"create_issue": {"issues.write"},
+	},
+}
+cfg.ScopeChallenge = &server.ScopeChallengeConfig{
+	ResourceURL:  "https://gateway.example/mcp",
+	ResponseMode: "auto",
+	ToolResultClients: []server.ScopeClientProfile{
+		{Name: "example-client", Version: "1.2.3"},
+	},
+}
+```
+
+The example client name and version are illustrative, not a verified product
+profile. Add only client versions whose authentication behavior you have tested.
+Matching is case sensitive. The table accepts at most 64 distinct name/version
+pairs, with each name and version containing 1–128 bytes and not being blank.
+`ResourceURL` must be the canonical public HTTP(S) gateway resource URL, without
+credentials, query, or fragment. Authentication middleware and a protected-resource
+metadata handler must also be configured. `server.New` wires the policy into the
+core; applications using `core.New` and `server.Serve` separately must supply the
+same policy to both. Composite workflows, optimizer, and code mode cannot be
+combined with this feature.
+
+| `ResponseMode` | Insufficient-scope response |
+| --- | --- |
+| Empty or `http` | HTTP 403 with `WWW-Authenticate: Bearer error="insufficient_scope"`, the complete required scope set, and the gateway's `resource_metadata` URL |
+| `tool-result` | HTTP 200 error tool result with `isError: true` and `_meta["mcp/www_authenticate"]` |
+| `auto` | Tool-result encoding only for an exact configured client name/version match; HTTP 403 otherwise |
+
+In `auto`, Legacy clients use the profile captured during initialization and
+retained in session metadata. Existing sessions without that metadata use HTTP
+403; reinitialize to capture a profile. Modern clients use the current request's
+`_meta["io.modelcontextprotocol/clientInfo"]`. Missing, malformed, or unrecognized
+information falls back to HTTP 403. The two forced modes do not use the profile
+table for selection.
+Selection does not use User-Agent guesses or authorization-server routing, so
+clients with different response requirements can share one gateway URL. Profile
+matching never grants access or caches token scopes.
+
+Client metadata is self-reported. The [MCP schema](https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/2026-07-28/schema.ts)
+discourages changing behavior based on it; `auto` is an explicit compatibility
+exception that changes only refusal encoding. It cannot distinguish clients that
+provide no usable identifying information. Both refusal encodings audit as
+`denied`, and the gateway never retries a denied tool call automatically.
+
+Mapped discovery tools consistently include OAuth `securitySchemes` metadata in
+every mode. The [OpenAI authentication contract](https://developers.openai.com/plugins/build/auth#triggering-authentication-ui)
+requires discovery metadata as well as runtime authentication metadata to trigger
+tool-level sign-in. [Claude scope step-up](https://claude.com/docs/connectors/building/lazy-authentication#ask-for-more-scope-with-403)
+uses HTTP 403 with the scope challenge. These contracts motivate the encodings;
+wire tests alone do not establish real-client UI compatibility. Verify the prompt,
+scope upgrade, and retry with the specific client products and versions you use.
+
 ## Configure authorization
 
 To set up authorization for an MCP server managed by ToolHive, follow these

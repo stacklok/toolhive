@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	routerMocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
@@ -923,6 +924,44 @@ func TestNew_AuthzWithOptimizer_ReturnsError(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, vmcp.ErrInvalidConfig)
 	assert.Contains(t, err.Error(), "OptimizerConfig")
+}
+
+func TestNew_ScopeAuthorizationWithIndirectTools_ReturnsError(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		configure func(*server.Config)
+	}{
+		{"code mode", func(cfg *server.Config) { cfg.CodeModeConfig = &codemode.Config{} }},
+		{"optimizer", func(cfg *server.Config) { cfg.OptimizerConfig = &optimizer.Config{} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			cfg := &server.Config{
+				Name:               "scope-vmcp",
+				SessionFactory:     newNoopMockFactory(t),
+				Aggregator:         newStubAggregator(nil),
+				ScopeAuthorization: &vmcp.ScopeAuthorizationConfig{Tools: map[string]vmcp.OAuthScopeSet{"echo": {"write"}}},
+				ScopeChallenge:     &server.ScopeChallengeConfig{ResourceURL: "https://gateway.example/mcp"},
+				AuthMiddleware:     func(next http.Handler) http.Handler { return next },
+				AuthInfoHandler:    http.NewServeMux(),
+			}
+			// Leave Cedar unset so its optimizer guard cannot mask scope validation.
+			tc.configure(cfg)
+			srv, err := server.New(t.Context(), cfg,
+				routerMocks.NewMockRouter(ctrl), mocks.NewMockBackendClient(ctrl),
+				vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil,
+			)
+			if srv != nil {
+				t.Cleanup(func() { require.NoError(t, srv.Stop(context.Background())) })
+			}
+			require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
+			require.ErrorContains(t, err, "scope")
+			require.ErrorContains(t, err, tc.name)
+			require.Nil(t, srv)
+		})
+	}
 }
 
 // TestNew_AuthzWithoutName_ReturnsError guards the documented Config.Authz requirement:

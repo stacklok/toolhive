@@ -45,6 +45,11 @@ import (
 //
 //nolint:revive // exported-stutter is intentional; see the doc comment above.
 type ServerConfig struct {
+	// ScopeAuthorization supplies discovery requirements. Direct Serve embedders must
+	// also pass this policy to core.New; New wires both sides automatically.
+	ScopeAuthorization *vmcp.ScopeAuthorizationConfig
+	ScopeChallenge     *ScopeChallengeConfig
+
 	// Name and Version are exposed in the MCP protocol via the mcp-go server.
 	Name    string
 	Version string
@@ -233,6 +238,9 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		return nil, fmt.Errorf("%w: BackendRegistry is required", vmcp.ErrInvalidConfig)
 	}
 
+	if err := validateScopeServing(cfg); err != nil {
+		return nil, err
+	}
 	serveCfg := buildServeConfig(cfg)
 
 	// Build the SDK hooks up front so they can be passed to NewMCPServer, but
@@ -380,8 +388,9 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	if err != nil {
 		return nil, err
 	}
+	sessionCfg := serveCfg.ScopeChallenge.sessionManagerConfig(sessMgrCfg)
 	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(
-		sessionDataStorage, sessMgrCfg, cfg.BackendRegistry,
+		sessionDataStorage, sessionCfg, cfg.BackendRegistry,
 		sessionmanager.WithSweptSessionHook(srv.healthResync.remove),
 	)
 	if err != nil {
@@ -487,6 +496,8 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 //     wiring), not via Config→New, so these Config fields are unused on the Serve path.
 func buildServeConfig(cfg *ServerConfig) *Config {
 	return &Config{
+		ScopeAuthorization:      cfg.ScopeAuthorization.DeepCopy(),
+		ScopeChallenge:          cfg.ScopeChallenge.clone(),
 		Name:                    cfg.Name,
 		Version:                 cfg.Version,
 		GroupRef:                cfg.GroupRef,

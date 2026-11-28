@@ -158,6 +158,7 @@ func (s *Server) coreSessionTools(
 			}
 		}
 
+		s.annotateScopeTool(&tool)
 		sdkTools = append(sdkTools, server.ServerTool{
 			Tool:    tool,
 			Handler: s.coreToolHandler(sessionID, domainTool.Name, s.backendDisplayName(ctx, domainTool.BackendID)),

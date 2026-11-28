@@ -16,6 +16,7 @@ import (
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // Standard JSON-RPC 2.0 reserved error codes (spec-fixed, never change). Kept
@@ -252,14 +253,13 @@ func (s *Server) dispatchModernPromptsList(
 // this is ungated: there is no separate Check* for discover, since it leaks
 // no more than tools/list already does.
 //
-// This runs ONE backend fan-out per call via core.Discover (aggregatedView is
-// uncached, so calling ListTools/ListResources/ListResourceTemplates/
-// ListPrompts independently here used to cost four -- and those four weren't
-// even a consistent snapshot of the aggregated view). A single fan-out per
-// request is fine for now, but a probe the spec expects to be cheap across
-// requests too. There is no cross-request cache; add a short-TTL per-identity
-// capability cache only if profiling shows the per-request fan-out cost
-// matters (#5761, tracked separately, not blocking here).
+// This derives the view ONCE per call via core.Discover (calling ListTools/
+// ListResources/ListResourceTemplates/ListPrompts independently here used to
+// cost four fan-outs -- and those four weren't even a consistent snapshot of
+// the aggregated view). The aggregator server.New installs caches that view
+// per identity for 30s, keyed on the session binding, platform user ID,
+// forwarded headers and backend IDs; an identity that cannot be bound is
+// swept on every call (#5761).
 func (s *Server) dispatchModernDiscover(
 	ctx context.Context, w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, identity *auth.Identity,
 ) {
@@ -596,13 +596,16 @@ func writeModernCallFailure(
 	writeModernDispatchError(w, parsed.ID, denyMsg, err)
 }
 
-// writeModernToolCallFailure classifies a tools/call failure. It renders the
-// URL elicitation answer (vmcp.URLElicitationRequiredError) and passes every
-// other error to writeModernCallFailure:
+// writeModernToolCallFailure classifies a tools/call failure, in the same
+// order as legacyToolCallError: an authorization denial (403, through
+// writeModernCallFailure), then the URL elicitation answer
+// (vmcp.URLElicitationRequiredError, below), then a delegated authorization
+// requirement (a complete isError tool result naming only the provider), then
+// an unavailable delegated credential (-32603 with a fixed message, through
+// writeModernDispatchError). Every other error goes to writeModernCallFailure.
 //
-//   - An authorization denial keeps absolute priority: an error that wraps
-//     ErrAuthorizationFailed goes to writeModernCallFailure as the 403 even
-//     when it also carries the answer.
+// The URL elicitation answer renders as follows:
+//
 //   - When the client did not declare clientCapabilities.elicitation.url, it
 //     renders as -32021 naming elicitation.url, with the elicitation messages
 //     and without the URL (writeModernURLElicitationUnsupported): the spec
@@ -624,11 +627,36 @@ func writeModernToolCallFailure(
 	w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, refusal *capabilityRefusalRecorder,
 	serverName, serverVersion string, err error,
 ) {
-	answer, ok := vmcp.URLElicitationFromError(err)
-	if !ok || errors.Is(err, vmcp.ErrAuthorizationFailed) {
+	if errors.Is(err, vmcp.ErrAuthorizationFailed) {
 		writeModernCallFailure(w, parsed, refusal, vmcp.DenyMessageToolCall, err)
 		return
 	}
+	if answer, ok := vmcp.URLElicitationFromError(err); ok {
+		writeModernURLElicitationAnswer(w, parsed, serverName, serverVersion, answer)
+		return
+	}
+	var authReq *authtypes.DelegatedAuthRequiredError
+	if errors.As(err, &authReq) && authReq != nil {
+		writeModernResult(w, parsed.ID, newModernCallToolResult(&vmcp.ToolCallResult{
+			Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: authReq.Error()}},
+			IsError: true,
+		}, serverName, serverVersion))
+		return
+	}
+	// Explicit, so a recorded capability refusal cannot mask the credential failure.
+	if authtypes.DelegatedCredentialError(err) == authtypes.ErrDelegatedCredentialUnavailable {
+		writeModernDispatchError(w, parsed.ID, vmcp.DenyMessageToolCall, err)
+		return
+	}
+	writeModernCallFailure(w, parsed, refusal, vmcp.DenyMessageToolCall, err)
+}
+
+// writeModernURLElicitationAnswer renders a URL elicitation answer from a
+// tools/call failure as described on writeModernToolCallFailure.
+func writeModernURLElicitationAnswer(
+	w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, serverName, serverVersion string,
+	answer *vmcp.URLElicitationRequiredError,
+) {
 	if !modernClientDeclaredURLElicitation(parsed.Meta) {
 		writeModernURLElicitationUnsupported(w, parsed.ID, answer)
 		return
@@ -743,12 +771,11 @@ func writeModernMissingCapabilityError(
 // -32603). Authorization denials are still tested first: a coded error can
 // never mask a denial's 403.
 //
-// The -32603 message reuses err.Error() verbatim. This matches the SDK path's
-// existing posture rather than inventing a new one: conversion.ErrorToToolResult's
-// generic branch, and the resources/read/prompts/get Serve handlers
-// (serve_handlers.go), already surface the raw error text for a non-coded,
-// non-authz error. Re-sanitizing here would just diverge from what the SDK
-// path already exposes for the identical failure.
+// An unavailable delegated credential that no delegated authorization
+// requirement outranks renders as -32603 with the fixed message
+// "upstream credential unavailable", never err.Error(), so no context wrapped
+// around it reaches the client. For other uncoded errors, reuse err.Error() to
+// match the generic behavior on the SDK path.
 func writeModernDispatchError(w http.ResponseWriter, id any, denyMsg string, err error) {
 	// Denial first (matches conversion.ErrorToToolResult): an error that is
 	// both a CodedError and wraps ErrAuthorizationFailed must render as the
@@ -756,6 +783,10 @@ func writeModernDispatchError(w http.ResponseWriter, id any, denyMsg string, err
 	// this ordering is the invariant).
 	if errors.Is(err, vmcp.ErrAuthorizationFailed) {
 		writeModernDenied(w, id, denyMsg)
+		return
+	}
+	if authtypes.DelegatedCredentialError(err) == authtypes.ErrDelegatedCredentialUnavailable {
+		writeModernError(w, id, jsonRPCCodeInternalError, authtypes.ErrDelegatedCredentialUnavailable.Error())
 		return
 	}
 	var coded mcpparser.CodedError

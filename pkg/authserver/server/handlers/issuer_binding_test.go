@@ -107,9 +107,9 @@ func TestHandler_NextMissingUpstream_IssuerMismatch(t *testing.T) {
 	handler, _, _ := handlerTestSetup(t)
 	handler.upstreams = []NamedUpstream{
 		{
-			Name:     "idp-b-repointed",
-			Issuer:   "https://idp-b.example.com",
-			Provider: &mockIDPProvider{},
+			Name:        "idp-b-repointed",
+			TokenIssuer: "https://idp-b.example.com",
+			Provider:    &mockIDPProvider{},
 		},
 	}
 
@@ -146,7 +146,7 @@ func TestHandler_UpstreamIssuerForFallback(t *testing.T) {
 
 	handler, _, _ := handlerTestSetup(t)
 	handler.upstreams = []NamedUpstream{
-		{Name: "configured", Issuer: "https://configured.example.com", Provider: &mockIDPProvider{}},
+		{Name: "configured", TokenIssuer: "https://configured.example.com", Provider: &mockIDPProvider{}},
 		{Name: "unconfigured-mock", Provider: &mockIDPProvider{}},
 	}
 

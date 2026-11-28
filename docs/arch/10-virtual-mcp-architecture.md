@@ -329,6 +329,16 @@ A probe that fails inconclusively falls back to Legacy for that one call
 **without caching it**, so a transient outage can never pin a backend to the
 wrong revision.
 
+The exception is a probe that fails because the outgoing authentication
+strategy could not read the user's delegated credential (the user must
+authorize the provider, or the credential is unavailable). That failure ends
+the call instead: vMCP does not try Legacy, which would read the same
+credential again, and returns the credential failure to the client as
+[error handling](../error-handling.md#vmcp-delegated-credential-failures)
+describes. The same applies to the re-probe after a revision mismatch on a
+cached backend: the call returns the credential failure, is not retried, and
+the cached revision stays as it was.
+
 ### The cache, and its asymmetric self-healing
 
 `dispatch` wraps every backend verb: it resolves the revision (probing on a
@@ -525,11 +535,22 @@ capabilities. Callers get no capability query (vmcp-anti-patterns #1 and #8).
 
 The renderers are `writeModernToolCallFailure` (`pkg/vmcp/server`; its writers
 `writeModernInputRequired` and `writeModernURLElicitationUnsupported`) and
-`legacyToolCallError` for Legacy, which renders the `-32042` and passes
-everything else to `conversion.ErrorToToolResult`. Each has the same
-precedence: an authorization denial outranks the answer, so an error carrying
-both renders as the denial: the 403 on Modern, the denial `isError` result on
-Legacy.
+`legacyToolCallError` for Legacy, which renders the `-32042`, renders an
+unavailable delegated credential as a bare `-32603`, and passes everything
+else to `conversion.ErrorToToolResult`. Each uses the same precedence when one
+error carries several causes:
+
+1. An authorization denial: the 403 on Modern, the denial `isError` result on
+   Legacy.
+2. The URL elicitation answer, rendered as in the table above.
+3. A delegated authorization requirement: an `isError` result naming the
+   provider.
+4. An unavailable delegated credential: `-32603` with a fixed message.
+
+The answer outranks a delegated authorization requirement so that an answer
+carrying a connect link is never hidden behind the plain `isError` text. See
+[error handling](../error-handling.md#vmcp-delegated-credential-failures) for
+the delegated credential failures.
 
 A Legacy session gets `-32042` only when the mcpcompat session accessors
 (`SessionWithProtocolVersion`, `SessionWithClientCapabilities`) report the
@@ -618,7 +639,7 @@ Embedder obligations for the connect page are in
 
 ## Served MCP Capabilities
 
-Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities. Every served capability flows through the domain **core** (`pkg/vmcp/core`), so the same admission decision that filters `tools/list` also gates reads, gets, and completions.
+Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities. Every served capability flows through the domain **core** (`pkg/vmcp/core`), so the admission decision that filters `tools/list` (read visibility) and gates `tools/call` (call check) also gates reads, gets, and completions.
 
 | Capability | Served? | Notes |
 |------------|---------|-------|
@@ -702,14 +723,18 @@ reserved band (#6101).
 
 "Does not gate Modern" is not "costs the same", though. The limiter wraps only
 the `CallTool` seam, so the list verbs and `server/discover` are unmetered on
-both eras — but Legacy aggregates once per session registration, while Modern
-re-runs the full backend fan-out on every request with no cache, by design
-(`core_vmcp.go`'s `aggregatedView`). A Modern client can therefore loop
-unmetered, uncached fan-outs — reachable unauthenticated when incoming auth is
-anonymous. Rate-limiting the list/discover verbs, or a short-TTL per-identity
-capability cache, is deferred until profiling shows the per-request fan-out
-cost matters (#5761 — the same deferral recorded in `dispatchModernDiscover`'s
-doc comment).
+both eras. Legacy aggregates once per session registration. Modern re-derives
+the view on every request, but `server.New` wraps the aggregator in
+`NewCachingAggregator` with a 30 second TTL, so discovery is cached per
+identity for 30 seconds and concurrent misses for the same key share one
+backend fan-out. Requests with no identity share one anonymous view. A request
+whose identity is present but cannot be bound to a session (for example, one
+with no issuer claim) is not rejected: it is swept fresh on every call and
+never cached or shared. The cache key is made from the session binding, the
+platform user ID, the forwarded headers and the backend IDs. A Modern client
+can still loop unmetered fan-outs once the TTL expires or when its identity
+cannot be bound, and the list and discover verbs remain outside the rate
+limiter (#5761).
 
 Wire behavior when the gate is closed:
 
@@ -881,12 +906,15 @@ Each worker's resync body (`runListChangedResync`), off the receive loop:
    per-identity capability cache (`aggregator.CacheInvalidator`), covering all
    capability kinds together (tools, resources, resource templates, prompts
    share one cached `AggregatedCapabilities` per identity). This is coarse (not
-   scoped to the one backend that changed): the LRU key is a hash of identity +
-   forwarded headers + backend-set, so per-backend invalidation would need a
-   reverse index that is disproportionate here. The coalescing above already
+   scoped to the one backend that changed): the LRU key combines the caller's
+   identity, forwarded headers and backend IDs (see the rate limiter
+   discussion above), so per-backend invalidation would need a reverse index
+   that is disproportionate here. The coalescing above already
    bounds the purge to at most once per resync burst per kind, and a purge
    only forces the next call per identity to re-sweep — an accepted de-opt /
-   follow-up. An aggregator that does not implement `CacheInvalidator`
+   follow-up. An identity that cannot be bound has no cache entry: it
+   bypasses the cache and is swept fresh on every call, so the purge does not
+   affect it. An aggregator that does not implement `CacheInvalidator`
    WARN-logs instead of silently no-opping.
 4. Re-derives and **replaces** — not merges — the session's advertised set for
    the notification's kind, from the (now cold) cache: `KindTools` re-derives
@@ -1147,6 +1175,15 @@ Exchanged tokens are cached to avoid repeated exchange calls.
 
 **Implementation**: `pkg/vmcp/auth/`, `pkg/vmcp/cache/`
 
+#### Delegated upstream authentication
+
+On `AdmissionRouteDelegated`, `upstream_inject` reads the configured provider's
+access token for the resolved user through a `UserCredentialReader` supplied by
+the embedder. If the reader is absent or the lookup fails, the backend request
+fails closed without falling back to session-loaded credentials. Interactive
+and unspecified routes are unchanged. See [delegated strategy behavior](17-token-exchange-delegation.md#delegated-upstream-credentials-in-vmcp)
+and [embedder wiring](vmcp-library.md#delegated-upstream-credentials).
+
 ### Per-User Upstream Filtering
 
 When vMCP runs its embedded authorization server with multiple upstream providers
@@ -1325,6 +1362,10 @@ reach it.
   unknown session) makes them start a new session.
   A store failure gets 503. A rejected request never terminates or otherwise
   disturbs the owner's session. Rejections of foreign callers are logged at WARN.
+- The owner's DELETE first cancels the session's Legacy requests still running
+  on the replica that receives it, because the transport closes a session by
+  waiting for its open requests. Requests running on other replicas are not
+  cancelled.
 - Because the check precedes the pre-dispatch authorization gate, a Cedar-denied
   call on a foreign or unknown session ID gets 404 rather than 403. The loopback
   Host guard and call binding run before this check, so their 403 (or call
@@ -1477,7 +1518,9 @@ policies are configured:
   name to the inner core. A backend that advertised a tool named `execute_tool_script`
   would be silently shadowed by the virtual tool and skip its own Cedar admission, so the
   decorator fails **loud** (`ErrReservedToolName`) on that collision — `ListTools`,
-  `LookupTool`, and the `CallTool` script-binding path all refuse to serve rather than mask it.
+  `LookupTool`, and the `CallTool` script-binding path all refuse to serve rather than mask it,
+  and `LookupBackendCapabilities` refuses that backend's `tools/list`, while its other lists
+  are still answered.
 
 The `Call*` methods keep their internal admission checks as defense-in-depth for other
 embedders and misconfigured gates.
@@ -1512,7 +1555,7 @@ Which tokens it checks:
   (`malformed_entry`), whatever the client. The token must also carry `jti`, `iss`
   and `exp`; an empty `jti` or `iss`, or one holding a NUL, is refused
   (`claims_required`), as `sessionbinding.Format` refuses them.
-- The embedder can list clients (`CallBinding.Clients`) whose tokens must carry an
+- The embedder can list clients (`callbinding.Config.Clients`) whose tokens must carry an
   entry. A token's client is its `client_id` claim, or its `azp` claim when
   `client_id` is absent or empty; other claims such as `cid` or `appid` are not read.
   A listed client's token without an entry is refused (`entry_required`). The list is
@@ -1558,16 +1601,32 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   `server` must be a backend in the caller's view: one the caller is admitted to at
   least one tool, resource, resource template or prompt of. A server that is unknown,
   hidden by authorization, offers the caller nothing, or contributes nothing to the
-  view (its discovery fails) gets the same 403 `server_not_found`, as an unknown tool
-  gets `tool_not_found`: AS-1 signs any `server` name, so the answer must not tell
-  whether a backend the caller cannot see exists. A backend in the caller's view that
+  view (its discovery fails while another backend's succeeds) gets the same 403
+  `server_not_found`, as an unknown tool gets `tool_not_found`: AS-1 signs any
+  `server` name, so the answer must not tell whether a backend the caller cannot see
+  exists. A backend in the caller's view that
   the core's lists leave out for its health status (unhealthy, unknown or
   unauthenticated, even while it still answers) gets 503; a degraded one stays in the
-  lists and is listed. The check and the items come from separate aggregations, so a
-  backend that drops out of the view between the two is answered with an empty list
-  and the token is used. A list call that carries a cursor is refused with
-  `invalid_params`. A `tools/call` or another list method is refused with
-  `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
+  lists and is listed. A backend in the caller's view whose list of the method's
+  items cannot be listed now also gets 503: the list failed transiently (a Modern
+  backend's optional list, which the lists report as empty), or code mode refuses the
+  backend's `tools/list` because it advertises `execute_tool_script`. One the caller
+  could see only through a list that failed is not known to be in view, so it gets
+  403. While no backend in a non-empty group answers discovery, a list call that
+  reaches the check on a capability-cache miss gets 503, whatever its `server`, so the
+  outage tells nothing about which backends exist; an empty group has no backend to
+  find, so every `server` gets 403. The check and the items come from one aggregation
+  when the core offers `core.BackendCapabilitiesLookup`, so they cannot disagree. That
+  interface is separate from `core.VMCP`, so a decorator that only embeds `core.VMCP`
+  does not promote it; the list call then falls back to the decorator's own
+  `LookupBackend` and `List*` answers, from separate aggregations. A list call that
+  is answered runs admission over its backend's items only. Every 403
+  `server_not_found` and every health 503 runs the same aggregations and, in each,
+  admission over every item once, as the lists do (the items of the other backends
+  are checked and the results discarded), so its time does not tell an unknown
+  `server` from a hidden backend with many items. A list call that
+  carries a cursor is refused with `invalid_params`. A `tools/call` or another list
+  method is refused with `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
   a tool-call entry: it uses up the token. It is recorded only once its answer is
   ready, and ended at once: of concurrent duplicates, each runs the handler, but only
   the first to record is answered, and the others get `token_reused`.
@@ -1575,33 +1634,104 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   token's principal owns. Once the token has started its call, they are limited to
   that call's session (`session_mismatch`); a Modern call has none. Neither uses up
   the token.
-- On the Legacy session of its tool call, while the call's request is open and
+- On the Legacy session of its tool call, while the call is open and
   younger than the maximum call duration: a `notifications/cancelled` for the call's
   JSON-RPC ID, and any JSON-RPC response (for example an in-band elicitation reply).
   A list call is never open, so it admits neither (`no_open_call`). The vMCP
   does not see which server-to-client requests the SDK is waiting on, so any response
   on that session is accepted. A Modern call has no session, whatever
   `Mcp-Session-Id` it sends, so it admits neither: a Modern client cancels by closing
-  the request. Because `exp` is checked first, these messages are accepted until the
-  earlier of the token's `exp` and the end of the call's request; an elicitation
-  answer sent after `exp` gets 401 even while the call is open, and a fresh token
-  gets `no_open_call`. Known limitation: a Legacy client that closes the call's POST
-  before it sends the cancellation (go-sdk does) gets `no_open_call`, because the
-  call's request has already returned. Accepting messages for a call after its
-  request returns, like accepting them after `exp`, is not implemented yet.
+  the request. These messages are accepted after the token's `exp` too (see **After
+  `exp`** below); a fresh token gets `no_open_call`, as it has no call of its own. A
+  call is open while its request is, and on Legacy also while its dispatch still
+  runs on the replica: go-sdk keeps a Legacy call running after the client closes
+  its POST, and a go-sdk client closes the POST before it sends the cancellation,
+  so the request returning does not end the call. The dispatch marks itself running
+  (`Binding.BeginDispatch`), the request's return defers to it (`Binding.EndCall`),
+  and the last dispatch ends the call in the record. A dispatch that starts after
+  the call has ended does not reopen it.
 
 Everything else is refused, including list methods a tool-call entry does not allow.
 Single use means
 one token, one call: a retried `tools/call`, such as the retry after a URL elicitation
 (Legacy `-32042`, Modern `input_required`), is a second call and is refused with
-`token_reused`. The client needs a fresh call-bound token for the retry. After the
-token's `exp` every request to the MCP endpoint is refused with `token_expired`: the
-middleware applies the token validator's leeway, which is zero, so this fires only
-when the embedder's validator allows more. A stream opened before `exp` keeps running.
+`token_reused`. The client needs a fresh call-bound token for the retry.
+
+**After `exp`.** By default `exp` is strict: once a call-bound token expires, every
+request with it gets 401, as RFC 7519 section 4.1.4 and RFC 9068 require, even one
+that cancels or answers a call still running. `vmcp serve` and the operator keep it
+strict, with no setting to change it. A Go embedder can opt in per issuer and client
+with `callbinding.Config.ExpiredTokenAdmission`, a list of
+`callbinding.ExpiredTokenAdmission{Issuer, ClientID, Grace}` entries:
+
+```go
+binding, err := callbinding.New(callbinding.Config{
+	ExpiredTokenAdmission: []callbinding.ExpiredTokenAdmission{
+		{Issuer: "https://as.example.com", ClientID: "agent-gateway", Grace: 2 * time.Minute},
+	},
+})
+```
+
+An entry matches a token whose `iss` and `client_id` claims equal its `Issuer` and
+`ClientID` exactly; `azp` is not read. `client_id` names the client the token was
+issued to, not the one presenting it, so on an authorization server that several
+clients share, the list limits which tokens get the grace, not which clients can be
+issued a call entry; that is for the authorization server's grant policy. Each
+`Grace` must be positive and at most the maximum call duration, and no two entries
+may name the same issuer and client; `callbinding.New` refuses such a list. When
+sender-constrained tokens (DPoP or mTLS) arrive, admission after `exp` is expected to
+require the proof as well, switched on in the same list.
+
+For a matching token, `exp` limits only when a call can start. A tool call that
+outlives its token keeps its own messages, for the entry's `grace` after `exp`,
+while the call is open and younger than the maximum call duration, on the call's
+session: a `notifications/cancelled` for the call's ID, a JSON-RPC response such as an
+elicitation answer, and a GET or DELETE. The GET lets a client whose stream dropped
+receive the call's messages again: the vMCP sends a backend's elicitation on the
+session's standalone stream. The DELETE ends the session. Neither starts anything.
+Nothing else is accepted after `exp`: no new call, list, handshake or `ping`. A list
+call has no messages after `exp`: it is recorded ended, and the entry type is checked
+as well, since that end is a second write a shared record may miss. A Modern call has
+no session, so it has none either. A stream is checked only when it opens: one opened before `exp`, or
+by a GET admitted after it, keeps running after the call ends, until the client or
+the session closes it. Once the call has ended or reached the maximum call duration,
+a matching token on its session within the grace is answered as before `exp` and
+nothing is dispatched: its cancellation and a JSON-RPC response get 202 (a receiver
+may ignore a cancellation for a finished request), and a GET or DELETE gets 403
+`no_open_call` with a JSON-RPC error. A 401 there would make a go-sdk client fail its
+connection over a cancellation that merely raced the call's end.
+
+The token validator refuses an expired JWT before this middleware runs, so the two
+share one `callbinding.Binding`, built by `callbinding.New` from the configuration:
+the embedder passes it as `ServerConfig.CallBinding` and to the incoming auth factory
+(`factory.WithCallBinding`), which gives the OIDC validator
+`Binding.TokenValidatorOption`. Without an `ExpiredTokenAdmission` entry, that option
+is `auth.WithStrictExpiry`, so `exp` stays strict by construction. With one, it is
+`auth.WithExpiredTokenAdmission`: the validator takes a JWT refused for its `exp`
+alone, checks it again on everything else (signature, `iss`, `aud`, `nbf`, subject
+restriction), requires its `exp` to be less than the maximum call duration in the
+past, and asks the binding (`Binding.AdmitExpiredToken`). The binding admits a POST,
+GET or DELETE only when the token carries a tool-call entry, its `iss` and `client_id`
+match an `ExpiredTokenAdmission` entry and its `exp` is less than that entry's grace
+in the past, its key has a call in this replica's record, and the request names that
+call's session; it never reads the body. Anything else gets the
+validator's usual 401, and opaque tokens never qualify. An admitted identity is marked
+(`auth.Identity.AdmittedAfterExpiry`) and gets no upstream tokens: its messages travel
+on the open call's backend connection. The middleware checks the list, the grace and the
+call again, since the validator and the server are wired separately, admits only the
+open call's own messages, answers an ended call's as above, and refuses the rest with
+401 `token_expired`;
+`core.CallTool` and the pre-dispatch gate refuse a marked identity as a backstop. The
+audit event of an admitted request carries `metadata.extra.admitted_after_expiry` and
+the entry's `operation_id`. With a list but without the option, every request after
+`exp` gets the validator's 401, and the vMCP warns once when a call-bound tool call
+starts. With the default in-memory record, a message sent to
+another replica after `exp` gets 401, so the window does not widen the single-use
+gap; with a shared `Record`, another replica admits it, as it does before `exp`.
 
 **Single use.** The `jti` (keyed with the issuer) is recorded when the call starts, in
 a `callbinding.Record`, and stays recorded until `exp` or until the call has run for
-the maximum call duration (`CallBinding.MaxCallDuration`, 30 minutes by default),
+the maximum call duration (`callbinding.Config.MaxCallDuration`, 30 minutes by default),
 whichever is later, plus a one-minute margin for a record whose clock runs ahead of
 the replica's. Once the token has started its call, a `tools/call` or a list
 method is refused with `token_reused`, whatever it names, so the client learns it
@@ -1623,18 +1753,21 @@ dispatches on another, and a backend can drop out of the view in between, moving
 tool name to another backend or to a composite it shadowed. So `core.CallTool` repeats
 the check on the view it dispatches from, as it repeats admission: for a call-bound
 token it refuses a composite tool and a backend other than the entry's `server`, with
-`ErrAuthorizationFailed`, before reaching any backend.
+`ErrAuthorizationFailed`, before reaching any backend. It refuses every call from an
+identity accepted after its token expired.
 
 **Refusal.** A refusal that describes the token gets HTTP 401 with an `invalid_token`
 challenge and an RFC 6750 error body: `token_expired`, `token_reused`,
 `malformed_entry`, `single_entry_required` and `claims_required`. The client needs a
 new token. The challenge carries the token validator's `realm`, `resource_metadata`
-and `scope` (`CallBinding.Challenge`, which `pkg/vmcp/cli` fills from the incoming
+and `scope` (`callbinding.Config.Challenge`, which `pkg/vmcp/cli` fills from the incoming
 OIDC configuration). Every other refusal is about the request and gets HTTP 403 with a
 JSON-RPC error with code 403 and no `WWW-Authenticate`, as the pre-dispatch gate
 answers a Cedar denial: `insufficient_scope` is what MCP clients read as a step-up
 hint, and no scope would make these requests acceptable. Both messages end with the
-reason. The refusal is audited like a Cedar denial (outcome `denied`), with the reason
+reason, and both carry it as a field for clients to read: a `reason` auth-param on the
+challenge and a `reason` member of the body on a 401 (`auth.BearerChallenge.WriteInvalidTokenReason`),
+`error.data.reason` on a 403. See [Authorization](../authz.md) for the values. The refusal is audited like a Cedar denial (outcome `denied`), with the reason
 in `metadata.extra.denial_reason`, for a stream-opening GET too. Logs carry the `jti`,
 the client, the entry's server, tool, method and operation ID, and the reason; never
 the token or the arguments. When the record, the route lookup or a list-call token's

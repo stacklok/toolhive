@@ -7,7 +7,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1625,4 +1627,195 @@ func TestStaticSPIFFEClientServedByRegistryIsSecretlessAndNonPublic(t *testing.T
 	assert.False(t, isOIDC)
 	assert.False(t, served.IsPublic())
 	assert.Nil(t, served.GetHashedSecret())
+}
+
+func TestUpstreamIdentityBinding(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		cfg        UpstreamConfig
+		wantIssuer string
+		wantClaim  string
+	}{
+		{
+			name: "OIDC with default subject claim",
+			cfg: UpstreamConfig{
+				Name:       "oidc-default",
+				Type:       UpstreamProviderTypeOIDC,
+				OIDCConfig: &upstream.OIDCConfig{Issuer: "https://idp.example.com"},
+			},
+			wantIssuer: "https://idp.example.com",
+			wantClaim:  "sub",
+		},
+		{
+			name: "OIDC with custom subject claim",
+			cfg: UpstreamConfig{
+				Name:       "entra",
+				Type:       UpstreamProviderTypeOIDC,
+				OIDCConfig: &upstream.OIDCConfig{Issuer: "https://login.microsoftonline.com/tid/v2.0", SubjectClaim: "oid"},
+			},
+			wantIssuer: "https://login.microsoftonline.com/tid/v2.0",
+			wantClaim:  "oid",
+		},
+		{
+			name: "OAuth2 with IdentityFromToken",
+			cfg: UpstreamConfig{
+				Name: "snowflake",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					TokenEndpoint:     "https://acct.snowflakecomputing.com/oauth/token-request",
+					IdentityFromToken: &upstream.IdentityFromTokenConfig{SubjectPath: "username"},
+				},
+			},
+			wantIssuer: oauth2Issuer("token", "acct.snowflakecomputing.com"),
+			wantClaim:  "token:username",
+		},
+		{
+			name: "OAuth2 with UserInfo default subject fields",
+			cfg: UpstreamConfig{
+				Name: "generic",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					TokenEndpoint: "https://oauth.example.com/token",
+					UserInfo:      &upstream.UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
+				},
+			},
+			wantIssuer: oauth2Issuer("userinfo", "oauth.example.com"),
+			wantClaim:  `userinfo:["sub"]`,
+		},
+		{
+			name: "OAuth2 with UserInfo custom subject fields",
+			cfg: UpstreamConfig{
+				Name: "github",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					TokenEndpoint: "https://github.com/login/oauth/access_token",
+					UserInfo: &upstream.UserInfoConfig{
+						EndpointURL:  "https://api.github.com/user",
+						FieldMapping: &upstream.UserInfoFieldMapping{SubjectFields: []string{"id", "login"}},
+					},
+				},
+			},
+			wantIssuer: oauth2Issuer("userinfo", "api.github.com"),
+			wantClaim:  `userinfo:["id","login"]`,
+		},
+		{
+			name: "OAuth2 synthesis mode",
+			cfg: UpstreamConfig{
+				Name: "opaque",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					TokenEndpoint: "https://opaque.example.com/token",
+				},
+			},
+			wantIssuer: oauth2Issuer("synthetic", "opaque.example.com"),
+			wantClaim:  "synthetic",
+		},
+		{
+			name: "unpopulated test stub config",
+			cfg:  UpstreamConfig{Name: "stub"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotIssuer, gotClaim := upstreamIdentityBinding(&tt.cfg)
+			assert.Equal(t, tt.wantIssuer, gotIssuer)
+			assert.Equal(t, tt.wantClaim, gotClaim)
+		})
+	}
+}
+
+func oauth2Issuer(mode, host string) string {
+	sum := sha256.Sum256([]byte(host))
+	return "oauth2:" + mode + ":sha256:" + hex.EncodeToString(sum[:])
+}
+
+func TestUpstreamIdentityBinding_OAuth2HostOnly(t *testing.T) {
+	t.Parallel()
+
+	userinfo := func(token, endpoint string) UpstreamConfig {
+		return UpstreamConfig{
+			Name: "generic",
+			Type: UpstreamProviderTypeOAuth2,
+			OAuth2Config: &upstream.OAuth2Config{
+				TokenEndpoint: token,
+				UserInfo:      &upstream.UserInfoConfig{EndpointURL: endpoint},
+			},
+		}
+	}
+	base, _ := upstreamIdentityBinding(ptr(userinfo("https://idp.example.com/token", "https://api.example.com/userinfo")))
+	require.True(t, strings.HasPrefix(base, "oauth2:userinfo:sha256:"))
+	assert.Len(t, base, len("oauth2:userinfo:sha256:")+64)
+
+	sameBinding := []struct {
+		name     string
+		endpoint string
+	}{
+		{"different path", "https://api.example.com/v2/me"},
+		{"query and trailing slash", "https://api.example.com/userinfo/?x=1"},
+		{"different scheme, same host", "http://api.example.com/userinfo"},
+	}
+	for _, tt := range sameBinding {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, _ := upstreamIdentityBinding(ptr(userinfo("https://idp.example.com/token", tt.endpoint)))
+			assert.Equal(t, base, got)
+		})
+	}
+
+	t.Run("userinfo mode ignores the token endpoint", func(t *testing.T) {
+		t.Parallel()
+		got, _ := upstreamIdentityBinding(ptr(userinfo("https://other-idp.example.net/token", "https://api.example.com/userinfo")))
+		assert.Equal(t, base, got)
+	})
+
+	t.Run("unparsable endpoint", func(t *testing.T) {
+		t.Parallel()
+		issuer, claim := upstreamIdentityBinding(ptr(userinfo("https://idp.example.com/token", "://bad")))
+		assert.Empty(t, issuer)
+		assert.Empty(t, claim)
+	})
+}
+
+func TestOAuth2BindingIssuer(t *testing.T) {
+	t.Parallel()
+
+	const mode = "userinfo"
+	tests := []struct {
+		name     string
+		endpoint string
+		sameAs   string
+		differs  string
+		empty    bool
+	}{
+		{name: "https default port", endpoint: "https://api.example.com:443/user", sameAs: "https://api.example.com/user"},
+		{name: "http default port", endpoint: "http://api.example.com:80/user", sameAs: "http://api.example.com/user"},
+		{name: "non-default port", endpoint: "https://api.example.com:8443/user", differs: "https://api.example.com/user"},
+		{name: "http default port on https", endpoint: "https://api.example.com:80/user", differs: "https://api.example.com/user"},
+		{name: "host case", endpoint: "https://API.Example.COM/user", sameAs: "https://api.example.com/user"},
+		{name: "ipv6 default port", endpoint: "https://[2001:db8::1]:443/user", sameAs: "https://[2001:db8::1]/user"},
+		{name: "ipv6 non-default port", endpoint: "https://[2001:db8::1]:8443/user", differs: "https://[2001:db8::1]/user"},
+		{name: "different host", endpoint: "https://api.other.example.com/user", differs: "https://api.example.com/user"},
+		{name: "unparsable", endpoint: "://bad", empty: true},
+		{name: "no host", endpoint: "/user", empty: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := oauth2BindingIssuer(mode, tt.endpoint)
+			switch {
+			case tt.empty:
+				assert.Empty(t, got)
+			case tt.sameAs != "":
+				assert.NotEmpty(t, got)
+				assert.Equal(t, oauth2BindingIssuer(mode, tt.sameAs), got)
+			default:
+				assert.NotEmpty(t, got)
+				assert.NotEqual(t, oauth2BindingIssuer(mode, tt.differs), got)
+			}
+		})
+	}
 }

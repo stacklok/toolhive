@@ -678,6 +678,43 @@ func TestClientFingerprintPolicyChanged_RedirectURIs(t *testing.T) {
 	assert.True(t, base.policyChanged(clientFingerprint{}))
 }
 
+func TestProviderIdentityBindingHelpers(t *testing.T) {
+	t.Parallel()
+
+	const (
+		iss = "https://idp.example.com"
+		sub = "sub"
+	)
+
+	tests := []struct {
+		name          string
+		identity      *ProviderIdentity
+		wantUnstamped bool
+		wantMatches   bool
+	}{
+		{name: "nil identity", identity: nil},
+		{name: "unstamped", identity: &ProviderIdentity{}, wantUnstamped: true},
+		{name: "half-stamped issuer only", identity: &ProviderIdentity{Issuer: iss}},
+		{name: "half-stamped claim only", identity: &ProviderIdentity{SubjectClaim: sub}},
+		{name: "matching binding", identity: &ProviderIdentity{Issuer: iss, SubjectClaim: sub}, wantMatches: true},
+		{name: "different issuer", identity: &ProviderIdentity{Issuer: "https://other.example.com", SubjectClaim: sub}},
+		{name: "different claim", identity: &ProviderIdentity{Issuer: iss, SubjectClaim: "oid"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.wantUnstamped, tt.identity.IsUnstamped())
+			assert.Equal(t, tt.wantMatches, tt.identity.MatchesBinding(iss, sub))
+		})
+	}
+
+	// Empty expected issuer or claim never matches, even an unstamped row.
+	assert.False(t, (&ProviderIdentity{}).MatchesBinding("", ""))
+	assert.False(t, (&ProviderIdentity{Issuer: iss, SubjectClaim: sub}).MatchesBinding("", sub))
+	assert.False(t, (&ProviderIdentity{Issuer: iss, SubjectClaim: sub}).MatchesBinding(iss, ""))
+}
+
 // resourceIdentityClient is a non-placeholder client that implements both
 // resourceScopedClient and spiffeIdentityClient, so only the reserved gate in
 // fingerprintOfClient keeps its values out of the fingerprint.

@@ -395,7 +395,7 @@ func TestIDJAGRedemptionDetailsHookRequest(t *testing.T) {
 }
 
 // TestIDJAGRedemptionDetailsResolvedSubject runs the claim processing on a
-// resolve issuer, which the subject-mode gate keeps closed in the full handler.
+// resolve issuer, where the subject is resolved before the hook runs.
 // The hook sees the resolved user next to the ID-JAG's own subject, and a
 // subject that does not resolve is refused before any hook runs.
 func TestIDJAGRedemptionDetailsResolvedSubject(t *testing.T) {

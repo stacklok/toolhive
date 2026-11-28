@@ -11,14 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
@@ -26,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
+	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
@@ -42,11 +40,6 @@ const callBindingLeeway = 0 * time.Second
 // store whose clock runs ahead of this replica's, which would otherwise
 // forget a key while this replica still accepts the token.
 const callBindingRetentionMargin = time.Minute
-
-// callBindingEndTimeout bounds marking a call as ended in the record. The
-// request context may already be cancelled when the call returns, so the
-// record gets a context of its own, as the session manager gives its storage.
-const callBindingEndTimeout = 5 * time.Second
 
 // Methods a call-bound token may send without starting a call: the Legacy
 // handshake's notification, the Modern capability probe and ping. initialize
@@ -95,51 +88,36 @@ var errListServerNotFound = errors.New("call binding: the list call's server is 
 // entry may send the list method its entry names, answered with only its
 // server's items.
 type callBinding struct {
-	required        map[string]struct{}
-	maxCallDuration time.Duration
-	record          callbinding.Record
-	route           callBindingRoute
-	listItems       callBindingListItems
-	challenge       auth.BearerChallenge
-	now             func() time.Time
+	// binding is the configuration, record and returned calls this check
+	// shares with the token validator (see callbinding.Binding).
+	binding   *callbinding.Binding
+	route     callBindingRoute
+	listItems callBindingListItems
+	now       func() time.Time
 
-	// returned holds the calls whose request has returned on this replica
-	// but that the record could not mark as ended.
-	returned returnedCalls
 	// noClientWarning logs once that Clients is set and a token names no
 	// client.
 	noClientWarning sync.Once
+	// unwiredWarning logs once that a call-bound tool call started while the
+	// token validator was never given the binding's option.
+	unwiredWarning sync.Once
 }
 
-// newCallBinding validates cfg and builds the enforcement it describes.
+// newCallBinding builds the enforcement binding describes. A nil binding is
+// the zero Config's.
 func newCallBinding(
-	cfg callbinding.Config, route callBindingRoute, listItems callBindingListItems,
-) (*callBinding, error) {
-	if cfg.MaxCallDuration < 0 {
-		return nil, fmt.Errorf("%w: CallBinding.MaxCallDuration must not be negative", vmcp.ErrInvalidConfig)
+	binding *callbinding.Binding, route callBindingRoute, listItems callBindingListItems,
+) *callBinding {
+	if binding == nil {
+		// A zero Config cannot fail validation.
+		binding, _ = callbinding.New(callbinding.Config{})
 	}
-	if slices.Contains(cfg.Clients, "") {
-		return nil, fmt.Errorf("%w: CallBinding.Clients must not contain an empty client ID", vmcp.ErrInvalidConfig)
-	}
-	required := make(map[string]struct{}, len(cfg.Clients))
-	for _, client := range cfg.Clients {
-		required[client] = struct{}{}
-	}
-	record := cfg.Record
-	if record == nil {
-		record = callbinding.NewMemoryRecord()
-	}
-	challenge := cfg.Challenge
-	challenge.Scopes = slices.Clone(challenge.Scopes)
 	return &callBinding{
-		required:        required,
-		maxCallDuration: cmp.Or(cfg.MaxCallDuration, callbinding.DefaultMaxCallDuration),
-		record:          record,
-		route:           route,
-		listItems:       listItems,
-		challenge:       challenge,
-		now:             time.Now,
-	}, nil
+		binding:   binding,
+		route:     route,
+		listItems: listItems,
+		now:       time.Now,
+	}
 }
 
 // callBindingRoute resolves name the way this instance dispatches a
@@ -162,67 +140,133 @@ func (s *Server) callBindingRoute(ctx context.Context, identity *auth.Identity, 
 	return tool.BackendID, nil
 }
 
-// callBindingListItems answers a list-call token from one admission-filtered
-// core list: the items whose BackendID is server, rendered as a Modern list
-// renders them, which is how Legacy sessions advertise them too. Attributing
-// each item by its own BackendID, from the one view, means another backend's
-// item that shares a name or URI is never answered. A composite tool, code
-// mode's execute_tool_script and, with the optimizer enabled, the find_tool
-// and call_tool meta-tools have no BackendID, so they are never listed: with
-// the optimizer, no tool is.
+// callBindingListItems answers a list-call token from one aggregation: the
+// core's view of server (core.BackendCapabilitiesLookup), which decides whether
+// server is in identity's view and gives the items identity is admitted to there,
+// rendered as a Modern list renders them, which is how Legacy sessions advertise
+// them too. Each item carries its own BackendID from that one view, so another
+// backend's item that shares a name or URI is never answered, and the server
+// cannot drop out of the view between the check and the items. A composite
+// tool, code mode's execute_tool_script and, with the optimizer enabled, the
+// find_tool and call_tool meta-tools have no BackendID, so they are never
+// listed: with the optimizer, no tool is. A core that does not implement the
+// lookup, such as a decorator that only embeds core.VMCP, is answered from its
+// own lists instead (callBindingListsCapabilities).
 //
-// The server must be a backend in identity's view (see callBindingListServer).
+// It returns errListServerNotFound, which the caller answers with 403
+// server_not_found, when server is unknown, hidden from identity by
+// authorization, offers identity nothing, or contributes nothing to the view
+// (its discovery fails), as checkToolCall answers tool_not_found: AS-1 signs
+// any server name, so the answer must not tell whether a backend the caller
+// cannot see exists. It returns another error, which the caller answers with
+// 503, when server is in identity's view but the core's lists leave it out for
+// its health status (health.ShouldAdvertise admits healthy, degraded and
+// unmonitored backends), when the method's list cannot be listed on server now
+// (core.AdmittedBackendCapabilities.ListErrors), or when the view cannot be
+// built now, such as when no backend answers discovery, which every server
+// name gets alike.
 func (s *Server) callBindingListItems(
 	ctx context.Context, identity *auth.Identity, method, server string,
 ) ([]json.RawMessage, error) {
-	if err := s.callBindingListServer(ctx, identity, server); err != nil {
+	if !toolcalldetails.IsListMethod(method) {
+		return nil, fmt.Errorf("call binding: %q is not a list method", method)
+	}
+	caps, err := core.LookupBackendCapabilities(ctx, s.core, identity, server)
+	switch {
+	case errors.Is(err, core.ErrBackendCapabilitiesLookupUnsupported):
+		caps, err = s.callBindingListsCapabilities(ctx, identity, method, server)
+	case errors.Is(err, vmcp.ErrNotFound):
+		return nil, errListServerNotFound
+	}
+	if err != nil {
 		return nil, err
+	}
+	if err := caps.ListErrors[method]; err != nil {
+		return nil, fmt.Errorf("call binding: the list call's server %q cannot list %s now: %w", server, method, err)
 	}
 	switch method {
 	case "tools/list":
 		if s.optimizerFactory != nil {
 			return []json.RawMessage{}, nil
 		}
-		tools, err := s.core.ListTools(ctx, identity)
-		return renderServerItems(tools, err, server, func(t vmcp.Tool) (string, any, error) {
-			wire, err := modernToolFromDomain(t)
-			return t.BackendID, wire, err
-		})
+		return renderListItems(caps.Tools, modernToolFromDomain)
 	case "prompts/list":
-		prompts, err := s.core.ListPrompts(ctx, identity)
-		return renderServerItems(prompts, err, server, func(p vmcp.Prompt) (string, any, error) {
-			return p.BackendID, modernPromptFromDomain(p), nil
+		return renderListItems(caps.Prompts, func(p vmcp.Prompt) (any, error) {
+			return modernPromptFromDomain(p), nil
 		})
 	case "resources/list":
-		resources, err := s.core.ListResources(ctx, identity)
-		return renderServerItems(resources, err, server, func(r vmcp.Resource) (string, any, error) {
-			return r.BackendID, modernResourceFromDomain(r), nil
+		return renderListItems(caps.Resources, func(r vmcp.Resource) (any, error) {
+			return modernResourceFromDomain(r), nil
 		})
-	case "resources/templates/list":
-		templates, err := s.core.ListResourceTemplates(ctx, identity)
-		return renderServerItems(templates, err, server, func(t vmcp.ResourceTemplate) (string, any, error) {
-			return t.BackendID, modernResourceTemplateFromDomain(t), nil
+	default: // resources/templates/list
+		return renderListItems(caps.ResourceTemplates, func(t vmcp.ResourceTemplate) (any, error) {
+			return modernResourceTemplateFromDomain(t), nil
 		})
-	default:
-		return nil, fmt.Errorf("call binding: %q is not a list method", method)
 	}
 }
 
+// callBindingListsCapabilities is callBindingListItems' answer for a core
+// that does not implement core.BackendCapabilitiesLookup: server's items from
+// the core's own list for method, after callBindingListServer's check. The
+// check and the items come from separate aggregations, so a backend that drops
+// out of the view between the two is answered with an empty list, and a list
+// that failed transiently on server reads as empty.
+func (s *Server) callBindingListsCapabilities(
+	ctx context.Context, identity *auth.Identity, method, server string,
+) (*core.AdmittedBackendCapabilities, error) {
+	if err := s.callBindingListServer(ctx, identity, server); err != nil {
+		return nil, err
+	}
+	switch method {
+	case "tools/list":
+		tools, err := s.core.ListTools(ctx, identity)
+		if err != nil {
+			return nil, err
+		}
+		return &core.AdmittedBackendCapabilities{
+			Tools: ofServer(tools, server, func(t vmcp.Tool) string { return t.BackendID }),
+		}, nil
+	case "prompts/list":
+		prompts, err := s.core.ListPrompts(ctx, identity)
+		if err != nil {
+			return nil, err
+		}
+		return &core.AdmittedBackendCapabilities{
+			Prompts: ofServer(prompts, server, func(p vmcp.Prompt) string { return p.BackendID }),
+		}, nil
+	case "resources/list":
+		resources, err := s.core.ListResources(ctx, identity)
+		if err != nil {
+			return nil, err
+		}
+		return &core.AdmittedBackendCapabilities{
+			Resources: ofServer(resources, server, func(r vmcp.Resource) string { return r.BackendID }),
+		}, nil
+	default: // resources/templates/list
+		templates, err := s.core.ListResourceTemplates(ctx, identity)
+		if err != nil {
+			return nil, err
+		}
+		return &core.AdmittedBackendCapabilities{
+			ResourceTemplates: ofServer(templates, server, func(t vmcp.ResourceTemplate) string { return t.BackendID }),
+		}, nil
+	}
+}
+
+// ofServer returns a new slice of the items whose backend is server, in order.
+func ofServer[T any](items []T, server string, backend func(T) string) []T {
+	return slices.DeleteFunc(slices.Clone(items), func(item T) bool { return backend(item) != server })
+}
+
 // callBindingListServer checks that server is a backend in identity's view
-// that its lists can include now. It returns errListServerNotFound, which the
-// caller answers with 403 server_not_found, when server is unknown, hidden
-// from identity by authorization, offers identity nothing, or contributes
-// nothing to the view (its discovery fails), as checkToolCall answers
-// tool_not_found: AS-1 signs any server name, so the answer must not tell
-// whether a backend the caller cannot see exists. A backend's resource
-// templates count, which LookupBackend does not count. It returns another
-// error, which the caller answers with 503, for a backend in identity's view
-// that the core's lists leave out for its health status: health.ShouldAdvertise
-// admits healthy, degraded and unmonitored backends, read from the health
-// monitor and else from the registry, as the lists do.
-//
-// The check and the items come from separate aggregations; a backend that
-// drops out of the view between the two is answered with an empty list.
+// that the core's lists can include now, for callBindingListsCapabilities. It
+// returns errListServerNotFound when server is unknown, hidden from identity
+// by authorization, offers identity nothing, or contributes nothing to the
+// view (its discovery fails). A backend's resource templates count, which
+// LookupBackend does not count. It returns another error for a backend in
+// identity's view that the core's lists leave out for its health status:
+// health.ShouldAdvertise admits healthy, degraded and unmonitored backends,
+// read from the health monitor and else from the registry, as the lists do.
 func (s *Server) callBindingListServer(ctx context.Context, identity *auth.Identity, server string) error {
 	backend, err := s.core.LookupBackend(ctx, identity, server)
 	switch {
@@ -251,21 +295,11 @@ func (s *Server) callBindingListServer(ctx context.Context, identity *auth.Ident
 	return nil
 }
 
-// renderServerItems renders the items whose backend is server, or returns err
-// when listing them failed. render returns an item's backend and its wire
-// form.
-func renderServerItems[T any](
-	items []T, err error, server string, render func(T) (backend string, wire any, err error),
-) ([]json.RawMessage, error) {
-	if err != nil {
-		return nil, err
-	}
-	rendered := []json.RawMessage{}
+// renderListItems renders items in their wire form, as list result items.
+func renderListItems[T, W any](items []T, render func(T) (W, error)) ([]json.RawMessage, error) {
+	rendered := make([]json.RawMessage, 0, len(items))
 	for _, item := range items {
-		backend, wire, err := render(item)
-		if backend != server {
-			continue
-		}
+		wire, err := render(item)
 		if err != nil {
 			return nil, err
 		}
@@ -299,9 +333,22 @@ func renderServerItems[T any](
 //     started its call, are limited to that call's session; neither uses up
 //     the token;
 //   - one tools/call that matches its entry, which uses up the token;
-//   - on the Legacy session of that call, while the call's request is open: a
+//   - on the Legacy session of that call, while the call is open (its request
+//     is open, or its dispatch still runs on this replica): a
 //     notifications/cancelled for the call's ID, and a JSON-RPC response
 //     (such as an elicitation reply).
+//
+// After the token's exp, every request gets 401 unless the token's iss and
+// client_id match an entry of the binding's ExpiredTokenAdmission list, which
+// is empty by default. For a matching token, the token validator accepts a
+// request only when the binding admits it
+// (callbinding.Binding.AdmitExpiredToken), and marks the identity
+// (auth.Identity.AdmittedAfterExpiry). Such a request may be only one of the
+// open call's own messages, on its session, within the entry's grace after exp,
+// while the call is open and younger than the maximum call duration: a GET or
+// DELETE, a notifications/cancelled for the call's ID, or, for a tool call, a
+// JSON-RPC response (see serveAfterExpiry). For such a token, exp limits only
+// when a call can start.
 //
 // A token with a list-call entry may send the handshake, server/discover, ping,
 // GET and DELETE as above, and the list method its entry names once, answered
@@ -309,8 +356,8 @@ func renderServerItems[T any](
 // is the token's one call: it uses the token up, as a tools/call does. It is
 // recorded only once its answer is ready, so no message is admitted for it.
 //
-// Everything else is refused (see refuse), and everything after the token's
-// exp with 401. For a tools/call, a later refusal, such as the
+// Everything else is refused (see refuse), and everything else after the
+// token's exp with 401. For a tools/call, a later refusal, such as the
 // session-ownership 404 or a Cedar 403, still uses up the token: the client
 // asks for a new token rather than retrying. So does a retried tools/call,
 // such as the retry after a URL elicitation: each attempt needs its own token.
@@ -318,8 +365,8 @@ func renderServerItems[T any](
 func (s *Server) callBindingMiddleware(next http.Handler) http.Handler {
 	cb := s.callBinding
 	if cb == nil {
-		// Serve always sets it; a zero Config cannot fail validation.
-		cb, _ = newCallBinding(callbinding.Config{}, s.callBindingRoute, s.callBindingListItems)
+		// Serve always sets it.
+		cb = newCallBinding(nil, s.callBindingRoute, s.callBindingListItems)
 	}
 	endpointPath := cmp.Or(s.config.EndpointPath, defaultEndpointPath)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -330,7 +377,12 @@ func (s *Server) callBindingMiddleware(next http.Handler) http.Handler {
 		}
 		parsed := mcpparser.GetParsedMCPRequest(r.Context())
 		cb.warnIfNoClient(identity.Claims)
-		token, reason := callbinding.FromClaims(identity.Claims, cb.required)
+		admitted := !identity.AdmittedAfterExpiry.IsZero()
+		token, reason := cb.binding.Token(identity.Claims)
+		if token == nil && reason == "" && admitted {
+			// Only a call-bound token's call has messages after exp.
+			reason = callbinding.ReasonTokenExpired
+		}
 		if reason != "" {
 			cb.refuse(w, r, parsed, &callbinding.Token{ClientID: callbinding.ClientID(identity.Claims)}, reason)
 			return
@@ -340,7 +392,13 @@ func (s *Server) callBindingMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		if r.URL.Path != endpointPath {
-			cb.refuse(w, r, parsed, token, callbinding.ReasonMethodNotAllowed)
+			// After exp, everything but the call's own messages is refused as
+			// the token validator refuses an expired token.
+			reason = callbinding.ReasonMethodNotAllowed
+			if admitted {
+				reason = callbinding.ReasonTokenExpired
+			}
+			cb.refuse(w, r, parsed, token, reason)
 			return
 		}
 		cb.serveBound(w, r, next, identity, token, parsed)
@@ -351,7 +409,7 @@ func (s *Server) callBindingMiddleware(next http.Handler) http.Handler {
 // client in neither claim callbinding.ClientID reads, so such a token is
 // never required to carry an entry.
 func (cb *callBinding) warnIfNoClient(claims map[string]any) {
-	if len(cb.required) == 0 || callbinding.ClientID(claims) != "" {
+	if !cb.binding.ClientsListed() || callbinding.ClientID(claims) != "" {
 		return
 	}
 	cb.noClientWarning.Do(func() {
@@ -367,8 +425,10 @@ func (cb *callBinding) serveBound(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
 	identity *auth.Identity, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
 ) {
-	if !cb.now().Before(token.ExpiresAt.Add(callBindingLeeway)) {
-		cb.refuse(w, r, parsed, token, callbinding.ReasonTokenExpired)
+	// A token the validator accepted after it expired, or one that expired
+	// between the validator and here, may send only its open call's messages.
+	if !identity.AdmittedAfterExpiry.IsZero() || !cb.now().Before(token.ExpiresAt.Add(callBindingLeeway)) {
+		cb.serveAfterExpiry(w, r, next, identity, token, parsed)
 		return
 	}
 	switch r.Method {
@@ -384,6 +444,119 @@ func (cb *callBinding) serveBound(
 		cb.servePost(w, r, next, identity, token, parsed)
 	default:
 		cb.refuse(w, r, parsed, token, callbinding.ReasonMethodNotAllowed)
+	}
+}
+
+// serveAfterExpiry handles a request that the token validator accepted after
+// the token expired, because the binding admitted it, or whose token expired
+// since the validator. It admits only a token whose iss and client_id match an
+// ExpiredTokenAdmission entry, within that entry's grace after exp, and only
+// on the session of the tool call the token started. Once that call has ended
+// or reached the maximum call duration, see serveEndedCallAfterExpiry. While it
+// is open, it admits only the call's own messages: a GET or DELETE, a
+// notifications/cancelled for the call's ID, or, for a tool call, a JSON-RPC
+// response, such as an elicitation reply. A list call is recorded ended, so it
+// has none. The checks the binding made are made again, as the call may have
+// ended since. Anything else is refused with 401 token_expired, as the token
+// validator refuses an expired token: no new call, list, initialize or ping.
+//
+// A GET on the call's session lets a client whose stream dropped receive the
+// call's messages again, and a DELETE ends the session; neither starts
+// anything. Like a stream opened before exp, a stream the GET opens is checked
+// only when it opens: it keeps running after the call ends, until the client
+// or the session closes it. Admitting any response on the call's session is a shortcut, as it
+// is before exp (see serveCallMessage).
+func (cb *callBinding) serveAfterExpiry(
+	w http.ResponseWriter, r *http.Request, next http.Handler,
+	identity *auth.Identity, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
+) {
+	// The validator and this check are wired separately, so the list is
+	// checked here too: without a matching entry, exp is strict.
+	if !cb.binding.WithinExpiredTokenGrace(identity.Claims, token.ExpiresAt, cb.now()) {
+		cb.refuse(w, r, parsed, token, callbinding.ReasonTokenExpired)
+		return
+	}
+	call, open, err := cb.binding.OpenCall(r.Context(), token.Key, cb.now())
+	if err != nil {
+		cb.unavailable(w, r, parsed, token, "record", err)
+		return
+	}
+	switch {
+	case !belongsToCall(r, call, "") || token.Entry.IsList():
+		cb.refuse(w, r, parsed, token, callbinding.ReasonTokenExpired)
+		return
+	case !open:
+		cb.serveEndedCallAfterExpiry(w, r, token, parsed, call)
+		return
+	case !isCallMessageAfterExpiry(r, token, parsed, call):
+		cb.refuse(w, r, parsed, token, callbinding.ReasonTokenExpired)
+		return
+	}
+	mcpMethod := ""
+	if parsed != nil {
+		mcpMethod = parsed.Method
+	}
+	slog.DebugContext(r.Context(), "call binding: admitted a message of an open call after its token expired",
+		"jti", token.JTI, "operation_id", token.Entry.OperationID, "http_method", r.Method, "mcp_method", mcpMethod)
+	next.ServeHTTP(w, r)
+}
+
+// serveEndedCallAfterExpiry answers, after exp and within the grace, a request
+// on the session of a tool call that has ended, as before exp, and never
+// dispatches it. A cancellation of the call and a JSON-RPC response get 202:
+// a receiver may ignore a cancellation for a finished request, and a response
+// no request waits for, and go-sdk clients fail the connection on any other
+// answer to a message without an ID. A GET or DELETE gets 403 no_open_call
+// with a JSON-RPC error. Anything else gets 401 token_expired, as when the
+// call is open.
+func (cb *callBinding) serveEndedCallAfterExpiry(
+	w http.ResponseWriter, r *http.Request,
+	token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest, call callbinding.Call,
+) {
+	switch r.Method {
+	case http.MethodGet, http.MethodDelete:
+		cb.refuse(w, r, parsed, token, callbinding.ReasonNoOpenCall)
+		return
+	case http.MethodPost:
+		ignored := parsed == nil // a JSON-RPC response (see serveBound)
+		if !ignored && parsed.Method == "notifications/cancelled" {
+			requestID, ok := cancelledRequestID(parsed.Params)
+			ignored = ok && requestID == call.RequestID
+		}
+		if ignored {
+			slog.DebugContext(r.Context(), "call binding: ignored a message for a call that has ended",
+				"jti", token.JTI, "operation_id", token.Entry.OperationID)
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+	}
+	cb.refuse(w, r, parsed, token, callbinding.ReasonTokenExpired)
+}
+
+// isCallMessageAfterExpiry reports whether r, on call's session, is one of
+// the messages serveAfterExpiry admits for call.
+func isCallMessageAfterExpiry(
+	r *http.Request, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest, call callbinding.Call,
+) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodDelete:
+		// A list call has no messages after exp. It is recorded ended, but
+		// with a second write that a shared record may miss, so the entry
+		// type decides.
+		return !token.Entry.IsList()
+	case http.MethodPost:
+		if parsed == nil {
+			// A JSON-RPC response (see serveBound). A list call asks the
+			// client nothing.
+			return !token.Entry.IsList()
+		}
+		if parsed.Method != "notifications/cancelled" {
+			return false
+		}
+		requestID, ok := cancelledRequestID(parsed.Params)
+		return ok && requestID == call.RequestID
+	default:
+		return false
 	}
 }
 
@@ -431,7 +604,7 @@ func (cb *callBinding) servePost(
 func (cb *callBinding) refusedAsReused(
 	w http.ResponseWriter, r *http.Request, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
 ) bool {
-	_, started, err := cb.record.Lookup(r.Context(), token.Key)
+	_, started, err := cb.binding.Record().Lookup(r.Context(), token.Key)
 	switch {
 	case err != nil:
 		cb.unavailable(w, r, parsed, token, "record", err)
@@ -490,7 +663,7 @@ func (cb *callBinding) serveListCall(
 	if !ok {
 		return
 	}
-	cb.endCall(r.Context(), token, expiry)
+	cb.binding.EndCall(r.Context(), token, expiry)
 	slog.DebugContext(r.Context(), "call binding: answered a call-bound list call",
 		"jti", token.JTI, "client_id", token.ClientID, "server", token.Entry.Server, "method", token.Entry.Method)
 	copyHeader(w.Header(), buffered.header)
@@ -558,7 +731,7 @@ func (cb *callBinding) listAnswer(
 		slog.DebugContext(r.Context(), "call binding: a list call was cancelled before it was answered",
 			"jti", token.JTI)
 		writeCallBindingError(w, parsed, http.StatusServiceUnavailable, mcpparser.CodeInternalError,
-			"Service unavailable: the list call was cancelled before it was answered")
+			"Service unavailable: the list call was cancelled before it was answered", nil)
 		return nil, false
 	}
 	body := buffered.body.Bytes()
@@ -633,7 +806,7 @@ func (*callBinding) listFailed(
 	slog.ErrorContext(r.Context(), "call binding: could not answer a list call: the handler gave no list",
 		"jti", token.JTI, "mcp_method", parsed.Method, "status", status, "error", err)
 	writeCallBindingError(w, parsed, http.StatusInternalServerError, mcpparser.CodeInternalError,
-		"Internal error: the list could not be limited to the access token's server")
+		"Internal error: the list could not be limited to the access token's server", nil)
 }
 
 // writeListResponse writes the answer to a list call.
@@ -679,7 +852,7 @@ func (cb *callBinding) serveInitialize(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
 	token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
 ) {
-	_, started, err := cb.record.Lookup(r.Context(), token.Key)
+	_, started, err := cb.binding.Record().Lookup(r.Context(), token.Key)
 	switch {
 	case err != nil:
 		cb.unavailable(w, r, parsed, token, "record", err)
@@ -697,7 +870,7 @@ func (cb *callBinding) serveSessionRequest(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
 	token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
 ) {
-	call, started, err := cb.record.Lookup(r.Context(), token.Key)
+	call, started, err := cb.binding.Record().Lookup(r.Context(), token.Key)
 	if err != nil {
 		cb.unavailable(w, r, parsed, token, "record", err)
 		return
@@ -744,16 +917,45 @@ func (cb *callBinding) serveToolCall(
 	if !ok {
 		return
 	}
-	defer cb.endCall(ctx, token, expiry)
+	defer cb.binding.EndCall(ctx, token, expiry)
+	cb.warnIfValidatorUnwired(ctx)
 	slog.DebugContext(ctx, "call binding: admitted a call-bound tools/call",
 		"jti", token.JTI, "client_id", token.ClientID,
 		"operation_id", token.Entry.OperationID, "server", token.Entry.Server, "tool", token.Entry.Tool)
-	// The call's request is open while this runs. On Modern, and on Legacy
-	// while the client stays connected, that is the whole call. A Legacy
-	// client that closes the POST before it cancels gets no_open_call for the
-	// cancellation: accepting messages for a call after its request returns
-	// is left to the change that also accepts them after exp.
+	// The call is open while its request is. On Modern that is the whole
+	// call. On Legacy, closing the POST returns the request but not the
+	// dispatch, so the call stays open while its dispatch runs on this replica
+	// (callBinding.dispatching), and a later cancellation still reaches it.
 	next.ServeHTTP(w, r)
+}
+
+// dispatching marks a Legacy tools/call dispatch for identity's call-bound
+// token as running, and returns the function that marks it done; see
+// callbinding.Binding.BeginDispatch. It does nothing for any other identity.
+func (cb *callBinding) dispatching(identity *auth.Identity) (done func()) {
+	if cb == nil || identity == nil {
+		return func() {}
+	}
+	token, reason := cb.binding.Token(identity.Claims)
+	if reason != "" || token == nil || token.Entry.IsList() {
+		return func() {}
+	}
+	return cb.binding.BeginDispatch(token)
+}
+
+// warnIfValidatorUnwired logs once when a call-bound tool call starts, the
+// binding admits some tokens after exp, and the token validator was never
+// given the binding's option: the call's messages then get the validator's
+// 401 once the token expires, whatever the ExpiredTokenAdmission list says.
+func (cb *callBinding) warnIfValidatorUnwired(ctx context.Context) {
+	if !cb.binding.AdmitsExpiredTokens() || cb.binding.ValidatorWired() {
+		return
+	}
+	cb.unwiredWarning.Do(func() {
+		slog.WarnContext(ctx, "call binding: a call-bound tool call started, but the token validator was not "+
+			"given the call binding's TokenValidatorOption (factory.WithCallBinding), so the call's "+
+			"cancellation and other messages are refused once its token expires; logged once")
+	})
 }
 
 // startCall records the token as having started the call that requestID
@@ -768,7 +970,7 @@ func (cb *callBinding) startCall(
 	now := cb.now()
 	expiry := cb.recordExpiry(token, now)
 	call := callbinding.Call{SessionID: callSessionID(r, parsed), RequestID: requestID, Started: now}
-	started, err := cb.record.Start(r.Context(), token.Key, call, expiry)
+	started, err := cb.binding.Record().Start(r.Context(), token.Key, call, expiry)
 	if err != nil {
 		cb.unavailable(w, r, parsed, token, "record", err)
 		return time.Time{}, false
@@ -837,35 +1039,20 @@ func callSessionID(r *http.Request, parsed *mcpparser.ParsedMCPRequest) string {
 	return sessionID
 }
 
-// endCall marks the call the token started as ended once its request has
-// returned. The request context may already be cancelled, so the record gets
-// a context of its own with a deadline: a stalled store must not hold the
-// handler, and with it Shutdown. When the record cannot mark the call, this
-// replica remembers it, so it refuses the call's messages from then on.
-func (cb *callBinding) endCall(ctx context.Context, token *callbinding.Token, expiry time.Time) {
-	endCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), callBindingEndTimeout)
-	defer cancel()
-	if err := cb.record.End(endCtx, token.Key); err != nil {
-		cb.returned.add(token.Key, expiry, cb.now())
-		slog.WarnContext(ctx, "call binding: could not mark a call as ended; "+
-			"this replica refuses its messages, other replicas follow the record",
-			"jti", token.JTI, "error", err)
-	}
-}
-
 // recordExpiry is how long the record keeps a token started at now: until the
 // token can no longer be accepted, or until the call has run for the maximum
 // call duration, whichever is later, plus callBindingRetentionMargin.
 func (cb *callBinding) recordExpiry(token *callbinding.Token, now time.Time) time.Time {
 	expiry := token.ExpiresAt.Add(callBindingLeeway)
-	if callEnd := now.Add(cb.maxCallDuration); callEnd.After(expiry) {
+	if callEnd := now.Add(cb.binding.MaxCallDuration()); callEnd.After(expiry) {
 		expiry = callEnd
 	}
 	return expiry.Add(callBindingRetentionMargin)
 }
 
 // serveCallMessage admits a message that belongs to the call the token
-// started, on that call's session, while the call's request is open and
+// started, on that call's session, while the call is open (see
+// callbinding.Binding.OpenCall) and
 // younger than the maximum call duration: a notifications/cancelled for the
 // call's ID (requestID non-empty), or a JSON-RPC response (requestID empty).
 //
@@ -879,40 +1066,34 @@ func (cb *callBinding) serveCallMessage(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
 	token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest, requestID string,
 ) {
-	call, found, err := cb.record.Lookup(r.Context(), token.Key)
+	call, open, err := cb.binding.OpenCall(r.Context(), token.Key, cb.now())
 	if err != nil {
 		cb.unavailable(w, r, parsed, token, "record", err)
 		return
 	}
 	// A list call asks the client nothing, so no response belongs to it.
 	listResponse := requestID == "" && token.Entry.IsList()
-	if listResponse || !found || !cb.callOpen(token.Key, call) || !belongsToCall(r, call, requestID) {
+	if listResponse || !open || !belongsToCall(r, call, requestID) {
 		cb.refuse(w, r, parsed, token, callbinding.ReasonNoOpenCall)
 		return
 	}
 	next.ServeHTTP(w, r)
 }
 
-// callOpen reports whether the call recorded under key still has its request
-// open and is younger than the maximum call duration.
-func (cb *callBinding) callOpen(key string, call callbinding.Call) bool {
-	now := cb.now()
-	return !call.Ended && !cb.returned.has(key, now) && now.Before(call.Started.Add(cb.maxCallDuration))
-}
-
 // belongsToCall reports whether a message sent as r is on call's session and,
 // for a cancellation (requestID non-empty), names call's request.
 func belongsToCall(r *http.Request, call callbinding.Call, requestID string) bool {
-	sessionID, err := sessionbinding.RequestID(r, "")
-	return err == nil && call.SessionID != "" && sessionID == call.SessionID &&
-		(requestID == "" || requestID == call.RequestID)
+	return callbinding.OnCallSession(r, call) && (requestID == "" || requestID == call.RequestID)
 }
 
 // refuse answers a refused request and marks it so the audit middleware
 // records it as a denial with its reason. A reason in
 // callBindingTokenReasons gets 401 with an invalid_token challenge and an RFC
 // 6750 error body, as the token validator answers a token it refuses; every
-// other reason gets 403 with a JSON-RPC error and no challenge. The log
+// other reason gets 403 with a JSON-RPC error and no challenge. Both carry
+// the reason for a client to read: as the challenge's reason auth-param and
+// the body's reason member on a 401, as error.data.reason on a 403. The texts
+// keep the reason in parentheses for clients that match on them. The log
 // carries the token's jti, never the token or the arguments.
 func (cb *callBinding) refuse(
 	w http.ResponseWriter, r *http.Request, parsed *mcpparser.ParsedMCPRequest,
@@ -932,11 +1113,18 @@ func (cb *callBinding) refuse(
 		"server", token.Entry.Server, "tool", token.Entry.Tool, "method", token.Entry.Method)
 
 	if slices.Contains(callBindingTokenReasons, reason) {
-		cb.challenge.WriteInvalidToken(w, "the access token is not accepted ("+reason+")")
+		cb.binding.Challenge().WriteInvalidTokenReason(w, "the access token is not accepted ("+reason+")", reason)
 		return
 	}
 	writeCallBindingError(w, parsed, http.StatusForbidden, mcpparser.JSONRPCCodeDenied,
-		"Forbidden: the access token does not permit this request ("+reason+")")
+		"Forbidden: the access token does not permit this request ("+reason+")",
+		&callBindingRefusalData{Reason: reason})
+}
+
+// callBindingRefusalData is the data member of a 403 refusal's JSON-RPC
+// error.
+type callBindingRefusalData struct {
+	Reason string `json:"reason"`
 }
 
 // unavailable answers 503 when the check cannot be completed. The token is
@@ -953,46 +1141,51 @@ func (*callBinding) unavailable(
 	slog.Log(r.Context(), level, "call binding: could not check a call-bound token",
 		"step", step, "jti", token.JTI, "error", err)
 	writeCallBindingError(w, parsed, http.StatusServiceUnavailable, mcpparser.CodeInternalError,
-		"Service unavailable: the access token could not be checked")
+		"Service unavailable: the access token could not be checked", nil)
+}
+
+// callBindingErrorResponse is a JSON-RPC error response. It is not a
+// jsonrpc2.Response because jsonrpc2.NewError cannot carry data. Its members
+// are in the order jsonrpc2.EncodeMessage writes them, and ID is omitted when
+// absent, never null.
+type callBindingErrorResponse struct {
+	JSONRPC string                `json:"jsonrpc"`
+	ID      any                   `json:"id,omitempty"`
+	Error   callBindingErrorValue `json:"error"`
+}
+
+type callBindingErrorValue struct {
+	Code    int64  `json:"code"`
+	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
 // writeCallBindingError writes a JSON-RPC error answering parsed, without an
-// ID when the request has none.
+// ID when the request has none, and with data when it is not nil.
 func writeCallBindingError(
 	w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, status int, code int64, message string,
+	data any,
 ) {
-	resp := &jsonrpc2.Response{Error: jsonrpc2.NewError(code, message)}
+	resp := callBindingErrorResponse{
+		JSONRPC: "2.0",
+		Error:   callBindingErrorValue{Code: code, Message: message, Data: data},
+	}
 	if parsed != nil {
-		if id, err := mcpparser.ConvertToJSONRPC2ID(parsed.ID); err == nil {
-			resp.ID = id
+		// ConvertToJSONRPC2ID reads the ID as jsonrpc2 does: a string or an
+		// integer, or no ID.
+		if id, err := mcpparser.ConvertToJSONRPC2ID(parsed.ID); err == nil && id.IsValid() {
+			resp.ID = id.Raw()
 		}
 	}
-	//nolint:gosec // G104: writing a JSON-RPC error response to an HTTP client
-	_ = mcpparser.WriteJSONRPCError(w, status, resp)
-}
-
-// returnedCalls is the set of calls, keyed by token key, whose request has
-// returned on this replica but that the record could not mark as ended. Each
-// entry lasts as long as the record keeps its key. Entries are added only
-// when the record fails, and expired ones are dropped on each add.
-type returnedCalls struct {
-	mu      sync.Mutex
-	expires map[string]time.Time
-}
-
-func (c *returnedCalls) add(key string, expiry, now time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.expires == nil {
-		c.expires = make(map[string]time.Time)
+	body, err := json.Marshal(resp)
+	if err != nil {
+		// Unreachable: every member is a string, an integer or
+		// callBindingRefusalData.
+		slog.Error("call binding: could not encode a JSON-RPC error", "error", err)
+		body = []byte(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error"}}`)
 	}
-	maps.DeleteFunc(c.expires, func(_ string, e time.Time) bool { return !now.Before(e) })
-	c.expires[key] = expiry
-}
-
-func (c *returnedCalls) has(key string, now time.Time) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	expiry, ok := c.expires[key]
-	return ok && now.Before(expiry)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	//nolint:gosec // G104: writing a JSON-RPC error response to an HTTP client
+	_, _ = w.Write(body)
 }

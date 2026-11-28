@@ -9,6 +9,7 @@ import (
 	sdkmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	thvmcp "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // ErrorToToolResult converts domain/tool execution errors into MCP tool results.
@@ -19,15 +20,19 @@ import (
 // reading the result sees them and the call stays a successful JSON-RPC
 // response that clients and audit treat like any other tool failure.
 //
-// This is the Legacy (2025-11-25) render seam for tools/call: the Serve-path
-// tool handler and the optimizer call_tool meta-tool both route errors here.
-// The one Legacy answer that is a JSON-RPC error, -32042 for a URL
-// elicitation on a session that negotiated 2025-11-25 and declared
-// elicitation.url, is rendered by the caller before it reaches this function,
-// because only the caller can see the session. A URL elicitation answer
-// (vmcp.URLElicitationRequiredError) that reaches this function renders as an
-// isError result whose text is its LegacyFallback: the elicitation message,
-// never the URL, unless the embedder supplied its own text.
+// This is the Legacy (2025-11-25) render seam for tool-result failures. The
+// direct tool handler (legacyToolCallError in pkg/vmcp/server) returns bare
+// JSON-RPC errors instead for a URL elicitation on a session that negotiated
+// 2025-11-25 and declared elicitation.url (-32042) and for an unavailable
+// delegated credential (-32603). The optimizer call_tool meta-tool passes
+// those wire errors through unchanged.
+//
+// The precedence is the one every tools/call renderer uses: an authorization
+// denial renders as the deny message; then a URL elicitation answer
+// (vmcp.URLElicitationRequiredError) renders as its LegacyFallback, the
+// elicitation message, never the URL, unless the embedder supplied its own
+// text; then a delegated authorization requirement renders as its own text,
+// which names only the provider.
 func ErrorToToolResult(err error) *sdkmcp.CallToolResult {
 	// Denial first (matches writeModernDispatchError): an error that is both a
 	// CodedError and wraps ErrAuthorizationFailed must render as the denial,
@@ -38,6 +43,10 @@ func ErrorToToolResult(err error) *sdkmcp.CallToolResult {
 	}
 	if answer, ok := vmcp.URLElicitationFromError(err); ok {
 		return urlElicitationFallbackResult(answer)
+	}
+	var authReq *authtypes.DelegatedAuthRequiredError
+	if errors.As(err, &authReq) && authReq != nil {
+		return sdkmcp.NewToolResultError(authReq.Error())
 	}
 	var coded thvmcp.CodedError
 	if errors.As(err, &coded) {

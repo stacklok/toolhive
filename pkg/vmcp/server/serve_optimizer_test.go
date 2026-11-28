@@ -24,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -371,6 +372,32 @@ func TestServeOptimizerCallToolRoutesThroughCore(t *testing.T) {
 	require.Equal(t, int32(1), fc.callToolCalls.Load(), "call_tool must route the inner invocation through core.CallTool")
 	got, _ := fc.lastCallToolName.Load().(string)
 	assert.Equal(t, "tool-a", got, "the core must receive the REAL inner tool name, not call_tool")
+}
+
+func TestOptimizerCallToolPreservesDelegatedCredentialUnavailable(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{
+		tools:   []vmcp.Tool{{Name: "tool-a"}},
+		callErr: fmt.Errorf("private backend detail: %w", authtypes.ErrDelegatedCredentialUnavailable),
+	}
+	_, sessionID, baseURL, _ := registerServeOptimizerSession(t, fc, fc.tools)
+	resp := postServeMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      optimizerdec.CallToolName,
+			"arguments": map[string]any{"tool_name": "tool-a", "parameters": map[string]any{}},
+		},
+	}, sessionID)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body map[string]json.RawMessage
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.NotContains(t, body, "result")
+	assert.JSONEq(t, `{"code":-32603,"message":"upstream credential unavailable"}`, string(body["error"]))
 }
 
 // TestServeOptimizerCallToolInnerAdmissionDenied proves the closed gap: when the core

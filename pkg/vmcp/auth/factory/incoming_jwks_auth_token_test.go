@@ -81,7 +81,7 @@ func TestNewOIDCAuthMiddleware_MissingJWKSAuthTokenFile(t *testing.T) {
 		JWKSAuthTokenPath: filepath.Join(t.TempDir(), "missing"),
 	}
 
-	_, _, err := newOIDCAuthMiddleware(t.Context(), cfg, nil, nil, "")
+	_, _, err := newOIDCAuthMiddleware(t.Context(), cfg, nil, nil, "", nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "incomingAuth.oidc.jwksAuthTokenPath")
@@ -148,7 +148,7 @@ func TestNewOIDCAuthMiddleware_JWKSAuthTokenPathReachesIssuer(t *testing.T) {
 		JWKSAuthTokenPath:  tokenPath,
 	}
 
-	authMw, _, err := newOIDCAuthMiddleware(t.Context(), cfg, nil, nil, "")
+	authMw, _, err := newOIDCAuthMiddleware(t.Context(), cfg, nil, nil, "", nil)
 	require.NoError(t, err)
 	require.NotNil(t, authMw)
 

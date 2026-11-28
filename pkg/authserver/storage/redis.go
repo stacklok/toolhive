@@ -3451,11 +3451,17 @@ func (s *RedisStorage) DeleteUser(ctx context.Context, id string) error {
 
 	// Best-effort cascade deletion of associated data (see warnOnCleanupErr).
 	// The user record is already deleted; orphaned keys will expire via TTL.
+	// Provider identity rows are deleted only when they still belong to this
+	// user, so a stale reverse-index entry left after a binding replacement
+	// cannot delete another user's live identity link.
 	userProviderSetKey := redisSetKey(s.keyPrefix, KeyTypeUserProviders, id)
 	providerKeys, err := s.client.SMembers(ctx, userProviderSetKey).Result()
 	if err == nil {
 		for _, providerKey := range providerKeys {
-			warnOnCleanupErr(s.client.Del(ctx, providerKey).Err(), "Del", providerKey)
+			warnOnCleanupErr(
+				deleteProviderIdentityIfOwnedScript.Run(ctx, s.client, []string{providerKey}, id).Err(),
+				"DeleteProviderIdentityIfOwned", providerKey,
+			)
 		}
 		warnOnCleanupErr(s.client.Del(ctx, userProviderSetKey).Err(), "Del", userProviderSetKey)
 	}
@@ -3482,9 +3488,117 @@ type storedProviderIdentity struct {
 	UserID          string `json:"user_id"`
 	ProviderID      string `json:"provider_id"`
 	ProviderSubject string `json:"provider_subject"`
+	Issuer          string `json:"issuer,omitempty"`
+	SubjectClaim    string `json:"subject_claim,omitempty"`
 	LinkedAt        int64  `json:"linked_at"`
 	LastUsedAt      int64  `json:"last_used_at"`
 }
+
+// deleteProviderIdentityIfOwnedScript deletes a provider identity key only when
+// its stored user_id still matches ARGV[1]. This protects a newly replaced row
+// from being deleted if an older user's reverse-index set still references it.
+// A row that cannot be decoded, or has no string user_id, is deleted: the keys
+// come from the deleting user's own reverse-index set, and before bindings
+// existed DeleteUser removed every such key unconditionally.
+var deleteProviderIdentityIfOwnedScript = redis.NewScript(`
+local data = redis.call('GET', KEYS[1])
+if not data then
+    return 0
+end
+local ok, decoded = pcall(cjson.decode, data)
+if not ok or type(decoded) ~= 'table' or type(decoded.user_id) ~= 'string' then
+    return redis.call('DEL', KEYS[1])
+end
+if decoded.user_id ~= ARGV[1] then
+    return 0
+end
+return redis.call('DEL', KEYS[1])
+`)
+
+// compareAndSwapProviderIdentityScript atomically updates a provider identity
+// row iff the replacement user exists, the row exists, and the stored
+// (user_id, issuer, subject_claim) matches the caller's expectation.
+//
+// When expected user_id == replacement user_id (stamping an unstamped row), the
+// script patches only issuer and subject_claim in the stored JSON so linked_at
+// and last_used_at are preserved across concurrent UpdateProviderIdentityLastUsed
+// calls.
+//
+// When expected user_id ~= replacement user_id (replacing a mismatched row), the
+// script verifies the new user's reverse-lookup set type before writing, swaps
+// the row, adds it to the new user's set (restoring the prior raw JSON on error),
+// and removes it from the old user's set.
+//
+// Returns 1 on success, 0 on mismatch (ErrProviderIdentityChanged), -1 when the
+// replacement user does not exist, and -2 when the identity row does not exist.
+//
+// Cluster slot invariant: KEYS[1]..KEYS[4] all derive from s.keyPrefix, whose
+// `{ns:name}` hash tag puts them on the same slot.
+var compareAndSwapProviderIdentityScript = redis.NewScript(`
+local function strField(tbl, k)
+    local v = tbl[k]
+    if v == nil or (cjson.null ~= nil and v == cjson.null) then
+        return '', true
+    end
+    if type(v) == 'string' then
+        return v, true
+    end
+    return '', false
+end
+
+if redis.call('EXISTS', KEYS[3]) == 0 then
+    return -1
+end
+
+local existing = redis.call('GET', KEYS[1])
+if not existing then
+    return -2
+end
+
+local ok, decoded = pcall(cjson.decode, existing)
+if not ok or type(decoded) ~= 'table' then
+    return redis.error_reply('ERR corrupt provider identity JSON')
+end
+
+local curUser, okUser = strField(decoded, 'user_id')
+local curIssuer, okIssuer = strField(decoded, 'issuer')
+local curClaim, okClaim = strField(decoded, 'subject_claim')
+if not okUser or not okIssuer or not okClaim then
+    return redis.error_reply('ERR corrupt provider identity field type')
+end
+
+if curUser ~= ARGV[1] or curIssuer ~= ARGV[2] or curClaim ~= ARGV[3] then
+    return 0
+end
+
+if ARGV[1] == ARGV[4] then
+    decoded.issuer = ARGV[5]
+    decoded.subject_claim = ARGV[6]
+    local encOk, encoded = pcall(cjson.encode, decoded)
+    if not encOk or type(encoded) ~= 'string' then
+        return redis.error_reply('ERR failed to encode provider identity JSON')
+    end
+    redis.call('SET', KEYS[1], encoded)
+    return 1
+end
+
+local setType = redis.call('TYPE', KEYS[2]).ok
+if setType ~= 'set' and setType ~= 'none' then
+    return redis.error_reply('WRONGTYPE user provider set key is not a set')
+end
+
+redis.call('SET', KEYS[1], ARGV[7])
+local added = redis.pcall('SADD', KEYS[2], KEYS[1])
+if type(added) == 'table' and added.err then
+    redis.call('SET', KEYS[1], existing)
+    return redis.error_reply(added.err)
+end
+
+if KEYS[4] ~= KEYS[2] and redis.call('TYPE', KEYS[4]).ok == 'set' then
+    redis.call('SREM', KEYS[4], KEYS[1])
+end
+return 1
+`)
 
 // createProviderIdentityScript writes the provider identity link and adds it
 // to the user's reverse-lookup set as one atomic step, so a failed set write
@@ -3520,17 +3634,8 @@ return 1
 
 // CreateProviderIdentity links a provider identity to a user.
 func (s *RedisStorage) CreateProviderIdentity(ctx context.Context, identity *ProviderIdentity) error {
-	if identity == nil {
-		return fosite.ErrInvalidRequest.WithHint("identity cannot be nil")
-	}
-	if identity.UserID == "" {
-		return fosite.ErrInvalidRequest.WithHint("user ID cannot be empty")
-	}
-	if identity.ProviderID == "" {
-		return fosite.ErrInvalidRequest.WithHint("provider ID cannot be empty")
-	}
-	if identity.ProviderSubject == "" {
-		return fosite.ErrInvalidRequest.WithHint("provider subject cannot be empty")
+	if err := validateProviderIdentity(identity); err != nil {
+		return err
 	}
 
 	userKey := redisKey(s.keyPrefix, KeyTypeUser, identity.UserID)
@@ -3540,6 +3645,8 @@ func (s *RedisStorage) CreateProviderIdentity(ctx context.Context, identity *Pro
 		UserID:          identity.UserID,
 		ProviderID:      identity.ProviderID,
 		ProviderSubject: identity.ProviderSubject,
+		Issuer:          identity.Issuer,
+		SubjectClaim:    identity.SubjectClaim,
 		LinkedAt:        identity.LinkedAt.Unix(),
 		LastUsedAt:      identity.LastUsedAt.Unix(),
 	}
@@ -3564,6 +3671,57 @@ func (s *RedisStorage) CreateProviderIdentity(ctx context.Context, identity *Pro
 	return nil
 }
 
+// CompareAndSwapProviderIdentity atomically updates a provider identity row iff
+// its stored (UserID, Issuer, SubjectClaim) matches expected.
+func (s *RedisStorage) CompareAndSwapProviderIdentity(
+	ctx context.Context, expected, replacement *ProviderIdentity,
+) error {
+	if err := validateProviderIdentityCAS(expected, replacement); err != nil {
+		return err
+	}
+
+	key := redisProviderKey(s.keyPrefix, replacement.ProviderID, replacement.ProviderSubject)
+	newUserKey := redisKey(s.keyPrefix, KeyTypeUser, replacement.UserID)
+	newUserProviderSetKey := redisSetKey(s.keyPrefix, KeyTypeUserProviders, replacement.UserID)
+	oldUserProviderSetKey := redisSetKey(s.keyPrefix, KeyTypeUserProviders, expected.UserID)
+
+	stored := storedProviderIdentity{
+		UserID:          replacement.UserID,
+		ProviderID:      replacement.ProviderID,
+		ProviderSubject: replacement.ProviderSubject,
+		Issuer:          replacement.Issuer,
+		SubjectClaim:    replacement.SubjectClaim,
+		LinkedAt:        replacement.LinkedAt.Unix(),
+		LastUsedAt:      replacement.LastUsedAt.Unix(),
+	}
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
+	if err != nil {
+		return fmt.Errorf("failed to marshal identity: %w", err)
+	}
+
+	result, err := compareAndSwapProviderIdentityScript.Run(ctx, s.client,
+		[]string{key, newUserProviderSetKey, newUserKey, oldUserProviderSetKey},
+		expected.UserID, expected.Issuer, expected.SubjectClaim,
+		replacement.UserID, replacement.Issuer, replacement.SubjectClaim,
+		data,
+	).Int()
+	if err != nil {
+		return fmt.Errorf("failed to swap identity: %w", err)
+	}
+	switch result {
+	case 1:
+		return nil
+	case 0:
+		return ErrProviderIdentityChanged
+	case -1:
+		return fmt.Errorf("%w: user not found", ErrNotFound)
+	case -2:
+		return fmt.Errorf("%w: provider identity not found", ErrNotFound)
+	default:
+		return fmt.Errorf("unexpected swap identity script result: %d", result)
+	}
+}
+
 // GetProviderIdentity retrieves a provider identity by provider ID and subject.
 func (s *RedisStorage) GetProviderIdentity(ctx context.Context, providerID, providerSubject string) (*ProviderIdentity, error) {
 	key := redisProviderKey(s.keyPrefix, providerID, providerSubject)
@@ -3585,6 +3743,8 @@ func (s *RedisStorage) GetProviderIdentity(ctx context.Context, providerID, prov
 		UserID:          stored.UserID,
 		ProviderID:      stored.ProviderID,
 		ProviderSubject: stored.ProviderSubject,
+		Issuer:          stored.Issuer,
+		SubjectClaim:    stored.SubjectClaim,
 		LinkedAt:        time.Unix(stored.LinkedAt, 0),
 		LastUsedAt:      time.Unix(stored.LastUsedAt, 0),
 	}, nil
@@ -3662,11 +3822,17 @@ func (s *RedisStorage) GetUserProviderIdentities(ctx context.Context, userID str
 		if err := json.Unmarshal(data, &stored); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal identity: %w", err)
 		}
+		if stored.UserID != userID {
+			// Stale reverse-index entry after the identity moved to another user.
+			continue
+		}
 
 		identities = append(identities, &ProviderIdentity{
 			UserID:          stored.UserID,
 			ProviderID:      stored.ProviderID,
 			ProviderSubject: stored.ProviderSubject,
+			Issuer:          stored.Issuer,
+			SubjectClaim:    stored.SubjectClaim,
 			LinkedAt:        time.Unix(stored.LinkedAt, 0),
 			LastUsedAt:      time.Unix(stored.LastUsedAt, 0),
 		})
@@ -3810,6 +3976,7 @@ var (
 	_ ClientRegistry                   = (*RedisStorage)(nil)
 	_ UpstreamTokenStorage             = (*RedisStorage)(nil)
 	_ UserStorage                      = (*RedisStorage)(nil)
+	_ ProviderIdentitySwapper          = (*RedisStorage)(nil)
 	_ DCRCredentialStore               = (*RedisStorage)(nil)
 	_ AssertionJWTConsumer             = (*RedisStorage)(nil)
 )

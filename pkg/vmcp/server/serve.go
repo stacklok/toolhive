@@ -161,17 +161,19 @@ type ServerConfig struct {
 	// them too. It has no effect when AuditConfig is nil.
 	AuditSubjectEnricher audit.SubjectEnricher
 
-	// CallBinding sets up enforcement of access tokens bound to one MCP call.
+	// CallBinding is the enforcement of access tokens bound to one MCP call.
 	// The vMCP always enforces a token that carries an authorization_details
 	// entry of type https://toolhive.dev/mcp_tool_call: with a tool-call entry
 	// it may start only the one tools/call the entry names, once; with a
 	// list-call entry, only the one list call the entry names, answered with
-	// only that backend's items. CallBinding adds the
-	// clients whose tokens must carry one, the maximum call duration, the
-	// single-use record, and the parameters of the 401 challenge. The zero
-	// value lists no client and keeps the record in memory, on this replica
-	// only. See callbinding.Config.
-	CallBinding callbinding.Config
+	// only that backend's items. The Binding, built by callbinding.New from a
+	// callbinding.Config, adds the clients whose tokens must carry one, the
+	// maximum call duration, the single-use record, and the parameters of the
+	// 401 challenge. Give the same Binding to the incoming auth factory
+	// (factory.WithCallBinding), so the token validator accepts the messages
+	// of a call that outlives its token. Nil is the zero Config's Binding: no
+	// client listed, the record in memory, on this replica only.
+	CallBinding *callbinding.Binding
 }
 
 // Serve is the transport-side entry point of the New/Serve split: it wraps an
@@ -202,8 +204,8 @@ type ServerConfig struct {
 // nor starts it, and the status reporter reads it back through the core (#5443 reversal).
 //
 // Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, a
-// nil required collaborator (SessionManagerConfig or BackendRegistry), or an invalid
-// CallBinding (a negative MaxCallDuration or an empty client ID). The session
+// nil required collaborator (SessionManagerConfig or BackendRegistry), or a
+// CallBinding that callbinding.New did not build. The session
 // hooks close over the constructed *Server, so they are registered after it is
 // assembled.
 //
@@ -247,10 +249,12 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	// auto-advertise the completions capability at initialize.
 	var srv *Server
 
-	// Validate call binding before anything that needs releasing is built. Its
-	// route and list lookups close over the late-assigned srv like the
-	// completion handler below, and run only at request time.
-	callBinding, err := newCallBinding(cfg.CallBinding, func(
+	if cfg.CallBinding != nil && cfg.CallBinding.Record() == nil {
+		return nil, fmt.Errorf("%w: CallBinding must be built by callbinding.New", vmcp.ErrInvalidConfig)
+	}
+	// Call binding's route and list lookups close over the late-assigned srv
+	// like the completion handler below, and run only at request time.
+	callBinding := newCallBinding(cfg.CallBinding, func(
 		ctx context.Context, identity *auth.Identity, name string,
 	) (string, error) {
 		return srv.callBindingRoute(ctx, identity, name)
@@ -259,10 +263,7 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	) ([]json.RawMessage, error) {
 		return srv.callBindingListItems(ctx, identity, method, server)
 	})
-	if err != nil {
-		return nil, err
-	}
-	warnCallBindingRecordPerReplica(cfg)
+	warnCallBindingRecordPerReplica(cfg, callBinding.binding)
 
 	completionHandler := func(ctx context.Context, req mcp.CompleteRequest) (*mcp.CompleteResult, error) {
 		return srv.coreCompletionHandler(ctx, req)
@@ -512,8 +513,8 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 // warnCallBindingRecordPerReplica warns once at startup when sessions are
 // shared between replicas but call binding keeps its single-use record in
 // memory: a call-bound token can then start one call on each replica.
-func warnCallBindingRecordPerReplica(cfg *ServerConfig) {
-	if cfg.CallBinding.Record != nil || cfg.SessionStorage == nil || cfg.SessionStorage.Provider != "redis" {
+func warnCallBindingRecordPerReplica(cfg *ServerConfig, binding *callbinding.Binding) {
+	if binding.RecordShared() || cfg.SessionStorage == nil || cfg.SessionStorage.Provider != "redis" {
 		return
 	}
 	slog.Warn("call binding: sessions are stored in Redis, but the single-use record of call-bound " +

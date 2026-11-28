@@ -396,6 +396,10 @@ type TokenValidator struct {
 	// server only.
 	embeddedAuthServerIssuer string
 
+	// expiredAdmission, when set, lets Middleware accept some requests whose
+	// JWT has expired (WithExpiredTokenAdmission). nil keeps exp strict.
+	expiredAdmission *expiredTokenAdmission
+
 	// Lazy JWKS registration
 	jwksRegistered      bool
 	jwksRegistrationMu  sync.Mutex
@@ -567,6 +571,60 @@ type tokenValidatorOptions struct {
 	upstreamTokenReader      upstreamtoken.TokenReader
 	keyProvider              keys.PublicKeyProvider
 	embeddedAuthServerIssuer string
+	expiredAdmission         *expiredTokenAdmission
+}
+
+// ExpiredToken is a JWT that passed every check of the validator except its
+// exp: its signature, iss, aud, nbf and subject restriction all hold.
+type ExpiredToken struct {
+	// Claims are the token's validated claims. The admitter must not modify
+	// them.
+	Claims jwt.MapClaims
+	// ExpiredAt is the token's exp.
+	ExpiredAt time.Time
+}
+
+// ExpiredTokenAdmitter decides whether the validator accepts r, whose token has
+// expired. It must decide from r's method, URL and headers and from the token;
+// it must not read or replace r's body. It runs for every request that carries
+// such a token, so it must be cheap and must not log at a level above DEBUG
+// for a refusal.
+type ExpiredTokenAdmitter func(r *http.Request, token ExpiredToken) bool
+
+type expiredTokenAdmission struct {
+	maxAge time.Duration
+	admit  ExpiredTokenAdmitter
+}
+
+// WithExpiredTokenAdmission lets Middleware accept some requests whose JWT has
+// expired: those admit reports true for. Without it, an expired token gets the
+// 401 it always gets.
+//
+// The option applies only when validation fails because of exp alone. The
+// token is then validated again with every check but exp: its signature, iss,
+// aud, nbf and subject restriction. Its exp must be present and less than
+// maxAge in the past. Only then is admit asked. An opaque token never
+// qualifies. When admit reports false, or any of these checks fails, the
+// request gets exactly the 401 it would get without the option.
+//
+// An identity accepted this way has Identity.AdmittedAfterExpiry set, and no
+// upstream tokens are loaded for it. Consumers that grant anything new must
+// refuse such an identity.
+//
+// NewTokenValidator refuses a maxAge that is not positive or a nil admit.
+func WithExpiredTokenAdmission(maxAge time.Duration, admit ExpiredTokenAdmitter) TokenValidatorOption {
+	return func(o *tokenValidatorOptions) {
+		o.expiredAdmission = &expiredTokenAdmission{maxAge: maxAge, admit: admit}
+	}
+}
+
+// WithStrictExpiry keeps exp strict: every expired token gets 401. That is
+// the default. It undoes an earlier WithExpiredTokenAdmission, and lets a
+// caller that only sometimes admits expired tokens say so explicitly.
+func WithStrictExpiry() TokenValidatorOption {
+	return func(o *tokenValidatorOptions) {
+		o.expiredAdmission = nil
+	}
 }
 
 // TokenValidatorOption is a functional option for NewTokenValidator.
@@ -684,6 +742,9 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	for _, opt := range opts {
 		opt(o)
 	}
+	if a := o.expiredAdmission; a != nil && (a.maxAge <= 0 || a.admit == nil) {
+		return nil, errors.New("expired token admission needs a positive maximum age and an admitter")
+	}
 
 	// Log warning if insecure HTTP is enabled
 	if config.InsecureAllowHTTP {
@@ -754,6 +815,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 		upstreamTokenReader:      o.upstreamTokenReader,
 		keyProvider:              o.keyProvider,
 		embeddedAuthServerIssuer: o.embeddedAuthServerIssuer,
+		expiredAdmission:         o.expiredAdmission,
 	}
 
 	if config.RequiredSubject != "" || config.RequiredSubjectPrefix != "" {
@@ -1097,6 +1159,22 @@ func (v *TokenValidator) getKeyFromJWKS(
 
 // validateClaims validates the claims in the token.
 func (v *TokenValidator) validateClaims(claims jwt.MapClaims) error {
+	if err := v.validateClaimsExceptExpiry(claims); err != nil {
+		return err
+	}
+
+	// Validate the expiration time
+	expirationTime, err := claims.GetExpirationTime()
+	if err != nil || expirationTime == nil || expirationTime.Before(time.Now()) {
+		return ErrTokenExpired
+	}
+
+	return nil
+}
+
+// validateClaimsExceptExpiry validates the issuer, audience and subject
+// restriction of the claims.
+func (v *TokenValidator) validateClaimsExceptExpiry(claims jwt.MapClaims) error {
 	// Validate the issuer if provided
 	if v.issuer != "" {
 		issuerClaim, err := claims.GetIssuer()
@@ -1126,17 +1204,7 @@ func (v *TokenValidator) validateClaims(claims jwt.MapClaims) error {
 			return ErrInvalidAudience
 		}
 	}
-	if err := v.validateSubject(claims); err != nil {
-		return err
-	}
-
-	// Validate the expiration time
-	expirationTime, err := claims.GetExpirationTime()
-	if err != nil || expirationTime == nil || expirationTime.Before(time.Now()) {
-		return ErrTokenExpired
-	}
-
-	return nil
+	return v.validateSubject(claims)
 }
 
 // validateSubject enforces the configured subject restrictions, if any.
@@ -1359,6 +1427,76 @@ func (v *TokenValidator) validateToken(ctx context.Context, tokenString string) 
 	return claims, provenanceSignedOther, nil
 }
 
+// validateOrAdmit validates the token. A JWT refused for its exp alone may
+// still be admitted (WithExpiredTokenAdmission); its exp is then returned as
+// expiredAt. Otherwise expiredAt is zero, and a refused token returns
+// validateToken's error.
+func (v *TokenValidator) validateOrAdmit(r *http.Request, tokenString string) (
+	claims jwt.MapClaims, provenance tokenProvenance, expiredAt time.Time, err error,
+) {
+	claims, provenance, err = v.validateToken(r.Context(), tokenString)
+	if err == nil || v.expiredAdmission == nil || !errors.Is(err, jwt.ErrTokenExpired) {
+		return claims, provenance, time.Time{}, err
+	}
+	admittedClaims, admittedProvenance, expiredAt, admitted := v.admitExpiredToken(r, tokenString)
+	if !admitted {
+		return nil, provenanceUnverified, time.Time{}, err
+	}
+	return admittedClaims, admittedProvenance, expiredAt, nil
+}
+
+// admitExpiredToken handles a JWT that validateToken refused for its exp, when
+// WithExpiredTokenAdmission is set. It validates the token again with every
+// check but exp, requires exp to be present and less than the maximum age in
+// the past, and asks the admitter. It returns the token's claims, provenance
+// and exp, and true only when the admitter accepts r. Why it refused is logged
+// at DEBUG: a caller can trigger a refusal at request rate.
+func (v *TokenValidator) admitExpiredToken(r *http.Request, tokenString string) (
+	jwt.MapClaims, tokenProvenance, time.Time, bool,
+) {
+	refused := func(reason string) (jwt.MapClaims, tokenProvenance, time.Time, bool) {
+		slog.DebugContext(r.Context(), "expired token not admitted", "reason", reason)
+		return nil, provenanceUnverified, time.Time{}, false
+	}
+	var keyFromLocalProvider bool
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
+		key, fromLocal, err := v.getKeyFromJWKS(r.Context(), token)
+		keyFromLocalProvider = fromLocal
+		return key, err
+	}, jwt.WithoutClaimsValidation())
+	if err != nil || !token.Valid {
+		return refused("signature")
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return refused("claims")
+	}
+	// jwt.Parse checks nbf, with no leeway, when it validates claims; so does
+	// this.
+	now := time.Now()
+	if nbf, err := claims.GetNotBefore(); err != nil || (nbf != nil && now.Before(nbf.Time)) {
+		return refused("nbf")
+	}
+	if err := v.validateClaimsExceptExpiry(claims); err != nil {
+		return refused("claims")
+	}
+	exp, err := claims.GetExpirationTime()
+	if err != nil || exp == nil || now.Before(exp.Time) {
+		return refused("exp")
+	}
+	if now.Sub(exp.Time) >= v.expiredAdmission.maxAge {
+		return refused("too_old")
+	}
+	if !v.expiredAdmission.admit(r, ExpiredToken{Claims: claims, ExpiredAt: exp.Time}) {
+		return refused("admitter")
+	}
+	provenance := provenanceSignedOther
+	if keyFromLocalProvider {
+		provenance = provenanceSignedEmbeddedKey
+	}
+	return claims, provenance, exp.Time, true
+}
+
 // buildWWWAuthenticate builds a RFC 6750 / RFC 9728 compliant value for the
 // WWW-Authenticate header from the validator's issuer, resource URL and scopes.
 // See BearerChallenge.Header.
@@ -1387,6 +1525,13 @@ type BearerChallenge struct {
 // "invalid_token", or "insufficient_scope"), it appends the error and optional
 // error_description.
 func (c BearerChallenge) Header(errorCode string, errDescription string) string {
+	return c.header(errorCode, errDescription, "")
+}
+
+// header is Header with an optional reason auth-param after
+// error_description, written only with an errorCode. RFC 6750 §3 allows
+// auth-params beyond the ones it defines.
+func (c BearerChallenge) header(errorCode, errDescription, reason string) string {
 	var parts []string
 
 	// realm (RFC 6750)
@@ -1426,6 +1571,9 @@ func (c BearerChallenge) Header(errorCode string, errDescription string) string 
 		if errDescription != "" {
 			parts = append(parts, fmt.Sprintf(`error_description="%s"`, EscapeQuotes(errDescription)))
 		}
+		if reason != "" {
+			parts = append(parts, fmt.Sprintf(`reason="%s"`, EscapeQuotes(reason)))
+		}
 	}
 	return "Bearer " + strings.Join(parts, ", ")
 }
@@ -1434,8 +1582,17 @@ func (c BearerChallenge) Header(errorCode string, errDescription string) string 
 // error body, the way the token validator answers a token it refuses.
 // description must not carry the token or other secrets.
 func (c BearerChallenge) WriteInvalidToken(w http.ResponseWriter, description string) {
-	w.Header().Set("WWW-Authenticate", c.Header(OAuthErrInvalidToken, description))
-	writeOAuthError(w, OAuthErrInvalidToken, description)
+	c.WriteInvalidTokenReason(w, description, "")
+}
+
+// WriteInvalidTokenReason is WriteInvalidToken with a reason: a fixed,
+// machine-readable code saying why the token is refused, for a client that
+// must act on it without matching description. A non-empty reason is sent as
+// a reason auth-param on the challenge and a reason member of the body; error
+// stays invalid_token. reason must not carry request data or secrets.
+func (c BearerChallenge) WriteInvalidTokenReason(w http.ResponseWriter, description, reason string) {
+	w.Header().Set("WWW-Authenticate", c.header(OAuthErrInvalidToken, description, reason))
+	writeOAuthErrorReason(w, OAuthErrInvalidToken, description, reason)
 }
 
 // RFC 6750 error code constants for Bearer token authentication.
@@ -1454,13 +1611,23 @@ const upstreamReauthRequired = "upstream token is no longer valid; re-authentica
 type RFC6750Error struct {
 	Error            string `json:"error"`
 	ErrorDescription string `json:"error_description"`
+	// Reason is a machine-readable code refining Error, omitted when empty.
+	// See BearerChallenge.WriteInvalidTokenReason.
+	Reason string `json:"reason,omitempty"`
 }
 
 // writeOAuthError writes an RFC 6750 compliant JSON error response.
 func writeOAuthError(w http.ResponseWriter, errorCode, description string) {
+	writeOAuthErrorReason(w, errorCode, description, "")
+}
+
+// writeOAuthErrorReason is writeOAuthError with a reason member, omitted when
+// reason is empty.
+func writeOAuthErrorReason(w http.ResponseWriter, errorCode, description, reason string) {
 	body, err := json.Marshal(RFC6750Error{
 		Error:            errorCode,
 		ErrorDescription: description,
+		Reason:           reason,
 	})
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -1639,6 +1806,15 @@ func isInteractiveToken(identity *Identity, claims jwt.MapClaims, hasTSID, marke
 	return hasTSID && !markerPresent && !sessionlessProof(identity, claims)
 }
 
+// loadsUpstreamTokens reports whether Middleware loads upstream tokens for an
+// identity whose token expired at expiredAt (zero for a valid token): only with
+// an upstream token reader, and never for an identity admitted after its token
+// expired, which may only send messages that belong to a call already running
+// and so needs no new upstream credential.
+func (v *TokenValidator) loadsUpstreamTokens(expiredAt time.Time) bool {
+	return v.upstreamTokenReader != nil && expiredAt.IsZero()
+}
+
 // Middleware creates an HTTP middleware that validates JWT tokens and creates Identity.
 func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1650,8 +1826,9 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Validate the token
-		claims, provenance, err := v.validateToken(r.Context(), tokenString)
+		// Validate the token. expiredAt is the exp of a token admitted after
+		// it expired, and zero otherwise.
+		claims, provenance, expiredAt, err := v.validateOrAdmit(r, tokenString)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, err.Error()))
 			writeOAuthError(w, OAuthErrInvalidToken, fmt.Sprintf("Invalid token: %v", err))
@@ -1668,6 +1845,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		}
 
 		identity.AdmissionRoute = v.classifyRoute(identity, claims, provenance)
+		identity.AdmittedAfterExpiry = expiredAt
 
 		// A marked token must not fall back to ordinary admission when the
 		// validator is bound to the embedded issuer.
@@ -1691,7 +1869,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		// UpstreamTokens mutation completes here, before the publicly-reachable
 		// context is built below — so the Identity placed in the served context is
 		// never mutated afterwards (see the UpstreamTokens doc comment in identity.go).
-		if v.upstreamTokenReader != nil {
+		if v.loadsUpstreamTokens(expiredAt) {
 			loadCtx := WithIdentity(r.Context(), identity)
 			creds, failed, loadErr := v.loadUpstreamTokens(loadCtx, claims, identity.AdmissionRoute)
 			if loadErr != nil {

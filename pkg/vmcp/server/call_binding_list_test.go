@@ -27,10 +27,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
+	"github.com/stacklok/toolhive/pkg/script"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
+	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
-	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
 func listEntry(server, method string) map[string]any {
@@ -196,12 +197,22 @@ func TestCallBinding_ListCallMismatches(t *testing.T) {
 // method is answered with an empty list.
 func TestCallBinding_ListCallServerChecks(t *testing.T) {
 	t.Parallel()
+	for path, wrap := range listCallPaths {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			testListCallServerChecks(t, wrap)
+		})
+	}
+}
+
+func testListCallServerChecks(t *testing.T, wrap func(core.VMCP) core.VMCP) {
+	t.Helper()
 	s := newCallBindingTestServer(t, cbServerOptions{wrap: func(fc *fakeCore) core.VMCP {
 		fc.emptyBackends = []string{"empty"}
 		fc.unavailableBackends = []string{"down"}
 		fc.resourceTemplates = append(fc.resourceTemplates,
 			vmcp.ResourceTemplate{URITemplate: "file:///tmpl/{path}", Name: "only", BackendID: "tmpl"})
-		return fc
+		return wrap(fc)
 	}})
 
 	var refusals []cbResponse
@@ -226,6 +237,109 @@ func TestCallBinding_ListCallServerChecks(t *testing.T) {
 	resp = s.send(t, http.MethodPost, prompts, s.session(t, prompts), listBody(4, "prompts/list"), nil)
 	require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
 	assert.Empty(t, listedKeys(t, "prompts/list", resp.body))
+}
+
+// listCallPaths are the two ways a list call is answered: from the core's
+// lookup (core.BackendCapabilitiesLookup), and, for a core that does not
+// implement it, from its lists. "lists" hides the lookup behind a decorator
+// that only embeds core.VMCP, which does not promote it.
+var listCallPaths = map[string]func(core.VMCP) core.VMCP{
+	"lookup": func(v core.VMCP) core.VMCP { return v },
+	"lists":  func(v core.VMCP) core.VMCP { return struct{ core.VMCP }{v} },
+}
+
+// narrowedPromptsCore is a decorator that embeds core.VMCP and lists no
+// prompts, as a decorator that narrows a list does. It does not implement
+// core.BackendCapabilitiesLookup.
+type narrowedPromptsCore struct{ core.VMCP }
+
+func (narrowedPromptsCore) ListPrompts(context.Context, *auth.Identity) ([]vmcp.Prompt, error) {
+	return []vmcp.Prompt{}, nil
+}
+
+// TestCallBinding_ListCallDecoratorLists checks that a list call on a
+// decorator that embeds core.VMCP, and so does not offer the inner core's
+// lookup, is answered from the decorator's own lists: the prompt it drops is
+// not listed, though the inner core's lookup would list it, and its other
+// lists are answered as usual.
+func TestCallBinding_ListCallDecoratorLists(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{wrap: func(fc *fakeCore) core.VMCP {
+		return narrowedPromptsCore{fc}
+	}})
+	prompts := s.tokens.add("prompts", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "prompts/list")}))
+	body, headers := cbModernList(2, "prompts/list")
+	resp := s.send(t, http.MethodPost, prompts, "", body, headers)
+	require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
+	assert.Empty(t, listedKeys(t, "prompts/list", resp.body), "the decorator's list, not the inner core's lookup")
+
+	tools := s.tokens.add("tools", claimsFor(cbClient, "jti-2", []any{listEntry(cbServer, "tools/list")}))
+	body, headers = cbModernList(3, "tools/list")
+	resp = s.send(t, http.MethodPost, tools, "", body, headers)
+	require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
+	assert.Equal(t, []string{cbTool}, listedKeys(t, "tools/list", resp.body))
+}
+
+// TestCallBinding_ListCallCodeModeReservedName checks that with code mode on,
+// a backend that advertises a tool named execute_tool_script gets 503 for a
+// tools/list list call, as code mode refuses its tools/list, while a
+// prompts/list list call on the same backend is answered with its prompts.
+func TestCallBinding_ListCallCodeModeReservedName(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{wrap: func(fc *fakeCore) core.VMCP {
+		fc.tools = append(fc.tools, vmcp.Tool{Name: script.ExecuteToolScriptName, BackendID: cbServer})
+		return codemode.NewDecorator(fc, nil)
+	}})
+	tools := s.tokens.add("tools", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}))
+	body, headers := cbModernList(2, "tools/list")
+	resp := s.send(t, http.MethodPost, tools, "", body, headers)
+	require.Equal(t, http.StatusServiceUnavailable, resp.status, "body: %s", resp.body)
+	assert.NotContains(t, resp.body, script.ExecuteToolScriptName)
+
+	prompts := s.tokens.add("prompts", claimsFor(cbClient, "jti-2", []any{listEntry(cbServer, "prompts/list")}))
+	body, headers = cbModernList(3, "prompts/list")
+	resp = s.send(t, http.MethodPost, prompts, "", body, headers)
+	require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
+	assert.Equal(t, []string{cbPrompt}, listedKeys(t, "prompts/list", resp.body))
+}
+
+// TestCallBinding_ListCallUnavailableList checks that a list call whose
+// method's list failed transiently on its server gets 503 on Legacy and
+// Modern without using the token up, and lists once the list is available:
+// the empty list the failure was reported as is not the server's answer.
+func TestCallBinding_ListCallUnavailableList(t *testing.T) {
+	t.Parallel()
+	var fc *fakeCore
+	s := newCallBindingTestServer(t, cbServerOptions{wrap: func(c *fakeCore) core.VMCP {
+		c.setUnavailableLists(cbServer, "prompts/list")
+		fc = c
+		return c
+	}})
+	token := s.tokens.add("list", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "prompts/list")}))
+	modernBody, modernHeaders := cbModernList(2, "prompts/list")
+	for _, send := range []func() cbResponse{
+		func() cbResponse {
+			return s.send(t, http.MethodPost, token, s.session(t, token), listBody(2, "prompts/list"), nil)
+		},
+		func() cbResponse { return s.send(t, http.MethodPost, token, "", modernBody, modernHeaders) },
+	} {
+		resp := send()
+		require.Equal(t, http.StatusServiceUnavailable, resp.status, "the token stays unused: %s", resp.body)
+		assert.NotContains(t, resp.body, cbPrompt)
+	}
+
+	other := s.tokens.add("other", claimsFor(cbClient, "jti-2", []any{listEntry(cbServer, "tools/list")}))
+	otherBody, otherHeaders := cbModernList(3, "tools/list")
+	before := fc.listToolsCalls.Load()
+	resp := s.send(t, http.MethodPost, other, "", otherBody, otherHeaders)
+	require.Equal(t, http.StatusOK, resp.status, "the server's other lists are answered: %s", resp.body)
+	assert.Equal(t, int32(1), fc.listToolsCalls.Load()-before,
+		"the answer comes from the server's own lookup: only the usual handler lists every tool")
+
+	fc.setUnavailableLists(cbServer)
+	resp = s.send(t, http.MethodPost, token, "", modernBody, modernHeaders)
+	require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
+	assert.Equal(t, []string{cbPrompt}, listedKeys(t, "prompts/list", resp.body))
 }
 
 // pagedTools is more than one page of tools, all from another server, with
@@ -445,21 +559,23 @@ func TestCallBinding_ListCallRefusalIsAudited(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond)
 }
 
-// listErrCore fails ListTools until cleared.
+// listErrCore fails the list call's core lookup until cleared.
 type listErrCore struct {
 	*fakeCore
 	mu  sync.Mutex
 	err error
 }
 
-func (l *listErrCore) ListTools(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, error) {
+func (l *listErrCore) LookupBackendCapabilities(
+	ctx context.Context, identity *auth.Identity, id string,
+) (*core.AdmittedBackendCapabilities, error) {
 	l.mu.Lock()
 	err := l.err
 	l.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	return l.fakeCore.ListTools(ctx, identity)
+	return l.fakeCore.LookupBackendCapabilities(ctx, identity, id)
 }
 
 // TestCallBinding_ListCallLookupFailure checks that a list call whose
@@ -516,12 +632,10 @@ var standInItems = []json.RawMessage{json.RawMessage(`{"name":"` + cbTool + `"}`
 // standInBinding is a callBinding whose list lookup answers standInItems.
 func standInBinding(t *testing.T) *callBinding {
 	t.Helper()
-	cb, err := newCallBinding(callbinding.Config{}, nil,
+	return newCallBinding(nil, nil,
 		func(context.Context, *auth.Identity, string, string) ([]json.RawMessage, error) {
 			return standInItems, nil
 		})
-	require.NoError(t, err)
-	return cb
 }
 
 // standInToken is a list-call token for tools/list with its own jti.
@@ -542,7 +656,7 @@ func standInList(ctx context.Context) (*http.Request, *mcpparser.ParsedMCPReques
 // recorded reports whether the token's call is in cb's record.
 func recorded(t *testing.T, cb *callBinding, token *callbinding.Token) bool {
 	t.Helper()
-	_, found, err := cb.record.Lookup(context.Background(), token.Key)
+	_, found, err := cb.binding.Record().Lookup(context.Background(), token.Key)
 	require.NoError(t, err)
 	return found
 }
@@ -816,12 +930,23 @@ func TestCallBinding_ListCallResponseHandling(t *testing.T) {
 // the lists and is answered with its items.
 func TestCallBinding_ListCallServerHealth(t *testing.T) {
 	t.Parallel()
+	for path, wrap := range listCallPaths {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			testListCallServerHealth(t, wrap)
+		})
+	}
+}
+
+func testListCallServerHealth(t *testing.T, wrap func(core.VMCP) core.VMCP) {
+	t.Helper()
+	opts := cbServerOptions{wrap: func(fc *fakeCore) core.VMCP { return wrap(fc) }}
 	for _, status := range []vmcp.BackendHealthStatus{
 		vmcp.BackendUnhealthy, vmcp.BackendUnknown, vmcp.BackendUnauthenticated,
 	} {
 		t.Run(string(status), func(t *testing.T) {
 			t.Parallel()
-			s := newCallBindingTestServer(t, cbServerOptions{})
+			s := newCallBindingTestServer(t, opts)
 			s.fc.setBackendStatus(cbServer, status)
 			token := s.tokens.add("list", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}))
 			body, headers := cbModernList(2, "tools/list")
@@ -840,7 +965,7 @@ func TestCallBinding_ListCallServerHealth(t *testing.T) {
 
 	t.Run(string(vmcp.BackendDegraded), func(t *testing.T) {
 		t.Parallel()
-		s := newCallBindingTestServer(t, cbServerOptions{})
+		s := newCallBindingTestServer(t, opts)
 		s.fc.setBackendStatus(cbServer, vmcp.BackendDegraded)
 		token := s.tokens.add("list", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}))
 		resp := s.send(t, http.MethodPost, token, s.session(t, token), listBody(2, "tools/list"), nil)
@@ -849,50 +974,10 @@ func TestCallBinding_ListCallServerHealth(t *testing.T) {
 	})
 }
 
-// monitoredCore is a fakeCore whose health monitor reports statuses.
-type monitoredCore struct {
-	*fakeCore
-	statuses map[string]vmcp.BackendHealthStatus
-}
-
-func (m *monitoredCore) BackendHealth() health.Reporter {
-	return statusReporter{statuses: m.statuses}
-}
-
-// statusReporter is a health monitor that answers QueryBackendStatus only;
-// callBindingListServer calls nothing else.
-type statusReporter struct {
-	health.Reporter
-	statuses map[string]vmcp.BackendHealthStatus
-}
-
-func (r statusReporter) QueryBackendStatus(id string) (vmcp.BackendHealthStatus, bool) {
-	status, ok := r.statuses[id]
-	return status, ok
-}
-
-// TestCallBinding_ListServerPrefersMonitor checks that the health monitor's
-// status for a backend decides over the registry's, as it does for the
-// core's lists.
-func TestCallBinding_ListServerPrefersMonitor(t *testing.T) {
-	t.Parallel()
-	fc := &fakeCore{tools: []vmcp.Tool{{Name: cbTool, BackendID: cbServer}, {Name: cbOtherTool, BackendID: "other"}}}
-	fc.setBackendStatus(cbServer, vmcp.BackendHealthy)
-	fc.setBackendStatus("other", vmcp.BackendUnhealthy)
-	s := &Server{core: &monitoredCore{fakeCore: fc, statuses: map[string]vmcp.BackendHealthStatus{
-		cbServer: vmcp.BackendUnhealthy, "other": vmcp.BackendHealthy,
-	}}}
-	require.Error(t, s.callBindingListServer(context.Background(), nil, cbServer),
-		"the monitor says unhealthy, whatever the registry says")
-	require.NoError(t, s.callBindingListServer(context.Background(), nil, "other"),
-		"the monitor says healthy, whatever the registry says")
-	require.ErrorIs(t, s.callBindingListServer(context.Background(), nil, "missing"), errListServerNotFound)
-}
-
 // cancelledListCore holds the Modern dispatch's core.ListTools until the
 // client has gone, then answers it in full, as a backend slower than the
-// client's timeout does. The list lookup before the call is recorded is the
-// first ListTools call of a list call; dispatch makes the second.
+// client's timeout does. The list lookup before the call is recorded does not
+// call ListTools (core.BackendCapabilitiesLookup), so dispatch makes the first.
 type cancelledListCore struct {
 	*fakeCore
 	hold    atomic.Bool
@@ -901,7 +986,7 @@ type cancelledListCore struct {
 }
 
 func (c *cancelledListCore) ListTools(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, error) {
-	if c.hold.Load() && c.calls.Add(1) == 2 {
+	if c.hold.Load() && c.calls.Add(1) == 1 {
 		close(c.waiting)
 		<-ctx.Done()
 	}

@@ -107,6 +107,8 @@ type testServerOptions struct {
 	// same exception the upstreamFilter comment below notes.
 	accessTokenType     string
 	oidcSubjectClaim    string
+	cimdEnabled         bool
+	spiffeTrust         *SPIFFETrustConfig
 	accessTokenLifespan time.Duration
 	// storageFactory, when non-nil, supplies the storage backend instead of
 	// the default in-memory implementation. The factory may also return a
@@ -211,6 +213,23 @@ func withAccessTokenType(typ string) testServerOption {
 func withOIDCSubjectClaim(claim string) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.oidcSubjectClaim = claim
+	}
+}
+
+// withCIMDEnabled turns on Config.CIMDEnabled so the CIMD storage decorator,
+// not the shape guard, sits in the storage stack.
+func withCIMDEnabled() testServerOption {
+	return func(opts *testServerOptions) {
+		opts.cimdEnabled = true
+	}
+}
+
+// withSPIFFETrust sets Config.SPIFFETrust so the SPIFFE storage overlay sits in
+// the storage stack. The overlay is installed only when the trust model has
+// associations.
+func withSPIFFETrust(trust *SPIFFETrustConfig) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.spiffeTrust = trust
 	}
 }
 
@@ -3212,6 +3231,8 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ..
 		DeviceFlowEnabled:          options.deviceFlowEnabled,
 		DeviceCodeInterval:         options.deviceCodeInterval,
 		UserKeyedUpstreamStorage:   options.userKeyedUpstreamStorage,
+		CIMDEnabled:                options.cimdEnabled,
+		SPIFFETrust:                options.spiffeTrust,
 	}
 
 	// 6. Create server using newServer WITHOUT overriding the upstream factory.

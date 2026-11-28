@@ -1,0 +1,23 @@
+suite: leader election Role
+# controller-runtime's leader-election lock records events through the core API
+# group. In namespace scope the operator namespace is not necessarily in
+# allowedNamespaces, so the leader-election Role has to grant that itself.
+set:
+  operator.rbac.scope: namespace
+  operator.rbac.allowedNamespaces: [mcp-workloads]
+  # storageVersionMigrator requires cluster scope.
+  operator.features.storageVersionMigrator: false
+templates:
+  - leader-election-role.yaml
+tests:
+  - it: allows writing core API group events in the release namespace
+    documentSelector:
+      path: kind
+      value: Role
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: [events]
+            verbs: [create, patch]

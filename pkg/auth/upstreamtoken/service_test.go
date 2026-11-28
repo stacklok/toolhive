@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -536,6 +537,76 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantResult, result)
 			assert.ElementsMatch(t, tt.wantFailed, slices.Collect(maps.Keys(failed)))
+		})
+	}
+}
+
+// TestInProcessService_SessionReadsWaitForRefreshAfterCancellation verifies
+// that both single and bulk session reads wait for an in-flight refresh and
+// return the refreshed credential even after the caller cancels.
+func TestInProcessService_SessionReadsWaitForRefreshAfterCancellation(t *testing.T) {
+	t.Parallel()
+
+	const sessionID = "session-1"
+	reads := map[string]func(context.Context, *InProcessService) (*UpstreamCredential, error){
+		"single": func(ctx context.Context, svc *InProcessService) (*UpstreamCredential, error) {
+			return svc.GetValidTokens(ctx, sessionID, readerProvider)
+		},
+		"bulk": func(ctx context.Context, svc *InProcessService) (*UpstreamCredential, error) {
+			creds, failed, err := svc.GetAllUpstreamCredentials(ctx, sessionID)
+			if err != nil {
+				return nil, err
+			}
+			cred := creds[readerProvider]
+			return &cred, failed[readerProvider]
+		},
+	}
+	for name, read := range reads {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				t.Cleanup(cancel)
+				stor := storage.NewMemoryStorage()
+				t.Cleanup(func() { _ = stor.Close() })
+				expired := readerRow(readerUser, time.Now().Add(-time.Hour))
+				require.NoError(t, stor.StoreUpstreamTokens(ctx, sessionID, readerProvider, expired))
+
+				started := make(chan struct{})
+				release := make(chan struct{})
+				refreshed := readerRow(readerUser, time.Now().Add(time.Hour))
+				refreshed.AccessToken = "new-access"
+				refresher := storagemocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
+				refresher.EXPECT().RefreshAndStore(ctx, sessionID, expired).
+					DoAndReturn(func(context.Context, string, *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+						close(started)
+						<-release
+						return refreshed, nil
+					})
+				svc := NewInProcessService(stor, refresher)
+				done := make(chan struct{})
+				var cred *UpstreamCredential
+				var err error
+				go func() {
+					defer close(done)
+					cred, err = read(ctx, svc)
+				}()
+
+				<-started
+				cancel()
+				synctest.Wait()
+				select {
+				case <-done:
+					t.Error("session read returned before refresh finished")
+				default:
+				}
+
+				close(release)
+				<-done
+				require.NoError(t, err)
+				require.NotNil(t, cred)
+				assert.Equal(t, refreshed.AccessToken, cred.AccessToken)
+			})
 		})
 	}
 }

@@ -7,6 +7,7 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 
@@ -146,6 +147,14 @@ type Identity struct {
 	// never with != AdmissionRouteUnspecified.
 	AdmissionRoute AdmissionRoute
 
+	// AdmittedAfterExpiry is the exp of a token that TokenValidator accepted
+	// after it expired, through WithExpiredTokenAdmission; it is zero for every
+	// other identity. Such an identity has no upstream tokens, and consumers
+	// must not let it start anything new. It is internal provenance and is
+	// intentionally not included in PrincipalInfo, SafeIdentity, or
+	// MarshalJSON.
+	AdmittedAfterExpiry time.Time
+
 	// UpstreamTokens maps upstream provider names to their access tokens.
 	// This is populated by the auth middleware when an embedded auth server
 	// is active and the JWT contains a token session ID (tsid claim).
@@ -153,11 +162,13 @@ type Identity struct {
 	//
 	// State semantics:
 	//   - nil            — no upstream credentials were loaded for this identity.
-	//                      Either the incoming JWT carried no tsid claim, or the
-	//                      Identity came from a constructor that has no upstream
-	//                      session at all: local.go, anonymous.go, or middleware
-	//                      validating a JWT from an IdP other than the embedded
-	//                      auth server (see the PlatformUserID note above).
+	//                      Either the incoming JWT carried no tsid claim, the
+	//                      token was accepted after it expired (see
+	//                      AdmittedAfterExpiry), or the Identity came from a
+	//                      constructor that has no upstream session at all:
+	//                      local.go, anonymous.go, or middleware validating a JWT
+	//                      from an IdP other than the embedded auth server (see
+	//                      the PlatformUserID note above).
 	//   - empty map      — never produced by TokenValidator, which answers 401
 	//                      when a tsid session holds no usable access token;
 	//                      a consumer that meets one denies it like a session
@@ -184,8 +195,9 @@ type Identity struct {
 	// OIDC login.
 	//
 	// State semantics:
-	//   - nil            — no tsid claim was present on the incoming JWT
-	//                      (middleware did not attempt to load credentials).
+	//   - nil            — no tsid claim was present on the incoming JWT, or the
+	//                      token was accepted after it expired (middleware did
+	//                      not attempt to load credentials).
 	//   - empty map      — tsid claim was valid but no providers had an
 	//                      ID token stored for the session.
 	//   - populated map  — keys are upstream provider names; values are the

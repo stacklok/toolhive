@@ -172,7 +172,7 @@ The auth server keeps one user per identity link. Two different values describe 
 - The **link key** finds the local user. It is the upstream's `name` (the provider ID) plus the value of its `subject_claim` (`sub` when the setting is not set).
 - The **`sub_id`** records the raw `iss` and `sub` of the upstream login. It is not used to find users.
 
-Two users carry the same `sub_id` when the link key changes while the raw `iss` and `sub` stay the same. Two different `sub_id` values can also end up on one user, when the link key stays the same and the raw `iss` or `sub` changes (see the list below).
+Two users carry the same `sub_id` when the link key changes while the raw `iss` and `sub` stay the same. Two different `sub_id` values can also end up on one user. That happens in only two cases: for a row that carries no issuer and subject claim yet (see "Pre-upgrade unstamped rows" below), and when the raw `sub` changes under a `subject_claim` other than `sub`, because the link key (the other claim's value) stays the same. A changed issuer or subject claim on a row that already carries them is not this case: it is a binding mismatch and gives a new user.
 
 Only the first configured upstream creates users. Every login chain starts there, and later upstreams in a chain carry the user already resolved by the first one. A later upstream never creates a user or a link. If a login reaches user resolution through a later upstream without a carried user (for example a `SingleLeg` authorization that sets no `ResolvedUserID`), the auth server looks the identity link up. It resolves to the linked user when a link exists. When none does, the browser callback refuses with `access_denied` and the device flow shows a 403 page. The subject resolver for ID-JAG redemption is built from the first upstream only.
 
@@ -180,7 +180,7 @@ Today only the browser callback and the device flow create users, both through `
 
 A login that is in flight when the upstreams are reordered is refused if it would create a user through an upstream that is no longer first, and succeeds if that upstream's identity is already linked. A login in flight when its upstream is renamed fails earlier, with `server_error`, because the old name is no longer configured. In both cases the person starts the login again.
 
-When two first logins for the same identity run at the same time, the identity link is written only if no link exists yet, on both the memory and Redis backends. The login that loses reads the link the winner wrote, rolls back the user it created, and returns the winner's user, so both logins get the same user. If reading the winner's user fails, the losing login fails with `server_error` and the person signs in again. Every failed link write is settled by reading the link before anything is deleted, because the error may not say whether the write committed (for example a lost reply from Redis). The resolver keeps its own user if the link points at it, and adopts the owner's user if the link points elsewhere. If there is no link, or the link cannot be read, it deletes nothing and returns the error: a write that timed out can still commit after the read. A user row left without a link is harmless, because nothing resolves to it.
+When two first logins for the same identity run at the same time, the identity link is written only if no link exists yet, on both the memory and Redis backends. The login that loses reads the link the winner wrote, rolls back the user it created, and returns the winner's user, so both logins get the same user. If reading the winner's user fails, the losing login fails with `server_error` and the person signs in again. Every failed link write is settled by reading the link before anything is deleted, because the error may not say whether the write committed (for example a lost reply from Redis). The resolver keeps its own user if the link points at it. It adopts the owner's user if the link points elsewhere and that row's binding matches or the row is unstamped; a row bound to another issuer or subject claim is never adopted. If the link is gone, or still bound to another issuer or subject claim, it deletes its own user only when the error proves its write did not land (the link already existed, or the row changed before a replacement), and returns the error. If the link cannot be read, it deletes nothing and returns the error: a write that timed out can still commit after the read. A user row left without a link is harmless, because nothing resolves to it.
 
 Which key a change affects decides what happens:
 
@@ -189,7 +189,31 @@ Which key a change affects decides what happens:
   - `subject_claim` itself is changed to a claim with a different value for that person (this also gives a new ToolHive `sub`);
   - the first upstream is renamed, because the link key uses the upstream name and existing links no longer match;
   - the upstreams are reordered so that another upstream is first. Existing links are kept, but the new first upstream has no links of its own, so it creates new users.
-- **Link key stays the same, raw `iss` or `sub` changes.** The login finds the existing user, so one user carries two different `sub_id` values. This happens when an upstream keeps its name but points at another issuer. Subject values from different IdPs can then collide, and two different people can share one user. Binding each link to the issuer and subject claim that created it is tracked as "Bind provider-identity rows to the issuer and subject claim that created them" (#7256).
+- **Link key stays the same, `iss` or `subject_claim` changes.** Each `ProviderIdentity` row records the `Issuer` and `SubjectClaim` that created it alongside `UserID`, `ProviderID`, and `ProviderSubject`.
+  - For OIDC upstreams, `Issuer` is the exact configured issuer URL and `SubjectClaim` is `subject_claim` (`sub` when unset).
+  - For plain OAuth 2.0 upstreams, `Issuer` is `oauth2:<mode>:sha256:<hex>`, where `<mode>` is `token` (`identity_from_token`), `userinfo` or `synthetic`, and `<hex>` is the SHA-256 of the lower-cased hostname of the endpoint, followed by the port only when it is not the scheme's default (443 for `https`, 80 for `http`). The endpoint is the one that defines the subject: the token endpoint for `token` and `synthetic`, the userinfo endpoint for `userinfo`. `SubjectClaim` is the extraction rule (`token:<subject_path>`, `userinfo:<json-subject-fields>`, or `synthetic`). Only the host and a non-default port are used. A change to an endpoint's path, query string, trailing slash or host case, writing out the scheme's default port, a change of scheme on an endpoint with no explicit port, or a move to another endpoint on the same host does not give users new accounts. A different host or a non-default port does. No endpoint address is written to storage or logs. The `oauth2:` prefix keeps plain OAuth 2.0 rows disjoint from OIDC `http://`/`https://` issuers. Synthesis mode bypasses `UserResolver` and writes no rows. These edits to a plain OAuth 2.0 upstream give users new accounts:
+    - the host of the identity endpoint, or its port when the port is not the scheme's default;
+    - the mode (for example adding `identity_from_token` to an upstream that used `userinfo`);
+    - `subject_path`;
+    - the `subject_fields` list or its order, including adding a fallback field (the first non-empty field wins, so order matters).
+  - A lookup matches only when the row's stored `Issuer` and `SubjectClaim` equal the upstream's current values (exact string comparison). Half-stamped rows fail closed.
+  - **Mismatch at sign-in:** Treated as not found. For the first upstream, sign-in creates a new local user and atomically replaces the row via the optional `ProviderIdentitySwapper.CompareAndSwapProviderIdentity` capability (keeping the `(provider, subject)` key shape, detaching the old user's reverse index, and leaving the old user untouched). Concurrent sign-ins under the new configuration still settle on one new user, and the resolver never adopts a row carrying a different issuer or subject claim. Storage without the capability refuses instead, because adopting the old row's user would hand the old account to a different person. Both refusals use the same error (`ErrIdentityBindingMismatch`): the browser callback answers `access_denied` with a hint that the account's identity link was created under a different issuer or subject claim, and the device flow shows a 403 page. The server logs one `WARN` naming the provider, without the subject or user ID.
+  - **Mismatch on a later upstream:** Chained later legs carry the first leg's user and never check their own rows. Only a `SingleLeg` authorization through a later upstream checks the binding. A mismatch there is refused with `access_denied` until the row is removed, and the row is not modified. The device flow always uses the first upstream, so it never reaches this case.
+  - **Mismatch on a remembered approval:** The callback reads the identity once, through a lookup that never creates or replaces a user or a link. It accepts the row only when its binding matches (or it is unstamped), it belongs to the user the approval was granted to, and that user exists. Otherwise it deletes the server-side remembered consent session and returns `access_denied`; the next attempt shows the consent screen. An unstamped row with the right owner is accepted and stamped. A storage read failure returns `server_error` and deletes nothing.
+  - **Mismatch at ID-JAG subject resolution:** Refused with `subject_unknown` without writing to storage. The resolver compares the row with the issuer and subject claim of the token being resolved, which for the sign-in upstream are the values sign-in stamps.
+  - **Pre-upgrade unstamped rows (both `Issuer` and `SubjectClaim` empty):** Treated as created under the current configuration on first match. Rows are stamped only at an interactive sign-in: the resolver loads the existing user, atomically stamps `Issuer` and `SubjectClaim` in place (preserving `LinkedAt` and `LastUsedAt`), and emits a single `WARN` per resolver (there is one resolver per server instance) without subject or user identifiers. If the stamp loses a race with a concurrent write, the row is read again and the decision is made once more; a second loss is an error, never the user loaded before the stamp. A transient storage error while stamping is logged at `WARN` and the sign-in continues unstamped. A storage wrapper that sits over real provider-identity rows should forward `ProviderIdentitySwapper`. A plain `struct{ storage.Storage }` embed does not, and `ProviderIdentitySwapperFor` follows `Unwrap()` only through types that carry the package's decorator marker, so an outside wrapper must implement the method itself. Storage that serves identity rows itself (for example one that builds each row from a directory service and refuses writes) should leave it unimplemented, and must not fill in `Issuer` or `SubjectClaim` on the rows it returns unless it computes them exactly as the auth server does, because a differing value is refused as a binding mismatch. External storage decorators that do not implement `ProviderIdentitySwapper` are never unwrapped past by `ProviderIdentitySwapperFor`; they match unstamped rows without writing and refuse stamped mismatches. The first unstamped match per resolver on such storage is logged once at `INFO`, naming only the provider ID; later ones are logged at `DEBUG`. ID-JAG subject resolution accepts unstamped rows read-only and logs once per resolver at `WARN` that the row was accepted read-only and that sign-in stamps it when the storage supports compare-and-swap.
+
+### Migrating identity providers or subject claims
+
+A row written before the upgrade stays unstamped until its user signs in interactively. Stamping never finishes by itself, and the auth server has no way to show how many rows are still unstamped. If an upstream's issuer or subject claim changes while such rows remain, the first person at the new configuration who presents the same subject value takes over that account, through both sign-in and, once enabled, ID-JAG resolution. To avoid this, do the upgrade and any repoint in separate rollouts, with enough time between them for users to sign in. If old accounts must not carry over at all, use a fresh store. The statements below about new local accounts and `subject_unknown` apply only to rows that were stamped under the old configuration.
+
+1. **Upgrade first, migrate second.** Roll out a binary that stamps `Issuer` and `SubjectClaim` in one rollout, and change an upstream's `issuer` or `subject_claim` in a later one. An unstamped row matches whichever configuration sees it first.
+2. **Expect new local accounts for stamped rows.** Each such user's next sign-in creates a new ToolHive `User.ID` and atomically replaces the `(provider, subject)` link; the old user record stays untouched in storage. Downstream provider connections tied to the old user do not carry over, so users must reconnect them.
+3. **Existing tokens and refresh.** Existing access and refresh tokens keep the old account. Refresh grants keep working until the upstream rejects the refresh, which may never happen after a claim-only change, and a stored upstream refresh token can also be sent to the new identity provider. Revoke existing sessions before repointing an upstream. See the issue "Refresh tokens are sent to a repointed upstream's new IdP" (#7333).
+4. **Remembered consent and ID-JAG.** A browser with a remembered consent session receives one `access_denied` that deletes the server-side session, so the next attempt shows the consent screen. Once delegated access is turned on (`subject_mode: resolve` is refused earlier, before the resolver runs, until then), ID-JAG redemptions return `subject_unknown` for the new issuer or claim until each user completes an interactive sign-in under the new configuration.
+5. **In-flight flows.** A device confirmation or browser authorization that starts before a cutover and finishes after it completes for the user it resolved when it started.
+6. **Stop all replicas before repointing.** During a repoint, replicas on the old configuration and replicas on the new one that share one Redis store replace each other's rows and mint extra users. This orphans users and drops their upstream connections; it does not let one person take over another's account. Stop all replicas before changing the upstream configuration, then start them with the new one. For a manual deployment, scale to zero, change the configuration, and scale back up. For an operator-managed deployment, the operator does not set a Deployment strategy and exposes no setting for one, so a config change rolls out with the Kubernetes default rolling update. Set `spec.replicas` to `0` on the `MCPServer` (proxy runner), `VirtualMCPServer` or `MCPRemoteProxy` that serves the auth server (pause any HPA that manages the replicas first), wait for the pods to terminate, change the upstream configuration, then set `spec.replicas` back.
+7. **Renaming is not isolation.** At every startup the legacy-data migration copies rows stored under the old protocol-name keys (`oidc`, `oauth2`) to each upstream's current name, unstamped. A new upstream name can therefore still inherit old accounts. The way to isolate is a fresh Redis store. A new `keyPrefix` works only with a hand-written RunConfig; operator-managed workloads cannot set it.
 
 ### Upstream IdP notes
 
@@ -1062,9 +1086,11 @@ delete or the clear succeeds, its error wraps `storage.ErrNotFound`, so the
 per-user reader and the guard treat the connection as needing authorization; a
 lost swap or a storage error returns a plain error. The cleared row also gets an
 expired access token, so the connection needs authorization at once, whether the
-refresh was for an expired access token or only for an expired ID token. Without
-that, a row whose upstream gave no `expires_in` has no expiry and no storage
-lifetime, and would be served for ever.
+refresh was for an expired access token or only for an expired ID token, unless
+the caller's context ends during an ID-token-only refresh (the reader section
+below describes that case). Without that, a row whose upstream gave no
+`expires_in` has no expiry and no storage lifetime, and would be served for
+ever.
 
 ### Rollout and rollback
 
@@ -1144,6 +1170,31 @@ memory backend needs nothing, because it is cleared on restart.
   `invalid_grant`) gets `ErrNeedsAuthorization`, with the cause still
   reachable through `errors.Is`. A foreign row gets `ErrInvalidBinding`. A
   storage failure or a temporary refresh failure is returned as it came.
+  If the caller's context ends while an expired access token is being refreshed,
+  the read returns promptly with an error matching both `ErrRefreshFailed` and
+  the context error. If only the ID token needs refreshing and the context ends
+  during that refresh, the read returns the stored credential with no error.
+  If the stored access token has expired by then, the read returns an error
+  matching both `ErrRefreshFailed` and the context error instead. Whether or
+  not the caller left, an ID-token-only refresh that fails after the stored
+  access token expired returns the refresh error rather than the stored
+  credential. If the caller left and that refresh then fails, the failure is
+  logged once at WARN and the ID-token refresh backs off while the access token
+  is still live. A failure that
+  reports the row missing or owned by another user is not logged or backed
+  off; the next read reports it. If the refresher instead clears or removes
+  the row, that read still returns the stored credential and the next read
+  reports needs-authorization. In all these cases the in-flight refresh can
+  still finish and persist the updated row; the background work that resolves
+  the row and records the result uses its own bounded context, not the
+  caller's, and shares the one-minute limit with the refresh. Session reads
+  (`GetValidTokens` and `GetAllUpstreamCredentials`) still wait for the
+  refresher to return.
+  Reader error text can include detail the provider supplied, such as the
+  OAuth `error_description`. Callers must never return it to a client.
+  Wrapped causes stay reachable with `errors.Is` and `errors.As`. The one change in the provider's error
+  text is that the unexpected `token_type` message no longer includes the
+  provider's value.
 
 The refresh grant guard and the sign-in carry-forward also change under this
 option; see

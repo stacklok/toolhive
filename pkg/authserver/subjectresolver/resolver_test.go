@@ -4,14 +4,21 @@
 package subjectresolver_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	"github.com/stacklok/toolhive/pkg/authserver/subject"
@@ -39,7 +46,17 @@ func TestResolve(t *testing.T) {
 		wantCause error
 	}{
 		{
-			name: "found",
+			name: "found with matching binding",
+			ref:  subject.Ref{Issuer: idpIssuer, Claim: "sub", Value: "abc"},
+			lookup: func(m *mocks.MockUserStorage) {
+				m.EXPECT().GetProviderIdentity(gomock.Any(), "okta", "abc").
+					Return(&storage.ProviderIdentity{UserID: "user-1", Issuer: idpIssuer, SubjectClaim: "sub"}, nil)
+				m.EXPECT().GetUser(gomock.Any(), "user-1").Return(&storage.User{ID: "user-1"}, nil)
+			},
+			want: "user-1",
+		},
+		{
+			name: "found unstamped legacy row",
 			ref:  subject.Ref{Issuer: idpIssuer, Claim: "sub", Value: "abc"},
 			lookup: func(m *mocks.MockUserStorage) {
 				m.EXPECT().GetProviderIdentity(gomock.Any(), "okta", "abc").
@@ -47,6 +64,46 @@ func TestResolve(t *testing.T) {
 				m.EXPECT().GetUser(gomock.Any(), "user-1").Return(&storage.User{ID: "user-1"}, nil)
 			},
 			want: "user-1",
+		},
+		{
+			name: "row stamped with different issuer returns unknown",
+			ref:  subject.Ref{Issuer: idpIssuer, Claim: "sub", Value: "abc"},
+			lookup: func(m *mocks.MockUserStorage) {
+				m.EXPECT().GetProviderIdentity(gomock.Any(), "okta", "abc").
+					Return(&storage.ProviderIdentity{
+						UserID: "user-1", Issuer: "https://previous-idp.example.com", SubjectClaim: "sub",
+					}, nil)
+			},
+			wantErr: subject.ErrUnknown,
+		},
+		{
+			name: "row stamped with different subject claim returns unknown",
+			ref:  subject.Ref{Issuer: idpIssuer, Claim: "sub", Value: "abc"},
+			lookup: func(m *mocks.MockUserStorage) {
+				m.EXPECT().GetProviderIdentity(gomock.Any(), "okta", "abc").
+					Return(&storage.ProviderIdentity{
+						UserID: "user-1", Issuer: idpIssuer, SubjectClaim: "oid",
+					}, nil)
+			},
+			wantErr: subject.ErrUnknown,
+		},
+		{
+			name: "half-stamped row with issuer only returns unknown",
+			ref:  subject.Ref{Issuer: idpIssuer, Claim: "sub", Value: "abc"},
+			lookup: func(m *mocks.MockUserStorage) {
+				m.EXPECT().GetProviderIdentity(gomock.Any(), "okta", "abc").
+					Return(&storage.ProviderIdentity{UserID: "user-1", Issuer: idpIssuer}, nil)
+			},
+			wantErr: subject.ErrUnknown,
+		},
+		{
+			name: "half-stamped row with claim only returns unknown",
+			ref:  subject.Ref{Issuer: idpIssuer, Claim: "sub", Value: "abc"},
+			lookup: func(m *mocks.MockUserStorage) {
+				m.EXPECT().GetProviderIdentity(gomock.Any(), "okta", "abc").
+					Return(&storage.ProviderIdentity{UserID: "user-1", SubjectClaim: "sub"}, nil)
+			},
+			wantErr: subject.ErrUnknown,
 		},
 		{
 			name: "second issuer queries its own provider",
@@ -167,9 +224,11 @@ func TestResolve(t *testing.T) {
 				tt.lookup(store)
 			}
 			r, err := subjectresolver.New(map[string]subjectresolver.Provider{
-				idpIssuer:        {Name: "okta", SubjectClaim: "sub"},
-				entraIssuer:      {Name: "entra", SubjectClaim: "oid"},
-				oktaCustomIssuer: {Name: "okta", SubjectClaim: "uid"},
+				idpIssuer:   {Name: "okta", SubjectClaim: "sub"},
+				entraIssuer: {Name: "entra", SubjectClaim: "oid"},
+				oktaCustomIssuer: {
+					Name: "okta", SubjectClaim: "uid",
+				},
 			}, store)
 			require.NoError(t, err)
 
@@ -205,16 +264,28 @@ func TestNewRefusesInvalidInput(t *testing.T) {
 		{"nil store", map[string]subjectresolver.Provider{idpIssuer: valid}, nil, nil},
 		{"no providers", nil, store, nil},
 		{"empty issuer", map[string]subjectresolver.Provider{"": valid}, store, nil},
-		{"empty name", map[string]subjectresolver.Provider{idpIssuer: {SubjectClaim: "sub"}}, store, nil},
-		{"empty subject claim", map[string]subjectresolver.Provider{idpIssuer: {Name: "okta"}}, store, nil},
+		{
+			"empty name",
+			map[string]subjectresolver.Provider{idpIssuer: {SubjectClaim: "sub"}},
+			store, nil,
+		},
+		{
+			"empty subject claim",
+			map[string]subjectresolver.Provider{idpIssuer: {Name: "okta"}},
+			store, nil,
+		},
 		{
 			"mutable email claim",
-			map[string]subjectresolver.Provider{idpIssuer: {Name: "okta", SubjectClaim: "email"}},
+			map[string]subjectresolver.Provider{idpIssuer: {
+				Name: "okta", SubjectClaim: "email",
+			}},
 			store, subject.ErrInvalidBindingClaim,
 		},
 		{
 			"mutable preferred_username claim",
-			map[string]subjectresolver.Provider{idpIssuer: {Name: "okta", SubjectClaim: "preferred_username"}},
+			map[string]subjectresolver.Provider{idpIssuer: {
+				Name: "okta", SubjectClaim: "preferred_username",
+			}},
 			store, subject.ErrInvalidBindingClaim,
 		},
 	}
@@ -228,5 +299,191 @@ func TestNewRefusesInvalidInput(t *testing.T) {
 				assert.ErrorIs(t, err, tt.wantErr)
 			}
 		})
+	}
+}
+
+//nolint:paralleltest // captures the process-global slog default
+func TestResolve_UnstampedRowWarnsOnceAndDoesNotWrite(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { require.NoError(t, stor.Close()) })
+	ctx := context.Background()
+
+	now := time.Now()
+	for _, sub := range []string{"sub-1", "sub-2"} {
+		uid := "user-" + sub
+		require.NoError(t, stor.CreateUser(ctx, &storage.User{ID: uid, CreatedAt: now, UpdatedAt: now}))
+		require.NoError(t, stor.CreateProviderIdentity(ctx, &storage.ProviderIdentity{
+			UserID: uid, ProviderID: "okta", ProviderSubject: sub, LinkedAt: now, LastUsedAt: now,
+		}))
+	}
+
+	r, err := subjectresolver.New(map[string]subjectresolver.Provider{
+		idpIssuer: {Name: "okta", SubjectClaim: "sub"},
+	}, stor)
+	require.NoError(t, err)
+
+	u1, err := r.Resolve(ctx, subject.Ref{Issuer: idpIssuer, Claim: "sub", Value: "sub-1"})
+	require.NoError(t, err)
+	assert.Equal(t, "user-sub-1", u1)
+
+	u2, err := r.Resolve(ctx, subject.Ref{Issuer: idpIssuer, Claim: "sub", Value: "sub-2"})
+	require.NoError(t, err)
+	assert.Equal(t, "user-sub-2", u2)
+
+	// Resolver is read-only: rows remain unstamped.
+	row, err := stor.GetProviderIdentity(ctx, "okta", "sub-1")
+	require.NoError(t, err)
+	assert.True(t, row.IsUnstamped())
+
+	assert.Equal(t, 1, strings.Count(buf.String(), "unstamped provider identity"),
+		"must warn once per resolver")
+	assert.NotContains(t, buf.String(), "sub-1")
+	assert.NotContains(t, buf.String(), "user-sub-1")
+}
+
+// TestResolveAndSignIn_BackendAcceptance verifies issue #7256 acceptance criteria
+// end-to-end across both memory and Redis (miniredis) backends: after an
+// upstream's issuer or subject claim changes, a row created under the old values
+// matches neither resolution (subject_unknown) nor sign-in (new user created,
+// old user untouched), while a row created under the current values works for both.
+func TestResolveAndSignIn_BackendAcceptance(t *testing.T) {
+	t.Parallel()
+
+	backends := map[string]func(*testing.T) storage.UserStorage{
+		"memory": func(t *testing.T) storage.UserStorage {
+			t.Helper()
+			s := storage.NewMemoryStorage()
+			t.Cleanup(func() { require.NoError(t, s.Close()) })
+			return s
+		},
+		"redis": func(t *testing.T) storage.UserStorage {
+			t.Helper()
+			mr := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			t.Cleanup(func() { require.NoError(t, client.Close()) })
+			return storage.NewRedisStorageWithClient(client, "thv:auth:{ns:accept}:")
+		},
+	}
+
+	changes := []struct {
+		name      string
+		oldIssuer string
+		oldClaim  string
+		newIssuer string
+		newClaim  string
+	}{
+		{
+			name:      "issuer changed",
+			oldIssuer: "https://old-idp.example.com", oldClaim: "sub",
+			newIssuer: "https://new-idp.example.com", newClaim: "sub",
+		},
+		{
+			name:      "subject claim changed",
+			oldIssuer: "https://idp.example.com", oldClaim: "sub",
+			newIssuer: "https://idp.example.com", newClaim: "oid",
+		},
+	}
+
+	for backendName, newBackend := range backends {
+		t.Run(backendName+"/unstamped row", func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			stor := newBackend(t)
+			const issuer, claim = "https://idp.example.com", "sub"
+
+			now := time.Now()
+			require.NoError(t, stor.CreateUser(ctx, &storage.User{ID: "user-1", CreatedAt: now, UpdatedAt: now}))
+			require.NoError(t, stor.CreateProviderIdentity(ctx, &storage.ProviderIdentity{
+				UserID: "user-1", ProviderID: "default", ProviderSubject: "alice", LinkedAt: now, LastUsedAt: now,
+			}))
+
+			// Resolution accepts the row read-only and leaves it unstamped.
+			resolver, err := subjectresolver.New(map[string]subjectresolver.Provider{
+				issuer: {Name: "default", SubjectClaim: claim},
+			}, stor)
+			require.NoError(t, err)
+			resolved, err := resolver.Resolve(ctx, subject.Ref{Issuer: issuer, Claim: claim, Value: "alice"})
+			require.NoError(t, err)
+			assert.Equal(t, "user-1", resolved)
+			row, err := stor.GetProviderIdentity(ctx, "default", "alice")
+			require.NoError(t, err)
+			assert.True(t, row.IsUnstamped())
+
+			// Sign-in returns the same user and stamps the row.
+			signedIn, err := handlers.NewUserResolver(stor,
+				handlers.WithCreateOnlyFor("default"),
+				handlers.WithIdentityBinding("default", issuer, claim),
+			).ResolveUser(ctx, "default", "alice")
+			require.NoError(t, err)
+			assert.Equal(t, "user-1", signedIn.ID)
+			row, err = stor.GetProviderIdentity(ctx, "default", "alice")
+			require.NoError(t, err)
+			assert.Equal(t, issuer, row.Issuer)
+			assert.Equal(t, claim, row.SubjectClaim)
+			assert.Equal(t, "user-1", row.UserID)
+		})
+		for _, tc := range changes {
+			t.Run(backendName+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				ctx := context.Background()
+				stor := newBackend(t)
+
+				// 1. User signs in under old config.
+				oldSignIn := handlers.NewUserResolver(stor,
+					handlers.WithCreateOnlyFor("default"),
+					handlers.WithIdentityBinding("default", tc.oldIssuer, tc.oldClaim),
+				)
+				oldUser, err := oldSignIn.ResolveUser(ctx, "default", "alice")
+				require.NoError(t, err)
+
+				// Resolution works under old config.
+				oldResolve, err := subjectresolver.New(map[string]subjectresolver.Provider{
+					tc.oldIssuer: {
+						Name: "default", SubjectClaim: tc.oldClaim,
+					},
+				}, stor)
+				require.NoError(t, err)
+				resolvedOld, err := oldResolve.Resolve(ctx, subject.Ref{Issuer: tc.oldIssuer, Claim: tc.oldClaim, Value: "alice"})
+				require.NoError(t, err)
+				assert.Equal(t, oldUser.ID, resolvedOld)
+
+				// 2. Operator changes upstream issuer or subject claim.
+				// Resolution under new config refuses the old row with subject.ErrUnknown and writes nothing.
+				newResolve, err := subjectresolver.New(map[string]subjectresolver.Provider{
+					tc.newIssuer: {
+						Name: "default", SubjectClaim: tc.newClaim,
+					},
+				}, stor)
+				require.NoError(t, err)
+				_, err = newResolve.Resolve(ctx, subject.Ref{Issuer: tc.newIssuer, Claim: tc.newClaim, Value: "alice"})
+				require.ErrorIs(t, err, subject.ErrUnknown)
+
+				// 3. Sign-in under new config creates a new user and leaves the old user untouched.
+				newSignIn := handlers.NewUserResolver(stor,
+					handlers.WithCreateOnlyFor("default"),
+					handlers.WithIdentityBinding("default", tc.newIssuer, tc.newClaim),
+				)
+				newUser, err := newSignIn.ResolveUser(ctx, "default", "alice")
+				require.NoError(t, err)
+				assert.NotEqual(t, oldUser.ID, newUser.ID)
+
+				keptOld, err := stor.GetUser(ctx, oldUser.ID)
+				require.NoError(t, err)
+				assert.Equal(t, oldUser.ID, keptOld.ID)
+
+				// 4. Resolution under new config now resolves the new user, and old config refuses it.
+				resolvedNew, err := newResolve.Resolve(ctx, subject.Ref{Issuer: tc.newIssuer, Claim: tc.newClaim, Value: "alice"})
+				require.NoError(t, err)
+				assert.Equal(t, newUser.ID, resolvedNew)
+
+				_, err = oldResolve.Resolve(ctx, subject.Ref{Issuer: tc.oldIssuer, Claim: tc.oldClaim, Value: "alice"})
+				require.ErrorIs(t, err, subject.ErrUnknown)
+			})
+		}
 	}
 }

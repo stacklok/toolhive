@@ -8,9 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
@@ -18,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/authserver/identity"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -34,7 +39,7 @@ const (
 // userRowSession is the session ID under which the user-keyed wrapper stores a
 // user's rows in the store beneath it. The wrapper cannot write a foreign or
 // placeholder row, so tests plant those through the base store.
-func userRowSession(userID string) string { return "user:" + url.QueryEscape(userID) }
+func userRowSession() string { return "user:" + url.QueryEscape(readerUser) }
 
 func readerRow(userID string, expiresAt time.Time) *storage.UpstreamTokens {
 	return &storage.UpstreamTokens{
@@ -149,7 +154,7 @@ func TestGetValidTokensForUser_UserKeyedStorage(t *testing.T) {
 			t.Run("placeholder row needs authorization", func(t *testing.T) {
 				t.Parallel()
 				stor, base := newStore(t)
-				require.NoError(t, base.StoreUpstreamTokens(bg, userRowSession(readerUser), readerProvider, nil))
+				require.NoError(t, base.StoreUpstreamTokens(bg, userRowSession(), readerProvider, nil))
 
 				cred, err := NewInProcessService(stor, nil).GetValidTokensForUser(bg, readerUser, readerProvider)
 
@@ -220,7 +225,7 @@ func TestGetValidTokensForUser_UserKeyedStorage(t *testing.T) {
 					t.Run(name, func(t *testing.T) {
 						t.Parallel()
 						stor, base := newStore(t)
-						require.NoError(t, base.StoreUpstreamTokens(bg, userRowSession(readerUser), readerProvider,
+						require.NoError(t, base.StoreUpstreamTokens(bg, userRowSession(), readerProvider,
 							readerRow(readerIntruder, expiresAt)))
 						refresher := storagemocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
 
@@ -236,13 +241,501 @@ func TestGetValidTokensForUser_UserKeyedStorage(t *testing.T) {
 			t.Run("row without an owner is a binding error", func(t *testing.T) {
 				t.Parallel()
 				stor, base := newStore(t)
-				require.NoError(t, base.StoreUpstreamTokens(bg, userRowSession(readerUser), readerProvider,
+				require.NoError(t, base.StoreUpstreamTokens(bg, userRowSession(), readerProvider,
 					readerRow("", future)))
 
 				_, err := NewInProcessService(stor, nil).GetValidTokensForUser(bg, readerUser, readerProvider)
 
 				assert.ErrorIs(t, err, ErrInvalidBinding)
 			})
+		})
+	}
+}
+
+func TestGetValidTokensForUser_CancelDuringRefresh(t *testing.T) {
+	t.Parallel()
+
+	// The bubble also fails if the refresh goroutine blocks sending its result
+	// after the reader has returned.
+	synctest.Test(t, func(t *testing.T) {
+		stor, _ := userKeyedStores(t)["memory"](t)
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+		rowKey := userRowKey(readerUser)
+		expired := readerRow(readerUser, time.Now().Add(-time.Hour))
+		require.NoError(t, stor.StoreUpstreamTokens(identity.WithCanonicalUser(ctx, readerUser), rowKey, readerProvider, expired))
+
+		started := make(chan struct{})
+		release := make(chan struct{})
+		refreshed := readerRow(readerUser, time.Now().Add(time.Hour))
+		refreshed.AccessToken = "new-access"
+		refreshed.RefreshToken = "rotated-refresh"
+		refresher := storagemocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
+		refresher.EXPECT().RefreshAndStore(gomock.Any(), rowKey, expired).
+			DoAndReturn(func(refreshCtx context.Context, key string, _ *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+				user, ok := identity.CanonicalUserFromContext(refreshCtx)
+				assert.True(t, ok)
+				assert.Equal(t, readerUser, user, "detaching keeps the canonical user")
+				close(started)
+				<-release
+				assert.NoError(t, refreshCtx.Err(), "the caller's cancellation does not reach the refresher")
+				return refreshed, stor.StoreUpstreamTokens(context.WithoutCancel(refreshCtx), key, readerProvider, refreshed)
+			})
+		unblock := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(unblock)
+		svc := NewInProcessService(stor, refresher)
+		type result struct {
+			cred *UpstreamCredential
+			err  error
+		}
+		done := make(chan result, 1)
+		go func() {
+			cred, err := svc.GetValidTokensForUser(ctx, readerUser, readerProvider)
+			done <- result{cred, err}
+		}()
+
+		<-started
+		cancel()
+		synctest.Wait()
+		select {
+		case got := <-done:
+			assert.Nil(t, got.cred)
+			assert.ErrorIs(t, got.err, ErrRefreshFailed)
+			assert.ErrorIs(t, got.err, context.Canceled)
+		default:
+			t.Error("per-user read did not return while refresh was blocked")
+		}
+
+		unblock()
+		synctest.Wait()
+		stored, err := stor.GetUpstreamTokens(identity.WithCanonicalUser(t.Context(), readerUser), rowKey, readerProvider)
+		require.NoError(t, err)
+		assert.Equal(t, refreshed, stored)
+	})
+}
+
+func TestGetValidTokensForUser_CancelDuringRefreshSuppressesExpiredIDToken(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		stor, _ := userKeyedStores(t)["memory"](t)
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+		rowKey := userRowKey(readerUser)
+		expiredIDToken := signedIDToken(t, time.Now().Add(-time.Hour))
+		expired := readerRow(readerUser, time.Now().Add(-time.Hour))
+		expired.IDToken = expiredIDToken
+		require.NoError(t, stor.StoreUpstreamTokens(identity.WithCanonicalUser(ctx, readerUser), rowKey, readerProvider, expired))
+
+		started := make(chan struct{})
+		release := make(chan struct{})
+		// The provider omitted id_token, so the refresher carries the expired one forward.
+		refreshed := readerRow(readerUser, time.Now().Add(time.Hour))
+		refreshed.AccessToken = "new-access"
+		refreshed.IDToken = expiredIDToken
+		// Count calls instead of using Times(1): the refresher runs on the
+		// service's worker goroutine, where a gomock failure would end that
+		// goroutine and leave the read waiting forever.
+		var calls atomic.Int32
+		refresher := storagemocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
+		refresher.EXPECT().RefreshAndStore(gomock.Any(), rowKey, gomock.Any()).AnyTimes().
+			DoAndReturn(func(refreshCtx context.Context, key string, _ *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+				if calls.Add(1) > 1 {
+					return refreshed, nil
+				}
+				close(started)
+				<-release
+				return refreshed, stor.StoreUpstreamTokens(context.WithoutCancel(refreshCtx), key, readerProvider, refreshed)
+			})
+		unblock := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(unblock)
+		svc := NewInProcessService(stor, refresher)
+
+		type result struct {
+			cred *UpstreamCredential
+			err  error
+		}
+		done := make(chan result, 1)
+		go func() {
+			cred, err := svc.GetValidTokensForUser(ctx, readerUser, readerProvider)
+			done <- result{cred, err}
+		}()
+
+		<-started
+		cancel()
+		synctest.Wait()
+		got := <-done
+		assert.Nil(t, got.cred)
+		assert.ErrorIs(t, got.err, ErrRefreshFailed)
+		assert.ErrorIs(t, got.err, context.Canceled)
+
+		unblock()
+		synctest.Wait()
+
+		cred, err := svc.GetValidTokensForUser(t.Context(), readerUser, readerProvider)
+		require.NoError(t, err)
+		assert.Equal(t, &UpstreamCredential{AccessToken: "new-access", IDToken: expiredIDToken}, cred)
+		assert.Equal(t, int32(1), calls.Load(), "the second read must not call the refresher again")
+	})
+}
+
+// liveAccessExpiredIDRow is the ID-token-only shape: the access token is live,
+// the ID token has expired, and a refresh token exists.
+func liveAccessExpiredIDRow(t *testing.T) *storage.UpstreamTokens {
+	t.Helper()
+	row := readerRow(readerUser, time.Now().Add(time.Hour))
+	row.IDToken = signedIDToken(t, time.Now().Add(-time.Hour))
+	return row
+}
+
+// readerResult carries one read's outcome out of the goroutine that ran it.
+type readerResult struct {
+	cred *UpstreamCredential
+	err  error
+}
+
+// An ID-token-only refresh that fails after the caller left before the refresh
+// finished must back the ID-token trigger off and log the failure exactly once.
+//
+//nolint:paralleltest // Replaces the process-wide default logger.
+func TestGetValidTokensForUser_IDTokenRefreshFailureRecordedOnce(t *testing.T) {
+	handler := installRecordingLogger(t)
+
+	synctest.Test(t, func(t *testing.T) {
+		stor, _ := userKeyedStores(t)["memory"](t)
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+		rowKey := userRowKey(readerUser)
+		row := liveAccessExpiredIDRow(t)
+		require.NoError(t, stor.StoreUpstreamTokens(identity.WithCanonicalUser(ctx, readerUser), rowKey, readerProvider, row))
+
+		started := make(chan struct{})
+		release := make(chan struct{})
+		var calls atomic.Int32
+		refresher := storagemocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
+		refresher.EXPECT().RefreshAndStore(gomock.Any(), rowKey, gomock.Any()).AnyTimes().
+			DoAndReturn(func(context.Context, string, *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+				if calls.Add(1) == 1 {
+					close(started)
+					<-release
+				}
+				return nil, errors.New("idp unavailable: secret-provider-detail")
+			})
+		unblock := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(unblock)
+		svc := NewInProcessService(stor, refresher)
+
+		done := make(chan readerResult, 1)
+		go func() {
+			cred, err := svc.GetValidTokensForUser(ctx, readerUser, readerProvider)
+			done <- readerResult{cred, err}
+		}()
+		<-started
+		cancel()
+		synctest.Wait()
+		first := <-done
+		require.NoError(t, first.err)
+		assert.Equal(t, &UpstreamCredential{AccessToken: "access-" + readerUser, IDToken: row.IDToken}, first.cred)
+
+		unblock()
+		synctest.Wait()
+
+		cred, err := svc.GetValidTokensForUser(t.Context(), readerUser, readerProvider)
+		require.NoError(t, err)
+		assert.Equal(t, first.cred, cred)
+		assert.Equal(t, int32(1), calls.Load(), "the second read must not call the refresher again")
+	})
+
+	requireReasonOnlyWarn(t, handler, "refresh_failed")
+}
+
+// A row read with storage.ErrExpired but no ExpiresAt is an expired access
+// token, not an ID-token-only refresh: a failure after the caller left must
+// not back off the ID-token trigger or log the ID-token WARN.
+//
+//nolint:paralleltest // Replaces the process-wide default logger.
+func TestGetValidTokensForUser_ExpiredWithoutExpiryFailsAfterCallerLeft(t *testing.T) {
+	handler := installRecordingLogger(t)
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+		rowKey := userRowKey(readerUser)
+		row := readerRow(readerUser, time.Time{})
+		row.IDToken = signedIDToken(t, time.Now().Add(-time.Hour))
+		ctrl := gomock.NewController(t)
+		stor := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		allowRowIDResolution(stor)
+		stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).Return(row, storage.ErrExpired)
+
+		started := make(chan struct{})
+		release := make(chan struct{})
+		refresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+		refresher.EXPECT().RefreshAndStore(gomock.Any(), rowKey, row).
+			DoAndReturn(func(context.Context, string, *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+				close(started)
+				<-release
+				return nil, errors.New("idp unavailable")
+			})
+		unblock := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(unblock)
+		svc := NewInProcessService(stor, refresher)
+
+		done := make(chan readerResult, 1)
+		go func() {
+			cred, err := svc.GetValidTokensForUser(ctx, readerUser, readerProvider)
+			done <- readerResult{cred, err}
+		}()
+		<-started
+		cancel()
+		got := <-done
+		assert.Nil(t, got.cred)
+		assert.ErrorIs(t, got.err, ErrRefreshFailed)
+		assert.ErrorIs(t, got.err, context.Canceled)
+
+		unblock()
+		synctest.Wait()
+
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		assert.Empty(t, svc.idTokenSuppressions)
+	})
+
+	assert.Zero(t, handler.count(slog.LevelWarn))
+}
+
+// A refresh that fails after the stored access token expired must return the
+// error even though the caller stayed to see it.
+func TestGetValidTokensForUser_AccessTokenExpiresDuringIDTokenRefresh(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		stor, _ := userKeyedStores(t)["memory"](t)
+		rowKey := userRowKey(readerUser)
+		row := liveAccessExpiredIDRow(t)
+		row.ExpiresAt = time.Now().Add(30 * time.Second)
+		require.NoError(t, stor.StoreUpstreamTokens(identity.WithCanonicalUser(t.Context(), readerUser), rowKey, readerProvider, row))
+
+		refresher := storagemocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
+		refresher.EXPECT().RefreshAndStore(gomock.Any(), rowKey, gomock.Any()).
+			DoAndReturn(func(context.Context, string, *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+				time.Sleep(time.Minute)
+				return nil, errors.New("idp unavailable")
+			})
+
+		cred, err := NewInProcessService(stor, refresher).GetValidTokensForUser(t.Context(), readerUser, readerProvider)
+
+		assert.Nil(t, cred)
+		assert.ErrorContains(t, err, "idp unavailable")
+	})
+}
+
+// When the caller leaves during an ID-token-only refresh after the stored
+// access token has expired, the read returns the refresh error rather than
+// the expired credential.
+func TestGetValidTokensForUser_AccessTokenExpiresDuringAbandonedIDTokenRefresh(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		stor, _ := userKeyedStores(t)["memory"](t)
+		ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+		t.Cleanup(cancel)
+		rowKey := userRowKey(readerUser)
+		row := liveAccessExpiredIDRow(t)
+		row.ExpiresAt = time.Now().Add(30 * time.Second)
+		require.NoError(t, stor.StoreUpstreamTokens(identity.WithCanonicalUser(ctx, readerUser), rowKey, readerProvider, row))
+
+		release := make(chan struct{})
+		refresher := storagemocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
+		refresher.EXPECT().RefreshAndStore(gomock.Any(), rowKey, gomock.Any()).
+			DoAndReturn(func(context.Context, string, *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+				<-release
+				return nil, errors.New("idp unavailable")
+			})
+		unblock := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(unblock)
+
+		cred, err := NewInProcessService(stor, refresher).GetValidTokensForUser(ctx, readerUser, readerProvider)
+
+		assert.Nil(t, cred)
+		assert.ErrorIs(t, err, ErrRefreshFailed)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+		unblock()
+		synctest.Wait()
+	})
+}
+
+// The worker's own deadline bounds a refresher that hangs before it starts the
+// refresh (row resolution), so the worker goroutine cannot outlive it.
+func TestGetValidTokensForUser_WorkerDeadlineBoundsHungRefresher(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+		rowKey := userRowKey(readerUser)
+		row := readerRow(readerUser, time.Now().Add(-time.Hour))
+		ctrl := gomock.NewController(t)
+		stor := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).Return(row, storage.ErrExpired)
+
+		started := make(chan struct{})
+		type outcome struct {
+			waited time.Duration
+			err    error
+		}
+		finished := make(chan outcome, 1)
+		refresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+		refresher.EXPECT().RefreshAndStore(gomock.Any(), rowKey, row).
+			DoAndReturn(func(refreshCtx context.Context, _ string, _ *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+				start := time.Now()
+				close(started)
+				<-refreshCtx.Done()
+				finished <- outcome{time.Since(start), refreshCtx.Err()}
+				return nil, refreshCtx.Err()
+			})
+
+		done := make(chan readerResult, 1)
+		go func() {
+			cred, err := NewInProcessService(stor, refresher).GetValidTokensForUser(ctx, readerUser, readerProvider)
+			done <- readerResult{cred, err}
+		}()
+		<-started
+		cancel()
+		got := <-done
+		assert.ErrorIs(t, got.err, context.Canceled)
+
+		res := <-finished
+		assert.Equal(t, refreshWorkerTimeout, res.waited)
+		assert.ErrorIs(t, res.err, context.DeadlineExceeded)
+		synctest.Wait()
+	})
+}
+
+// recordAbandonedIDTokenFailure skips a failure that reports the row missing
+// or owned by another user, and otherwise logs once, backing off only while
+// the access token is still live.
+//
+//nolint:paralleltest // Replaces the process-wide default logger.
+func TestRecordAbandonedIDTokenFailure(t *testing.T) {
+	live := time.Now().Add(time.Hour)
+	tests := []struct {
+		name           string
+		err            error
+		expiresAt      time.Time
+		wantWarn       bool
+		wantSuppressed bool
+	}{
+		{name: "row not found", err: fmt.Errorf("refresh: %w", storage.ErrNotFound), expiresAt: live},
+		{name: "storage binding error", err: storage.ErrInvalidBinding, expiresAt: live},
+		{name: "service binding error", err: ErrInvalidBinding, expiresAt: live},
+		{name: "provider failure after the access token expired", err: errors.New("idp unavailable"),
+			expiresAt: time.Now().Add(-time.Minute), wantWarn: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := installRecordingLogger(t)
+			stor := storage.NewMemoryStorage()
+			t.Cleanup(func() { _ = stor.Close() })
+			svc := NewInProcessService(stor, nil)
+			row := readerRow(readerUser, tc.expiresAt)
+
+			svc.recordAbandonedIDTokenFailure(t.Context(), userRowKey(readerUser), readerProvider, row, tc.err)
+
+			wantWarns := 0
+			if tc.wantWarn {
+				wantWarns = 1
+			}
+			assert.Equal(t, wantWarns, handler.count(slog.LevelWarn))
+			assert.Equal(t, tc.wantSuppressed, svc.idTokenRefreshSuppressed(
+				svc.suppressionKeyFor(t.Context(), userRowKey(readerUser), readerProvider), row.IDToken, time.Now()))
+		})
+	}
+}
+
+// Pins a documented trade-off: when the caller leaves during an ID-token-only
+// refresh and the refresher then clears the row, that read still returns the
+// stored credential and only the next read reports needs-authorization.
+func TestGetValidTokensForUser_CancelDuringIDTokenRefreshThenRowCleared(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		stor, _ := userKeyedStores(t)["memory"](t)
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+		rowKey := userRowKey(readerUser)
+		row := liveAccessExpiredIDRow(t)
+		require.NoError(t, stor.StoreUpstreamTokens(identity.WithCanonicalUser(ctx, readerUser), rowKey, readerProvider, row))
+
+		started := make(chan struct{})
+		release := make(chan struct{})
+		var calls atomic.Int32
+		refresher := storagemocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
+		refresher.EXPECT().RefreshAndStore(gomock.Any(), rowKey, gomock.Any()).AnyTimes().
+			DoAndReturn(func(refreshCtx context.Context, key string, _ *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+				if calls.Add(1) == 1 {
+					close(started)
+					<-release
+				}
+				cleared := *row
+				cleared.RefreshToken = ""
+				cleared.ExpiresAt = time.Now().Add(-time.Minute)
+				if err := stor.StoreUpstreamTokens(refreshCtx, key, readerProvider, &cleared); err != nil {
+					return nil, err
+				}
+				return nil, errors.Join(errors.New("rotation not saved"), storage.ErrNotFound)
+			})
+		unblock := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(unblock)
+		svc := NewInProcessService(stor, refresher)
+
+		done := make(chan readerResult, 1)
+		go func() {
+			cred, err := svc.GetValidTokensForUser(ctx, readerUser, readerProvider)
+			done <- readerResult{cred, err}
+		}()
+		<-started
+		cancel()
+		synctest.Wait()
+		first := <-done
+		require.NoError(t, first.err)
+		assert.Equal(t, &UpstreamCredential{AccessToken: "access-" + readerUser, IDToken: row.IDToken}, first.cred)
+
+		unblock()
+		synctest.Wait()
+
+		cred, err := svc.GetValidTokensForUser(t.Context(), readerUser, readerProvider)
+		assert.Nil(t, cred)
+		assert.ErrorIs(t, err, ErrNeedsAuthorization)
+	})
+}
+
+func TestGetValidTokensForUser_SkipsRefreshWhenContextAlreadyDone(t *testing.T) {
+	t.Parallel()
+
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			if cause == context.DeadlineExceeded {
+				deadlineCtx, cancelDeadline := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+				t.Cleanup(cancelDeadline)
+				ctx = deadlineCtx
+			}
+			ctrl := gomock.NewController(t)
+			stor := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+			// Some stores still return the row when the caller's context ends.
+			stor.EXPECT().GetUpstreamTokens(gomock.Any(), userRowKey(readerUser), readerProvider).
+				Return(readerRow(readerUser, time.Now().Add(-time.Hour)), storage.ErrExpired)
+			refresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl) // no refresh expected
+
+			cred, err := NewInProcessService(stor, refresher).GetValidTokensForUser(ctx, readerUser, readerProvider)
+
+			assert.Nil(t, cred)
+			assert.ErrorIs(t, err, ErrRefreshFailed)
+			assert.ErrorIs(t, err, cause)
 		})
 	}
 }
@@ -400,6 +893,7 @@ func TestGetValidTokensForUser_StorageErrors(t *testing.T) {
 type recordingHandler struct {
 	mu     sync.Mutex
 	levels []slog.Level
+	lines  []string
 }
 
 func (*recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
@@ -407,17 +901,43 @@ func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.levels = append(h.levels, r.Level)
+	line := r.Message
+	r.Attrs(func(a slog.Attr) bool {
+		line += " " + a.Key + "=" + a.Value.String()
+		return true
+	})
+	h.lines = append(h.lines, line)
 	return nil
 }
 func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
 
-//nolint:paralleltest // Replaces the process-wide default logger.
-func TestGetValidTokensForUser_LogsNoWarnOrErrorForFailedRefresh(t *testing.T) {
+func (h *recordingHandler) count(level slog.Level) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, l := range h.levels {
+		if l == level {
+			n++
+		}
+	}
+	return n
+}
+
+// installRecordingLogger replaces the process-wide default logger for the
+// rest of the test. Callers must not run in parallel.
+func installRecordingLogger(t *testing.T) *recordingHandler {
+	t.Helper()
 	handler := &recordingHandler{}
 	previous := slog.Default()
 	slog.SetDefault(slog.New(handler))
 	t.Cleanup(func() { slog.SetDefault(previous) })
+	return handler
+}
+
+//nolint:paralleltest // Replaces the process-wide default logger.
+func TestGetValidTokensForUser_LogsNoWarnOrErrorForFailedRefresh(t *testing.T) {
+	handler := installRecordingLogger(t)
 
 	ctrl := gomock.NewController(t)
 	stor := storagemocks.NewMockUpstreamTokenStorage(ctrl)
@@ -442,10 +962,7 @@ func TestGetValidTokensForUser_LogsNoWarnOrErrorForFailedRefresh(t *testing.T) {
 //
 //nolint:paralleltest // Replaces the process-wide default logger.
 func TestGetValidTokensForUser_WarnsOnceForIDTokenFallback(t *testing.T) {
-	handler := &recordingHandler{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(handler))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	handler := installRecordingLogger(t)
 
 	rowKey := userRowKey(readerUser)
 	row := readerRow(readerUser, time.Now().Add(time.Hour))
@@ -456,12 +973,13 @@ func TestGetValidTokensForUser_WarnsOnceForIDTokenFallback(t *testing.T) {
 	stor.EXPECT().GetUpstreamTokens(gomock.Any(), rowKey, readerProvider).Return(row, nil).Times(2)
 	refresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
 	refresher.EXPECT().RefreshAndStore(gomock.Any(), rowKey, gomock.Any()).
-		Return(nil, errors.New("upstream token refresh failed: 503"))
+		Return(nil, errors.New("upstream token refresh failed: secret-provider-detail"))
 
 	cred, err := NewInProcessService(stor, refresher).GetValidTokensForUser(context.Background(), readerUser, readerProvider)
 
 	require.NoError(t, err)
 	assert.Equal(t, "access-"+readerUser, cred.AccessToken)
+	requireReasonOnlyWarn(t, handler, "refresh_failed")
 	handler.mu.Lock()
 	defer handler.mu.Unlock()
 	warns := 0
@@ -479,10 +997,7 @@ func TestGetValidTokensForUser_WarnsOnceForIDTokenFallback(t *testing.T) {
 //
 //nolint:paralleltest // Replaces the process-wide default logger.
 func TestGetValidTokens_StillWarnsForFailedRefresh(t *testing.T) {
-	handler := &recordingHandler{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(handler))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	handler := installRecordingLogger(t)
 
 	ctrl := gomock.NewController(t)
 	stor := storagemocks.NewMockUpstreamTokenStorage(ctrl)
@@ -815,6 +1330,64 @@ func TestIDTokenSuppression_SharedAcrossReadPaths(t *testing.T) {
 			forUser(readerIntruder)
 
 			assert.Equal(t, map[string]int{readerUser: 1, readerIntruder: 1}, refreshes)
+		})
+	}
+}
+
+// requireReasonOnlyWarn asserts the single WARN carries the reason and neither
+// the error text nor a user-derived key.
+func requireReasonOnlyWarn(t *testing.T, h *recordingHandler, reason string) {
+	t.Helper()
+	warns := h.warnLines()
+	require.Len(t, warns, 1)
+	assert.Contains(t, warns[0], "reason="+reason)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, line := range h.lines {
+		assert.NotContains(t, line, "secret-provider-detail")
+		assert.NotContains(t, line, userRowKey(readerUser))
+	}
+}
+
+// warnLines returns the recorded WARN lines.
+func (h *recordingHandler) warnLines() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	for i, level := range h.levels {
+		if level == slog.LevelWarn {
+			out = append(out, h.lines[i])
+		}
+	}
+	return out
+}
+
+func TestRefreshFailureReason(t *testing.T) {
+	t.Parallel()
+	rejected := &oauth2.RetrieveError{
+		Response:         &http.Response{StatusCode: http.StatusBadRequest},
+		ErrorCode:        "invalid_grant",
+		ErrorDescription: "secret-provider-detail",
+	}
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"rejected grant", fmt.Errorf("%w: %w", ErrRefreshFailed, rejected), "grant_rejected"},
+		{"grant rejected sentinel", fmt.Errorf("%w: %w", ErrRefreshFailed, upstream.ErrGrantRejected), "grant_rejected"},
+		{"token endpoint error", &oauth2.RetrieveError{
+			Response: &http.Response{StatusCode: http.StatusBadRequest}, ErrorCode: "invalid_client",
+		}, "token_endpoint_error"},
+		{"canceled", fmt.Errorf("refresh: %w", context.Canceled), "network_or_timeout"},
+		{"deadline", fmt.Errorf("refresh: %w", context.DeadlineExceeded), "network_or_timeout"},
+		{"net error", &net.OpError{Op: "dial", Err: errors.New("refused")}, "network_or_timeout"},
+		{"other", errors.New("secret-provider-detail"), "refresh_failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, refreshFailureReason(tt.err))
 		})
 	}
 }

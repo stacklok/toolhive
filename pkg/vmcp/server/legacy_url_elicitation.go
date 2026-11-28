@@ -11,34 +11,55 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/internal/wireerr"
 )
 
 // legacyToolCallError renders a tools/call failure on a Legacy (2025-11-25)
 // session. It returns the (result, error) pair for the tool handler to hand
-// straight back: either a tool result with a nil error, or a nil result with
-// the bare -32042 wireerr.URLElicitationRequired builds.
+// straight back: either a tool result with a nil error, or a nil result with a
+// bare *jsonrpc.Error (package wireerr says why it must stay unwrapped).
 //
 // The order matches writeModernToolCallFailure:
-//   - An authorization denial outranks the URL elicitation answer, so an
-//     error that wraps ErrAuthorizationFailed renders as the deny tool result
-//     even when it also carries the answer.
-//   - A URL elicitation answer on a session that accepts URL mode
-//     (legacySessionAcceptsURLElicitation) renders as -32042, which the
-//     handler returns unwrapped (package wireerr says why).
-//   - Everything else, including the answer on any other session, renders
-//     through conversion.ErrorToToolResult, whose fallback carries the
-//     answer's LegacyFallback: the elicitation messages and never the URL,
-//     unless the embedder supplied its own text.
+//   - An authorization denial renders as the deny tool result.
+//   - A URL elicitation answer renders as -32042 on a session that accepts
+//     URL mode (legacySessionAcceptsURLElicitation), and otherwise through
+//     conversion.ErrorToToolResult, whose fallback carries the answer's
+//     LegacyFallback: the elicitation messages and never the URL, unless the
+//     embedder supplied its own text.
+//   - A delegated authorization requirement renders as an isError tool result
+//     naming only the provider.
+//   - An unavailable delegated credential renders as -32603 with a fixed
+//     message.
+//   - Everything else renders through conversion.ErrorToToolResult.
 //
 // session is the session ClientSessionFromContext returns, and may be nil.
 func legacyToolCallError(session server.ClientSession, err error) (*mcp.CallToolResult, error) {
-	answer, ok := vmcp.URLElicitationFromError(err)
-	if !ok || errors.Is(err, vmcp.ErrAuthorizationFailed) || !legacySessionAcceptsURLElicitation(session) {
+	if errors.Is(err, vmcp.ErrAuthorizationFailed) {
 		return conversion.ErrorToToolResult(err), nil
 	}
-	return nil, legacyURLElicitationRequiredError(answer)
+	if answer, ok := vmcp.URLElicitationFromError(err); ok {
+		if legacySessionAcceptsURLElicitation(session) {
+			return nil, legacyURLElicitationRequiredError(answer)
+		}
+		return conversion.ErrorToToolResult(err), nil
+	}
+	var authReq *authtypes.DelegatedAuthRequiredError
+	if errors.As(err, &authReq) && authReq != nil {
+		return conversion.ErrorToToolResult(authReq), nil
+	}
+	if authtypes.DelegatedCredentialError(err) == authtypes.ErrDelegatedCredentialUnavailable {
+		return nil, delegatedCredentialUnavailableError()
+	}
+	return conversion.ErrorToToolResult(err), nil
+}
+
+// delegatedCredentialUnavailableError is the bare -32603 a Legacy handler
+// returns for an unavailable delegated credential. The message is fixed so no
+// wrapped transport or workflow detail reaches the client.
+func delegatedCredentialUnavailableError() error {
+	return wireerr.InternalError(authtypes.ErrDelegatedCredentialUnavailable.Error())
 }
 
 // legacySessionAcceptsURLElicitation reports whether a URL elicitation may be

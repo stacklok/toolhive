@@ -287,17 +287,19 @@ type Config struct {
 	// entity name).
 	Authz *authz.Config
 
-	// CallBinding sets up enforcement of access tokens bound to one MCP call.
+	// CallBinding is the enforcement of access tokens bound to one MCP call.
 	// The vMCP always enforces a token that carries an authorization_details
 	// entry of type https://toolhive.dev/mcp_tool_call: with a tool-call entry
 	// it may start only the one tools/call the entry names, once; with a
 	// list-call entry, only the one list call the entry names, answered with
-	// only that backend's items. CallBinding adds the
-	// clients whose tokens must carry one, the maximum call duration, the
-	// single-use record, and the parameters of the 401 challenge. The zero
-	// value lists no client and keeps the record in memory, on this replica
-	// only. See callbinding.Config.
-	CallBinding callbinding.Config
+	// only that backend's items. The Binding, built by callbinding.New from a
+	// callbinding.Config, adds the clients whose tokens must carry one, the
+	// maximum call duration, the single-use record, and the parameters of the
+	// 401 challenge. Give the same Binding to the incoming auth factory
+	// (factory.WithCallBinding), so the token validator accepts the messages
+	// of a call that outlives its token. Nil is the zero Config's Binding: no
+	// client listed, the record in memory, on this replica only.
+	CallBinding *callbinding.Binding
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -323,6 +325,10 @@ type Server struct {
 	// callBinding enforces call-bound access tokens (call_binding.go). Serve
 	// always sets it.
 	callBinding *callBinding
+
+	// openRequests tracks the Legacy requests running on each session, so the
+	// owner's DELETE can cancel them (open_requests.go).
+	openRequests openRequests
 
 	// optimizerFactory builds a per-session optimizer over the core's advertised
 	// tools. Set only when the optimizer is enabled (nil otherwise). When non-nil,
@@ -568,8 +574,9 @@ func New(
 
 	// Wrap the aggregator in a per-identity caching decorator: the core re-derives the
 	// advertised view on every call, so without this the Serve path re-sweeps every backend's
-	// tools/list per tool call. The cache is keyed on identity + forwarded credentials, so it
-	// never serves one caller's capability view to another.
+	// tools/list per tool call. The cache is keyed on the session binding, platform user ID,
+	// forwarded headers and backend IDs, so it does not serve one caller's view to a caller with
+	// a different issuer, subject or delegated client. It does not key on the caller's tokens.
 	cachedAgg := aggregator.NewCachingAggregator(cfg.Aggregator, capabilityCacheTTL)
 
 	// Code mode telemetry is built before the core, so a failure here has
@@ -1397,6 +1404,13 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 		return // tools already registered (normal pod-local case)
 	}
 	sessionID := sess.SessionID()
+	// Listing the tools may reach the backends, so the session's DELETE
+	// cancels it like any other request (see openRequests).
+	ctx, end := s.openRequests.begin(ctx, sessionID)
+	defer end()
+	if ctx.Err() != nil {
+		return
+	}
 
 	// Re-derive the tool set the same way registration did, so cross-pod re-injection
 	// matches the advertised set: a fresh core.ListTools for the request identity (the core

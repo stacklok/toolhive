@@ -86,9 +86,41 @@ type idJAGChain struct {
 	vmcpURL   string
 	// toolCalls counts the backend tool calls.
 	toolCalls *atomic.Int32
+	// hooks, when set, are the alpha backend's long-running tools.
+	hooks *chainHooks
+}
+
+// chainWaitLimit bounds how long alpha_wait runs when it is not cancelled.
+const chainWaitLimit = 20 * time.Second
+
+// chainHooks drive the alpha backend's long-running tools: alpha_wait, which
+// runs until it is cancelled or for chainWaitLimit, and alpha_ask, which asks the client a question
+// once askNow is closed and answers with the client's action.
+type chainHooks struct {
+	waitStarted   chan struct{}
+	waitCancelled chan struct{}
+	askStarted    chan struct{}
+	askNow        chan struct{}
+}
+
+// chainOptions vary the chain.
+type chainOptions struct {
+	// accessTokenLifespan, when set, is the lifetime of AS-2's access tokens.
+	accessTokenLifespan string
+	// longCalls adds the alpha backend's long-running tools (chainHooks).
+	longCalls bool
+	// expiredTokenGrace, when set, lets AS-2's tokens for chainAS2Client send
+	// their call's messages for that long after exp (the vMCP's
+	// ExpiredTokenAdmission list). Unset keeps exp strict.
+	expiredTokenGrace time.Duration
 }
 
 func startIDJAGChain(t *testing.T) *idJAGChain {
+	t.Helper()
+	return startIDJAGChainWith(t, chainOptions{})
+}
+
+func startIDJAGChainWith(t *testing.T, opts chainOptions) *idJAGChain {
 	t.Helper()
 	ctx := t.Context()
 	l1, l2 := chainListen(t), chainListen(t)
@@ -96,13 +128,19 @@ func startIDJAGChain(t *testing.T) *idJAGChain {
 		as1URL: "http://" + l1.Addr().String(), as2URL: "http://" + l2.Addr().String(),
 		toolCalls: &atomic.Int32{},
 	}
+	if opts.longCalls {
+		c.hooks = &chainHooks{
+			waitStarted: make(chan struct{}, 1), waitCancelled: make(chan struct{}, 1),
+			askStarted: make(chan struct{}, 1), askNow: make(chan struct{}),
+		}
+	}
 	dir := t.TempDir()
 	var brokerJWKS, as2JWKS string
 	c.brokerKey, brokerJWKS = chainClientKey(t, dir, "broker")
 	c.as2Key, as2JWKS = chainClientKey(t, dir, "as2-client")
 
 	as2, err := authserverrunner.NewEmbeddedAuthServerWithStorage(ctx,
-		chainAS2Config(c.as2URL, c.as1URL, as2JWKS), storage.NewMemoryStorage(),
+		chainAS2Config(c.as2URL, c.as1URL, as2JWKS, opts.accessTokenLifespan), storage.NewMemoryStorage(),
 		authserverrunner.WithAuthorizationDetailsRegistry(chainRegistry(t)))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = as2.Close() })
@@ -124,7 +162,13 @@ func startIDJAGChain(t *testing.T) *idJAGChain {
 	chainServe(t, l1, as1.Handler())
 	chainServe(t, l2, as2.Handler())
 
-	c.vmcpURL = startChainVMCP(t, c.as2URL, c.toolCalls)
+	var admission []callbinding.ExpiredTokenAdmission
+	if opts.expiredTokenGrace > 0 {
+		admission = []callbinding.ExpiredTokenAdmission{
+			{Issuer: c.as2URL, ClientID: chainAS2Client, Grace: opts.expiredTokenGrace},
+		}
+	}
+	c.vmcpURL = startChainVMCP(t, c.as2URL, c.toolCalls, c.hooks, admission)
 	return c
 }
 
@@ -228,8 +272,9 @@ func chainAS1Config(issuer, as2Issuer, brokerJWKS string) *authserver.RunConfig 
 }
 
 // chainAS2Config trusts AS-1, binds AS-1's user to the vMCP's resource, and
-// lets chainAS2Client redeem ID-JAGs addressed to AS-2.
-func chainAS2Config(issuer, as1Issuer, clientJWKS string) *authserver.RunConfig {
+// lets chainAS2Client redeem ID-JAGs addressed to AS-2, for access tokens of
+// accessTokenLifespan when it is set.
+func chainAS2Config(issuer, as1Issuer, clientJWKS, accessTokenLifespan string) *authserver.RunConfig {
 	cfg := chainBaseConfig(issuer)
 	resources := []string{chainResource}
 	cfg.AllowedAudiences = resources
@@ -243,6 +288,7 @@ func chainAS2Config(issuer, as1Issuer, clientJWKS string) *authserver.RunConfig 
 				GrantTypes:                  []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
 				Scopes:                      []string{"openid", "profile"},
 				Audiences:                   resources,
+				AccessTokenLifespan:         accessTokenLifespan,
 				TokenExchange: &authserver.DelegateClientTokenExchange{
 					SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensAny,
 				},
@@ -266,8 +312,9 @@ func chainAS2Config(issuer, as1Issuer, clientJWKS string) *authserver.RunConfig 
 }
 
 // startChainBackend starts an MCP backend named id with one tool, prompt,
-// resource and resource template, each named after id.
-func startChainBackend(t *testing.T, id string, toolCalls *atomic.Int32) string {
+// resource and resource template, each named after id, and the long-running
+// tools hooks drive on the first backend when hooks is set.
+func startChainBackend(t *testing.T, id string, toolCalls *atomic.Int32, hooks *chainHooks) string {
 	t.Helper()
 	srv := mcpserver.NewMCPServer(id, "1.0.0")
 	srv.AddTool(mcpmcp.NewTool(id+"_echo", mcpmcp.WithString("input", mcpmcp.Required())),
@@ -277,6 +324,9 @@ func startChainBackend(t *testing.T, id string, toolCalls *atomic.Int32) string 
 			input, _ := args["input"].(string)
 			return &mcpmcp.CallToolResult{Content: []mcpmcp.Content{mcpmcp.NewTextContent(input)}}, nil
 		})
+	if hooks != nil && id == chainBackends[0] {
+		addChainLongCalls(srv, id, hooks)
+	}
 	srv.AddPrompt(mcpmcp.NewPrompt("review"),
 		func(context.Context, mcpmcp.GetPromptRequest) (*mcpmcp.GetPromptResult, error) {
 			return &mcpmcp.GetPromptResult{}, nil
@@ -297,17 +347,57 @@ func startChainBackend(t *testing.T, id string, toolCalls *atomic.Int32) string 
 	return ts.URL + "/mcp"
 }
 
+// addChainLongCalls adds id_wait and id_ask (see chainHooks) to srv.
+func addChainLongCalls(srv *mcpserver.MCPServer, id string, hooks *chainHooks) {
+	srv.AddTool(mcpmcp.NewTool(id+"_wait"),
+		func(ctx context.Context, _ mcpmcp.CallToolRequest) (*mcpmcp.CallToolResult, error) {
+			hooks.waitStarted <- struct{}{}
+			// Bounded, so a cancellation that never reaches the backend does
+			// not hold the test's servers open.
+			select {
+			case <-ctx.Done():
+				hooks.waitCancelled <- struct{}{}
+				return nil, ctx.Err()
+			case <-time.After(chainWaitLimit):
+				return &mcpmcp.CallToolResult{Content: []mcpmcp.Content{mcpmcp.NewTextContent("not cancelled")}}, nil
+			}
+		})
+	srv.AddTool(mcpmcp.NewTool(id+"_ask"),
+		func(ctx context.Context, _ mcpmcp.CallToolRequest) (*mcpmcp.CallToolResult, error) {
+			hooks.askStarted <- struct{}{}
+			select {
+			case <-hooks.askNow:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			res, err := srv.RequestElicitation(ctx, mcpmcp.ElicitationRequest{Params: mcpmcp.ElicitationParams{
+				Message:         "Go ahead?",
+				RequestedSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+			}})
+			if err != nil {
+				return nil, err
+			}
+			return &mcpmcp.CallToolResult{Content: []mcpmcp.Content{
+				mcpmcp.NewTextContent("client said " + string(res.Action)),
+			}}, nil
+		})
+}
+
 // startChainVMCP builds a vMCP over the chainBackends whose incoming auth is
 // the OIDC validator for AS-2's access tokens for chainResource, and that
-// requires an entry from chainAS2Client's tokens.
-func startChainVMCP(t *testing.T, as2Issuer string, toolCalls *atomic.Int32) string {
+// requires an entry from chainAS2Client's tokens. The validator and the
+// server share one call binding, as the vmcp command wires them.
+func startChainVMCP(
+	t *testing.T, as2Issuer string, toolCalls *atomic.Int32, hooks *chainHooks,
+	admission []callbinding.ExpiredTokenAdmission,
+) string {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	registry := mocks.NewMockBackendRegistry(ctrl)
 	backends := make([]vmcp.Backend, 0, len(chainBackends))
 	for _, id := range chainBackends {
 		backends = append(backends, vmcp.Backend{
-			ID: id, Name: id, BaseURL: startChainBackend(t, id, toolCalls), TransportType: "streamable-http",
+			ID: id, Name: id, BaseURL: startChainBackend(t, id, toolCalls, hooks), TransportType: "streamable-http",
 		})
 	}
 	registry.EXPECT().List(gomock.Any()).Return(backends).AnyTimes()
@@ -328,13 +418,17 @@ func startChainVMCP(t *testing.T, as2Issuer string, toolCalls *atomic.Int32) str
 	resolver, err := aggregator.NewPriorityConflictResolver(chainBackends)
 	require.NoError(t, err)
 
+	binding, err := callbinding.New(callbinding.Config{
+		Clients: []string{chainAS2Client}, ExpiredTokenAdmission: admission,
+	})
+	require.NoError(t, err)
 	authMw, _, _, err := authfactory.NewIncomingAuthMiddleware(t.Context(), &config.IncomingAuthConfig{
 		Type: config.IncomingAuthTypeOIDC,
 		OIDC: &config.OIDCConfig{
 			Issuer: as2Issuer, Audience: chainResource, Resource: chainResource,
 			JWKSURL: as2Issuer + "/.well-known/jwks.json", InsecureAllowHTTP: true, JwksAllowPrivateIP: true,
 		},
-	}, "test-vmcp", nil, nil, nil, "")
+	}, "test-vmcp", nil, nil, nil, "", authfactory.WithCallBinding(binding))
 	require.NoError(t, err)
 
 	srv, err := server.New(t.Context(), &server.Config{
@@ -342,9 +436,12 @@ func startChainVMCP(t *testing.T, as2Issuer string, toolCalls *atomic.Int32) str
 		SessionFactory: vmcpsession.NewSessionFactory(authReg),
 		Aggregator:     aggregator.NewDefaultAggregator(backendClient, resolver, nil, nil),
 		AuthMiddleware: authMw,
-		CallBinding:    callbinding.Config{Clients: []string{chainAS2Client}},
+		CallBinding:    binding,
 	}, router.NewSessionRouter(&vmcp.RoutingTable{}), backendClient, registry, nil)
 	require.NoError(t, err)
+	// Registered after the backends, so it runs before they close: stopping
+	// the server closes its backend sessions and their streams.
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
 	handler, err := srv.Handler(t.Context())
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)

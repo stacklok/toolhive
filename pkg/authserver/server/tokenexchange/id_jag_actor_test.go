@@ -32,18 +32,9 @@ const (
 	descSubjectUnknown     = "subject_unknown"
 )
 
-// actorRedeem runs one redemption of claims against a handler built from
-// policy and returns the replay consumer, the handler's log and the error.
-func actorRedeem(
-	t *testing.T, policy *JWTBearerGrantPolicy, claims *ValidatedClaims, prepare func(*IDJAGHandler),
-) (*recordingAssertionConsumer, *strings.Builder, error) {
-	t.Helper()
-	_, consumer, buf, err := actorRedeemRequest(t, policy, claims, prepare)
-	return consumer, buf, err
-}
-
-// actorRedeemRequest is actorRedeem that also returns the access request, so a
-// test can read the session the redemption installed.
+// actorRedeemRequest runs one redemption of claims against a handler built from
+// policy and returns the access request, the replay consumer, the handler's log
+// and the error.
 func actorRedeemRequest(
 	t *testing.T, policy *JWTBearerGrantPolicy, claims *ValidatedClaims, prepare func(*IDJAGHandler),
 ) (fosite.AccessRequester, *recordingAssertionConsumer, *strings.Builder, error) {
@@ -102,35 +93,57 @@ func requireActorLog(t *testing.T, buf *strings.Builder, level, wantReason strin
 	return lines[0]
 }
 
+// resolvingActorRedeem is actorRedeemRequest with a resolver that maps the ID-JAG's
+// upstream subject to resolveTestUser, so a redemption that passes the actor
+// checks reaches issuance.
+func resolvingActorRedeem(
+	t *testing.T, policy *JWTBearerGrantPolicy, act any,
+) (fosite.AccessRequester, *recordingAssertionConsumer, *strings.Builder, error) {
+	t.Helper()
+	resolver := subjectmocks.NewMockResolver(gomock.NewController(t))
+	resolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(resolveTestUser, nil).AnyTimes()
+	claims := resolveClaims(validUpstreamSubject())
+	if act == nil {
+		delete(claims.Extra, "act")
+	} else {
+		claims.Extra["act"] = act
+	}
+	return actorRedeemRequest(t, policy, claims, func(h *IDJAGHandler) { h.resolver = resolver })
+}
+
 func TestIDJAGActor_EffectiveActor(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name       string
 		act        any
-		want       string
+		wantDenied bool // actor_denied; otherwise the redemption is issued
 		wantReason string
 	}{
-		{"act missing", nil, descActorDenied, actor.ReasonNoActor},
-		{"act is a string", "okta-agent", descActorDenied, reasonActorMalformed},
-		{"act has no sub", map[string]any{"iss": idJAGTestIssuer}, descActorDenied, reasonActorMalformed},
-		{"act.iss is a number", map[string]any{"sub": "a", "iss": 7}, descActorDenied, reasonActorMalformed},
-		{"act.iss is empty", map[string]any{"sub": "a", "iss": ""}, descActorDenied, reasonActorMalformed},
-		{"act without iss takes the ID-JAG iss", map[string]any{"sub": "a"}, descSubjectUnknown, ""},
+		{"act missing", nil, true, actor.ReasonNoActor},
+		{"act is a string", "okta-agent", true, reasonActorMalformed},
+		{"act has no sub", map[string]any{"iss": idJAGTestIssuer}, true, reasonActorMalformed},
+		{"act.iss is a number", map[string]any{"sub": "a", "iss": 7}, true, reasonActorMalformed},
+		{"act.iss is empty", map[string]any{"sub": "a", "iss": ""}, true, reasonActorMalformed},
+		{"act without iss takes the ID-JAG iss", map[string]any{"sub": "a"}, false, ""},
 		{
 			"nested act does not decide",
 			map[string]any{"sub": "a", "iss": actorTestAllowedIssuer, "act": map[string]any{"sub": "b", "iss": actorTestOtherIssuer}},
-			descSubjectUnknown, "",
+			false, "",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			consumer, buf, err := actorRedeem(t, resolvePolicyWithActors(actorTestAllowedIssuer), claimsWithAct(tt.act), nil)
-			requireActorOutcome(t, err, consumer, tt.want)
-			if tt.wantReason != "" {
-				requireActorLog(t, buf, "DEBUG", tt.wantReason)
+			policy := resolvePolicyWithActors(actorTestAllowedIssuer)
+			_, consumer, buf, err := resolvingActorRedeem(t, policy, tt.act)
+			if !tt.wantDenied {
+				require.NoError(t, err)
+				assert.Equal(t, "id-jag-jti", consumer.key)
+				return
 			}
+			requireActorOutcome(t, err, consumer, descActorDenied)
+			requireActorLog(t, buf, "DEBUG", tt.wantReason)
 		})
 	}
 }
@@ -139,30 +152,28 @@ func TestIDJAGActor_IssuerAllowlist(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		actIssuer string
-		want      string
+		name       string
+		actIssuer  string
+		wantDenied bool
 	}{
-		{"act.iss is the ID-JAG's own iss", idJAGTestIssuer, descSubjectUnknown},
-		{"act.iss is in actor_issuers", actorTestAllowedIssuer, descSubjectUnknown},
-		{"act.iss is not listed", actorTestOtherIssuer, descActorDenied},
+		{"act.iss is the ID-JAG's own iss", idJAGTestIssuer, false},
+		{"act.iss is in actor_issuers", actorTestAllowedIssuer, false},
+		{"act.iss is not listed", actorTestOtherIssuer, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			// The policy runs after resolution, which the closed gate precedes,
-			// so the handler never reaches it.
-			policy := mocks.NewMockPolicy(gomock.NewController(t))
-			policy.EXPECT().Evaluate(gomock.Any(), gomock.Any()).Times(0)
-			claims := claimsWithAct(map[string]any{"sub": "a", "iss": tt.actIssuer})
+			act := map[string]any{"sub": "a", "iss": tt.actIssuer}
 
-			consumer, buf, err := actorRedeem(t, resolvePolicyWithActors(actorTestAllowedIssuer), claims,
-				func(h *IDJAGHandler) { h.actorPolicies[idJAGTestIssuer] = policy })
+			_, consumer, buf, err := resolvingActorRedeem(t, resolvePolicyWithActors(actorTestAllowedIssuer), act)
 
-			requireActorOutcome(t, err, consumer, tt.want)
-			if tt.want == descActorDenied {
-				requireActorLog(t, buf, "DEBUG", actor.ReasonIssuerNotAllowed)
+			if !tt.wantDenied {
+				require.NoError(t, err)
+				assert.Equal(t, "id-jag-jti", consumer.key)
+				return
 			}
+			requireActorOutcome(t, err, consumer, descActorDenied)
+			requireActorLog(t, buf, "DEBUG", actor.ReasonIssuerNotAllowed)
 		})
 	}
 }

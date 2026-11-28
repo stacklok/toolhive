@@ -1895,3 +1895,50 @@ func encodeAuditEvent(t *testing.T, v any) string {
 	require.NoError(t, err)
 	return string(raw)
 }
+
+func TestAddMetadataAdmittedAfterExpiry(t *testing.T) {
+	t.Parallel()
+	auditor, err := NewAuditorWithTransport(&Config{}, "http")
+	require.NoError(t, err)
+	rw := &responseWriter{ResponseWriter: httptest.NewRecorder()}
+	entry := map[string]any{"type": "https://toolhive.dev/mcp_tool_call", "operation_id": "op-7"}
+
+	for name, tc := range map[string]struct {
+		identity      *auth.Identity
+		wantMarked    bool
+		wantOperation any
+	}{
+		"admitted with an operation ID": {
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{Claims: map[string]any{
+					"authorization_details": []any{map[string]any{"type": "other"}, entry},
+				}},
+				AdmittedAfterExpiry: time.Now().Add(-time.Minute),
+			},
+			wantMarked: true, wantOperation: "op-7",
+		},
+		"admitted without an entry": {
+			identity:   &auth.Identity{AdmittedAfterExpiry: time.Now().Add(-time.Minute)},
+			wantMarked: true,
+		},
+		"valid token": {
+			identity: &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Claims: map[string]any{
+				"authorization_details": []any{entry},
+			}}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
+			req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			req = req.WithContext(auth.WithIdentity(req.Context(), tc.identity))
+			auditor.addMetadata(event, req, time.Millisecond, rw)
+			marked, ok := event.Metadata.Extra[MetadataExtraKeyAdmittedAfterExpiry]
+			assert.Equal(t, tc.wantMarked, ok)
+			if tc.wantMarked {
+				assert.Equal(t, true, marked)
+			}
+			assert.Equal(t, tc.wantOperation, event.Metadata.Extra[MetadataExtraKeyOperationID])
+		})
+	}
+}

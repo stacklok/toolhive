@@ -356,7 +356,7 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}client:{client_id}` | OAuth client registration | DCR-issued: 24 hours until first token exchange, then 30 days sliding, renewed on use / none (pre-provisioned) |
 | `{prefix}client-idx` | Sorted set of DCR-issued client IDs counted against the DCR client cap, scored by expiry (Unix ms) | None; entries are trimmed as their score passes |
 | `{prefix}user:{user_id}` | User account | None |
-| `{prefix}provider:{len}:{provider_id}:{subject}` | Provider identity linkage | None |
+| `{prefix}provider:{len}:{provider_id}:{subject}` | Provider identity linkage (JSON: `user_id`, `provider_id`, `provider_subject`, `linked_at`, `last_used_at`, plus optional `issuer` and `subject_claim` binding members) | None |
 | `{prefix}upstream:{session_id}:{provider}` | Upstream IDP tokens, one key per provider | Access token expiry + 30 days; session expiry + 30 days if the token has no expiry; none if neither is set |
 | `{prefix}pending:{handle_or_state}` | Browser-bound consent handle or upstream callback state | Remaining time until the initial `CreatedAt` + 10 minutes; deadline checked before consent/callback consumption |
 | `{prefix}consent:session:{digest}` | SHA-256 digest of the browser session cookie secret (never the raw secret) | Remaining fixed lifetime, at most 7 days |
@@ -388,7 +388,12 @@ When upgrading to the release that adds the 60 second clock margin for `private_
 
 When upgrading to the release that adds upstream subject identifiers (`sub_id` and the `https://toolhive.dev/upstream_subject` claim), see [Storage and upgrades](arch/11-auth-server-storage.md#storage-and-upgrades): replicas running an older version drop the stored upstream identity during a rolling upgrade or after a rollback, and can issue a stored `sub_id` or upstream subject claim again without checking the disclosure setting.
 
-The DCR client cap registers a client with one Lua script that touches both `{prefix}client:{client_id}` and `{prefix}client-idx`, and a user's first login links the upstream identity with one Lua script that touches `{prefix}user:{user_id}`, `{prefix}provider:...` and `{prefix}user:providers:{user_id}`. On Redis Cluster the key prefix must therefore contain a `{...}` hash tag; a prefix without one fails every DCR registration and every first login with `CROSSSLOT`. The operator's `DeriveKeyPrefix` always includes one. `{prefix}client-idx` has no TTL, so under an `allkeys-lru` or `allkeys-random` `maxmemory-policy` Redis may evict it, which resets the cap count and the `toolhive_authserver_dcr_clients` gauge to zero until new registrations rebuild it or a restart reruns the backfill. Use `noeviction` or a `volatile-*` policy.
+When upgrading to the release that binds provider-identity rows to `issuer` and `subject_claim`:
+
+- Both JSON members use `omitempty`, so pre-upgrade rows without them still decode and older replicas ignore them (including across `UpdateProviderIdentityLastUsed` Lua updates, which preserve unknown JSON members).
+- Pre-upgrade unstamped rows match on first use and are stamped atomically in place at an interactive sign-in (logging once per resolver at `WARN` without user or subject PII; there is one resolver per server instance). Rows of users who have not signed in stay unstamped, so do the upgrade and any change to an upstream's `issuer` or `subject_claim` in separate rollouts. See [Migrating Identity Providers or Subject Claims](#migrating-identity-providers-or-subject-claims).
+
+The DCR client cap registers a client with one Lua script that touches both `{prefix}client:{client_id}` and `{prefix}client-idx`, and provider-identity linking and compare-and-swap touch `{prefix}user:{user_id}`, `{prefix}provider:...`, and `{prefix}user:providers:{user_id}` (both old and new user sets on replacement) in one Lua script. On Redis Cluster the key prefix must therefore contain a `{...}` hash tag; a prefix without one fails every DCR registration and every first login or binding replacement with `CROSSSLOT`. The operator's `DeriveKeyPrefix` always includes one. `{prefix}client-idx` has no TTL, so under an `allkeys-lru` or `allkeys-random` `maxmemory-policy` Redis may evict it, which resets the cap count and the `toolhive_authserver_dcr_clients` gauge to zero until new registrations rebuild it or a restart reruns the backfill. Use `noeviction` or a `volatile-*` policy.
 
 ### Secondary Indexes
 
@@ -408,11 +413,31 @@ These indexes enable grant-wide operations like token revocation (finding all to
 
 The storage implementation uses different strategies depending on the consistency requirements of each operation:
 
-- **Lua scripts** for strict atomicity: upstream token storage with user reverse-index cleanup, last-used timestamp updates, provider identity linking (user check, set-if-absent link, and reverse-index entry)
+- **Lua scripts** for strict atomicity: upstream token storage with user reverse-index cleanup, last-used timestamp updates, provider identity linking (user check, set-if-absent link, and reverse-index entry), provider identity compare-and-swap (stamping unstamped rows in place or replacing mismatched rows while moving the reverse-index entry), and ownership-checked provider identity cleanup during `DeleteUser`
 - **Pipelines** (`MULTI`/`EXEC`) for batched operations: authorization code invalidation, token session creation with secondary index updates
 - **Individual commands** with best-effort cleanup: token revocation, refresh token rotation. These operations use `SMEMBERS` + individual `DEL` calls, meaning partial failures are possible but safe (orphaned keys expire via TTL)
 
 Secondary index cleanup is best-effort: stale entries may remain temporarily but are cleaned up on the next write or by TTL expiration.
+
+## Migrating Identity Providers or Subject Claims
+
+Provider-identity rows record the upstream `issuer` and `subject_claim` that created them. For plain OAuth 2.0 upstreams the stamped issuer is `oauth2:<mode>:sha256:<hex>`, a hash of the lower-cased host of the identity endpoint (plus the port when it is not the scheme's default), and the stamped claim is the subject extraction rule. No endpoint address is stored. If you change an upstream's identity provider (`issuer`) or `subject_claim` while keeping the same upstream name and Redis store:
+
+- **Rows from before the upgrade.** A row written before the upgrade stays unstamped until its user signs in interactively; stamping never finishes by itself, and the auth server offers no way to see progress. If the issuer or subject claim changes while such rows remain, the first person at the new configuration with the same subject value takes over that account, through both sign-in and, once enabled, ID-JAG resolution. Do the upgrade and any repoint in separate rollouts, with enough time between them for users to sign in. If old accounts must not carry over at all, use a fresh Redis store.
+- **Stamped rows give new local accounts.** For rows stamped under the old configuration, the user's next sign-in creates a new local account and replaces the `(provider, subject)` link, and the previous account stays untouched in Redis. ID-JAG resolution returns `subject_unknown` for them until the user signs in.
+- **Downstream connections must be re-established.** Upstream tokens and connections stored under the previous local account are not moved to the new account.
+- **Existing tokens keep the old account.** Access and refresh tokens already issued keep the old account. Refresh grants keep working until the upstream rejects the refresh, which may never happen after a claim-only change, and a stored upstream refresh token can also be sent to the new identity provider. Revoke existing sessions before repointing an upstream. See the issue "Refresh tokens are sent to a repointed upstream's new IdP" (#7333).
+- **Remembered consent.** A browser with a remembered consent session receives one `access_denied`. The server deletes the remembered consent session, so the next attempt shows the consent screen.
+- **ID-JAG resolution.** Once delegated access is turned on (`subject_mode: resolve` is refused earlier, before the resolver runs, until then), assertions for the new issuer or claim return `subject_unknown` until each user signs in once under the new configuration. A row that is still unstamped is accepted read-only. That is logged once per resolver.
+- **In-flight flows.** A device confirmation or browser authorization that starts before a cutover and finishes after it completes for the user it resolved when it started.
+
+**Recommended cutover steps:**
+
+1. Upgrade all auth-server replicas in one rollout, and change `issuer` or `subject_claim` in a later one, after users have had time to sign in.
+2. Verify the exact `iss` string (including any trailing slash) and `subject_claim` on a token from the target IdP. Switching between an omitted `subject_claim` and explicit `"sub"` is a no-op; switching between two different claims (for example `"sub"` to `"oid"`) re-keys users even if the claim values are identical. For a plain OAuth 2.0 upstream, these edits re-key users: the host of the identity endpoint (or its port when it is not the scheme's default), the mode, `subject_path`, and the `subject_fields` list or its order (including adding a fallback field). A change to the path, query string or trailing slash of an endpoint, the case of its host, a written-out default port, or a scheme change on an endpoint with no explicit port does not.
+3. Revoke existing sessions before repointing the upstream.
+4. Stop all replicas before repointing an upstream, rather than running old-config and new-config replicas side by side against the same Redis prefix. Mixed configurations serving concurrent traffic repeatedly replace the same `(provider, subject)` row and create extra accounts. This orphans users and drops their upstream connections; it does not let one person take over another's account. Stop all replicas, change the upstream configuration, then start them with the new one. For an operator-managed deployment, set `spec.replicas` to `0` on the `MCPServer`, `VirtualMCPServer` or `MCPRemoteProxy` that serves the auth server (pause any HPA that manages the replicas first), wait for the pods to terminate, change the configuration, then set `spec.replicas` back.
+5. Renaming the upstream does not isolate old accounts. At every startup the legacy-data migration copies rows stored under the old protocol-name keys (`oidc`, `oauth2`) to each upstream's current name, unstamped, so a new name can still inherit old accounts. If you need hard isolation, use a fresh Redis store. A new `keyPrefix` also isolates, but only with a hand-written RunConfig; operator-managed workloads cannot set it.
 
 ## Troubleshooting
 

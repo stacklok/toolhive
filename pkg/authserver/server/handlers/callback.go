@@ -255,7 +255,8 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// This was generated in authorize.go and will be reused across all legs of the chain.
 	sessionID := pending.SessionID
 
-	if h.rememberedIdentityRejected(ctx, w, ar, pending, result, providerID) {
+	rememberedUser, rejected := h.resolveRememberedUser(ctx, w, ar, pending, result, providerID)
+	if rejected {
 		return
 	}
 
@@ -271,7 +272,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		if result.Synthetic {
 			subject = result.Subject
 		} else {
-			user, ok := h.resolveFirstLegUser(ctx, w, ar, providerID, providerSubject)
+			user, ok := h.resolveFirstLegUser(ctx, w, ar, providerID, providerSubject, rememberedUser)
 			if !ok {
 				return
 			}
@@ -358,35 +359,45 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	h.continueChainOrComplete(ctx, w, req, ar, pending, sessionID, principal, nil)
 }
 
-// rememberedIdentityRejected checks that a remembered approval still resolves to
-// the same linked account, before ResolveUser or any token write. It reports
-// whether it already answered the request with an error.
-func (h *Handler) rememberedIdentityRejected(ctx context.Context, w http.ResponseWriter, ar fosite.AuthorizeRequester,
-	pending *storage.PendingAuthorization, result *upstream.Identity, providerID string) bool {
-	providerSubject := result.Subject
-	if pending.ResolvedUserID == "" && pending.ConsentSessionDigest != "" && pending.ExpectedUserID == "" {
+// resolveRememberedUser handles a remembered approval before any token write. It
+// reads the provider identity once, through a lookup that never creates or
+// replaces a user or a link, and returns the expected user. It returns nil user
+// and false when the callback is not a remembered first leg; the caller then
+// resolves the user normally. When it returns rejected it has already answered
+// the request: access_denied (the consent session deleted) for a changed
+// account, server_error for a storage failure or an inconsistent pending
+// authorization.
+func (h *Handler) resolveRememberedUser(ctx context.Context, w http.ResponseWriter, ar fosite.AuthorizeRequester,
+	pending *storage.PendingAuthorization, result *upstream.Identity, providerID string) (user *storage.User, rejected bool) {
+	if pending.ResolvedUserID != "" {
+		return nil, false
+	}
+	if pending.ExpectedUserID == "" {
+		if pending.ConsentSessionDigest != "" {
+			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError)
+			return nil, true
+		}
+		return nil, false
+	}
+	if pending.ConsentSessionDigest == "" || h.rememberedStorage == nil {
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError)
-		return true
+		return nil, true
 	}
-	if pending.ExpectedUserID != "" && pending.ResolvedUserID == "" {
-		if pending.ConsentSessionDigest == "" || h.rememberedStorage == nil {
-			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError)
-			return true
-		}
-		identity, lookupErr := h.storage.GetProviderIdentity(ctx, providerID, providerSubject)
-		if !result.Synthetic && providerSubject == pending.ExpectedProviderSubject &&
-			lookupErr == nil && identity != nil && identity.UserID == pending.ExpectedUserID {
-			// The remembered identity was verified without changing user or token storage.
-		} else if lookupErr != nil && !isNotFoundOrExpired(lookupErr) {
-			slog.Error("failed to verify remembered identity", "error", lookupErr)
-			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError)
-			return true
-		} else {
-			h.revokeRememberedSession(ctx, w, ar, pending.ConsentSessionDigest)
-			return true
-		}
+	if result.Synthetic || result.Subject != pending.ExpectedProviderSubject {
+		h.revokeRememberedSession(ctx, w, ar, pending.ConsentSessionDigest)
+		return nil, true
 	}
-	return false
+	user, err := h.userResolver.ResolveExpectedUser(ctx, providerID, result.Subject, pending.ExpectedUserID)
+	switch {
+	case err == nil:
+		return user, false
+	case errors.Is(err, ErrRememberedIdentityMismatch):
+		h.revokeRememberedSession(ctx, w, ar, pending.ConsentSessionDigest)
+	default:
+		slog.Error("failed to verify remembered identity", "error", err)
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError)
+	}
+	return nil, true
 }
 
 // revokeRememberedSession deletes the originating consent session and answers
@@ -679,7 +690,8 @@ func (h *Handler) callbackClient(ctx context.Context, id string) (fosite.Client,
 }
 
 // resolveFirstLegUser resolves the local user for the first-leg login through
-// providerID. On failure it writes the authorize error and returns false.
+// providerID. A non-nil remembered user, already verified by resolveRememberedUser,
+// is returned as is. On failure it writes the authorize error and returns false.
 //
 // Only the first upstream creates users and identity links (see WithCreateOnlyFor).
 // A pending authorization that reaches user resolution through any other upstream,
@@ -691,13 +703,21 @@ func (h *Handler) resolveFirstLegUser(
 	w http.ResponseWriter,
 	ar fosite.AuthorizeRequester,
 	providerID, providerSubject string,
+	remembered *storage.User,
 ) (*storage.User, bool) {
+	if remembered != nil {
+		return remembered, true
+	}
 	user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
 	if err != nil {
 		// A refused later upstream is a deliberate denial, not a server fault.
-		if errors.Is(err, ErrUpstreamCannotCreateUsers) {
+		switch {
+		case errors.Is(err, ErrUpstreamCannotCreateUsers):
 			slog.Warn("refused user creation through a later upstream", "error", err)
-		} else {
+		case errors.Is(err, ErrIdentityBindingMismatch):
+			slog.Warn("refused sign-in: identity link was created under a different issuer or subject claim",
+				"provider_id", providerID)
+		default:
 			slog.Error("failed to resolve user", "error", err)
 		}
 		// A UserStorage that deliberately refuses to auto-provision this
@@ -710,6 +730,9 @@ func (h *Handler) resolveFirstLegUser(
 			resolveErr = fosite.ErrAccessDenied.WithHint("user not provisioned")
 		case errors.Is(err, ErrUpstreamCannotCreateUsers):
 			resolveErr = fosite.ErrAccessDenied.WithHint("this upstream cannot create users")
+		case errors.Is(err, ErrIdentityBindingMismatch):
+			resolveErr = fosite.ErrAccessDenied.WithHint(
+				"the account's identity link was created under a different issuer or subject claim")
 		}
 		h.provider.WriteAuthorizeError(ctx, w, ar, resolveErr)
 		return nil, false

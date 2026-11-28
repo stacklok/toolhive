@@ -234,7 +234,13 @@ func TestIDJAGResolve_Resolver(t *testing.T) {
 	}
 }
 
-func TestIDJAGResolve_Found(t *testing.T) {
+// TestIDJAGResolve_FoundIssuesMarkedSessionlessToken checks the token a
+// resolved redemption issues: it carries the delegated-access marker and
+// no_upstream_session but no tsid (a usable tsid prevents delegated admission
+// at vMCP). Redemption grants no scope, and populating the response adds no
+// refresh token. The HTTP-level test covers a client that asks for
+// offline_access. Other fosite handlers are not exercised here.
+func TestIDJAGResolve_FoundIssuesMarkedSessionlessToken(t *testing.T) {
 	t.Parallel()
 
 	mock := mocks.NewMockResolver(gomock.NewController(t))
@@ -254,6 +260,14 @@ func TestIDJAGResolve_Found(t *testing.T) {
 	assert.Equal(t, resolveTestUser, sess.GetSubject())
 	assert.Equal(t, true, sess.JWTClaims.Extra[claimnames.DelegatedAccessKey])
 	assert.Equal(t, fosite.Arguments{idJAGTestResource}, f.req.GetGrantedAudience())
+	assert.NotContains(t, sess.JWTClaims.Extra, claimnames.TokenSessionIDKey)
+	assert.Equal(t, true, sess.JWTClaims.Extra[claimnames.NoUpstreamSessionKey])
+
+	assert.Empty(t, f.req.GetGrantedScopes())
+	resp := fosite.NewAccessResponse()
+	require.NoError(t, f.h.PopulateTokenEndpointResponse(t.Context(), f.req, resp))
+	assert.NotEmpty(t, resp.GetAccessToken())
+	assert.NotContains(t, resp.ToMap(), "refresh_token")
 }
 
 // TestIDJAGResolve_FillsClientLifespan is a wiring test: the resolve path
@@ -333,26 +347,6 @@ func TestIDJAGIssuanceFactory_SubjectResolution(t *testing.T) {
 	})
 }
 
-func TestIDJAGHandler_GateRunsBeforeResolution(t *testing.T) {
-	t.Parallel()
-
-	resolver := mocks.NewMockResolver(gomock.NewController(t))
-	resolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Times(0)
-
-	claims := resolveClaims(validUpstreamSubject())
-	// The handler built here governs no resources, so with the claim present the
-	// request would be refused earlier as an ungoverned resource and never reach
-	// the gate.
-	delete(claims.Extra, "resource")
-
-	req, consumer, _, err := actorRedeemRequest(t, resolvePolicyWithActors(), claims,
-		func(h *IDJAGHandler) { h.resolver = resolver })
-
-	requireRefusal(t, err, "access_denied", descSubjectUnknown)
-	assert.Empty(t, consumer.key, "the ID-JAG must stay unused")
-	assert.Empty(t, req.GetSession().GetSubject(), "no session is installed")
-}
-
 func TestIDJAGResolve_NamespacedSession(t *testing.T) {
 	t.Parallel()
 
@@ -420,8 +414,12 @@ func TestIDJAGResolve_HandlerDoesNotNarrowResolver(t *testing.T) {
 					Return(nil, storage.ErrNotFound).AnyTimes()
 			}
 			resolver, err := subjectresolver.New(map[string]subjectresolver.Provider{
-				resolveTestUpstreamIssuer: {Name: "first", SubjectClaim: resolveTestClaim},
-				secondIssuer:              {Name: "second", SubjectClaim: secondClaim},
+				resolveTestUpstreamIssuer: {
+					Name: "first", SubjectClaim: resolveTestClaim,
+				},
+				secondIssuer: {
+					Name: "second", SubjectClaim: secondClaim,
+				},
 			}, store)
 			require.NoError(t, err)
 			f := newResolveFixture(t, resolver)

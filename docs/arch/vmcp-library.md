@@ -116,7 +116,8 @@ entry of type `https://toolhive.dev/mcp_tool_call`: with a tool-call entry it ma
 start only the one `tools/call` the entry names, once (a retried call needs a fresh
 token); with a list-call entry it may send only the list method the entry names, once,
 answered with only that backend's items.
-`server.Config.CallBinding` (a `callbinding.Config`) adds the clients whose tokens
+`server.Config.CallBinding` (a `*callbinding.Binding`, built by `callbinding.New`
+from a `callbinding.Config`) adds the clients whose tokens
 must carry an entry (matched on `client_id`, or `azp` when `client_id` is absent),
 the maximum call duration, the single-use record, and the `realm`,
 `resource_metadata` and `scope` of the 401 challenge. Set `Challenge` to what the
@@ -124,10 +125,60 @@ token validator in front of the vMCP sends, so a refused token gets the same
 challenge from both: call binding answers a refusal that describes the token with
 401 and `invalid_token`, and a refusal of the request with 403 and no challenge. The
 default record is in memory and covers one replica; with sessions in Redis, supply a
-shared `Record`. List a client only once the authorization servers in front of the
-vMCP put the entry into that client's access tokens; otherwise every call from it is
-refused. See
+shared `Record`. Give the same `Binding` to the incoming auth factory
+(`factory.WithCallBinding`). By default `exp` is strict. With
+`callbinding.Config.ExpiredTokenAdmission`, a list of `{Issuer, ClientID, Grace}`
+entries that `vmcp serve` and the operator never set, the token validator accepts,
+for a matching token and for the entry's grace after `exp`, the messages of a call
+that outlives its token (a cancellation, an elicitation answer, a GET or DELETE on
+the call's session); if the factory was not given the `Binding`, they get 401 once
+the token expires, and the vMCP logs a warning when a call-bound tool call starts.
+`Serve` refuses a `Binding` that `callbinding.New` did not build.
+
+Upgrading an embedder from the previous call-binding API:
+
+| Before | After |
+|--------|-------|
+| `ServerConfig.CallBinding: callbinding.Config{...}` | `b, err := callbinding.New(callbinding.Config{...})`, then `ServerConfig.CallBinding: b` |
+| `factory.NewIncomingAuthMiddleware(ctx, cfg, ...)` | `factory.NewIncomingAuthMiddleware(ctx, cfg, ..., factory.WithCallBinding(b))`, with the same `b` | List a client only once the authorization servers
+in front of the vMCP put the entry into that client's access tokens; otherwise every
+call from it is refused. See
 [Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
+
+### Delegated upstream credentials
+
+If you build your own outgoing auth registry with
+`vmcpauth.NewDefaultOutgoingAuthRegistry()`, construct and register the
+`upstream_inject` strategy with an `upstreamtoken.UserCredentialReader`:
+
+```go
+registry := vmcpauth.NewDefaultOutgoingAuthRegistry()
+strategy := strategies.NewUpstreamInjectStrategy(strategies.WithUserCredentialReader(reader))
+if err := registry.RegisterStrategy(authtypes.StrategyTypeUpstreamInject, strategy); err != nil {
+	return fmt.Errorf("register upstream_inject strategy: %w", err)
+}
+```
+
+`factory.NewOutgoingAuthRegistry`, and therefore the stock `thv vmcp serve`,
+does not pass a reader yet, so delegated requests to `upstream_inject` backends
+fail closed there. You cannot patch the factory's registry afterwards, because
+`RegisterStrategy` rejects a name that is already registered. Build the registry
+with `NewDefaultOutgoingAuthRegistry` instead.
+
+On `AdmissionRouteDelegated`, a nil reader fails closed with `upstream
+credential unavailable`; the strategy does not fall back to credentials on
+`Identity.UpstreamTokens`. Interactive and unspecified routes still use
+`Identity.UpstreamTokens`.
+
+The reader must read user-keyed storage, because the strategy looks credentials
+up by platform user ID. ToolHive's in-process reader over storage that is not
+user-keyed is refused when you pass it to `WithUserCredentialReader`, and
+delegated requests then fail closed with `upstream credential unavailable`. A
+reader you write yourself must read by user ID; the strategy cannot check this
+unless the reader implements `upstreamtoken.UserKeyedReader`. When using
+ToolHive's in-process reader over user-keyed storage, follow the [incoming validator startup requirements](11-auth-server-storage.md#validator-rule-for-embedded-issuer-tokens).
+See [delegated credential failures](../error-handling.md#vmcp-delegated-credential-failures)
+for how missing or unavailable credentials affect discovery and tool calls.
 
 ## `pkg/vmcp/` Stability Table
 
@@ -147,7 +198,7 @@ The table below maps every sub-package to its stability level per RFC THV-0059. 
 | `pkg/vmcp/status` | Stable | `StatusReporter` interface; CLI and K8s reporter implementations |
 | `pkg/vmcp/optimizer` | Experimental | Optimizer interface and TEI integration; tier API may evolve |
 | `pkg/vmcp/cli` | Experimental | New in Phase 4; `Serve`, `Init`, `Validate` entry points may change before stabilisation |
-| `pkg/vmcp/callbinding` | Experimental | Call-bound access tokens: `Config`, the `Record` interface and `MemoryRecord`, `FromClaims` and `Token`, `ReadListResponse`, `ListResponse` and `ListParamsCarryCursor`, the refusal reasons. `ArgumentsSHA256` is a wire contract shared with the clients that request these tokens: it changes only with a new entry type |
+| `pkg/vmcp/callbinding` | Experimental | Call-bound access tokens: `Config`, `New` and `Binding` (shared by the server and the token validator through `Binding.TokenValidatorOption`), `ExpiredTokenAdmission` and `ValidateExpiredTokenAdmission` (admission after `exp`, off by default and set only in Go), the `Record` interface and `MemoryRecord`, `FromClaims` and `Token`, `ReadListResponse`, `ListResponse` and `ListParamsCarryCursor`, the refusal reasons. `ArgumentsSHA256` is a wire contract shared with the clients that request these tokens: it changes only with a new entry type |
 | `pkg/vmcp/composer` | Experimental | Composite tool DAG executor; workflow API not yet stable |
 | `pkg/vmcp/cache` | Internal | Token cache; not intended for external use |
 | `pkg/vmcp/conversion` | Internal | CRD-to-config conversion; K8s-specific, not for local embedding |
@@ -278,6 +329,33 @@ user by rendering it in-band, on the same authenticated request, and holding
 no state: there is no elicitation ID to look up later and nothing a different
 caller can resume. The retry is an ordinary `tools/call`, which your decorator
 answers again from its own state.
+
+### Writing a `VMCP` decorator
+
+A `VMCP` decorator usually embeds `core.VMCP` and overrides the methods it
+changes. List calls (call-bound tokens that list one backend) are answered from
+one aggregation through the optional `core.BackendCapabilitiesLookup` interface,
+when the `VMCP` the server serves implements it. Embedding does not promote that
+method, so a decorator that does not implement it gets list calls answered from
+its own `LookupBackend` and `List*` methods: what it filters stays filtered, at the
+cost of separate aggregations that can disagree. To keep the single aggregation:
+
+- If your decorator narrows no list, forward the lookup. When the inner `VMCP`
+  does not implement it either, `core.LookupBackendCapabilities` returns
+  `core.ErrBackendCapabilitiesLookupUnsupported`, and the list call falls back as
+  above.
+
+  ```go
+  func (d *myDecorator) LookupBackendCapabilities(ctx context.Context,
+  	identity *auth.Identity, backendID string,
+  ) (*core.AdmittedBackendCapabilities, error) {
+  	return core.LookupBackendCapabilities(ctx, d.VMCP, identity, backendID)
+  }
+  ```
+
+- If it narrows a list, narrow the same items in the result, or refuse that
+  list method by setting its entry in `ListErrors`, which a list call answers
+  with 503.
 
 ### What ToolHive Does Not Provide for Embedders
 

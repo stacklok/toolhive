@@ -131,6 +131,7 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 		Prompts:           capabilities.Prompts,
 		SupportsLogging:   capabilities.SupportsLogging,
 		SupportsSampling:  capabilities.SupportsSampling,
+		UnavailableLists:  capabilities.UnavailableLists,
 	}
 
 	span.SetAttributes(
@@ -200,7 +201,7 @@ func (a *defaultAggregator) QueryAllCapabilities(
 	}
 
 	if len(capabilities) == 0 {
-		return nil, fmt.Errorf("no backends returned capabilities")
+		return nil, ErrNoBackendCapabilities
 	}
 
 	span.SetAttributes(
@@ -484,6 +485,22 @@ func (a *defaultAggregator) MergeCapabilities(
 	return aggregated, nil
 }
 
+// unavailableLists maps each queried backend that reported a transiently
+// unavailable list to those lists, or returns nil when none did.
+func unavailableLists(capabilities map[string]*BackendCapabilities) map[string][]string {
+	var out map[string][]string
+	for id, caps := range capabilities {
+		if len(caps.UnavailableLists) == 0 {
+			continue
+		}
+		if out == nil {
+			out = make(map[string][]string)
+		}
+		out[id] = slices.Clone(caps.UnavailableLists)
+	}
+	return out
+}
+
 // AggregateCapabilities is a convenience method that performs the full aggregation pipeline:
 // 1. Create backend registry
 // 2. Query all backends
@@ -532,6 +549,7 @@ func (a *defaultAggregator) AggregateCapabilities(
 
 	// Update metadata with backend count
 	aggregated.Metadata.BackendCount = len(backends)
+	aggregated.UnavailableLists = unavailableLists(capabilities)
 
 	span.SetAttributes(
 		attribute.Int("aggregated.backends", aggregated.Metadata.BackendCount),

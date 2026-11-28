@@ -2227,20 +2227,28 @@ func (s *MemoryStorage) DeleteUser(_ context.Context, id string) error {
 	return nil
 }
 
+// cloneProviderIdentity returns a field-by-field copy of p, or nil if p is nil.
+// All fields are values, so a shallow copy is sufficient.
+func cloneProviderIdentity(p *ProviderIdentity) *ProviderIdentity {
+	if p == nil {
+		return nil
+	}
+	return &ProviderIdentity{
+		UserID:          p.UserID,
+		ProviderID:      p.ProviderID,
+		ProviderSubject: p.ProviderSubject,
+		Issuer:          p.Issuer,
+		SubjectClaim:    p.SubjectClaim,
+		LinkedAt:        p.LinkedAt,
+		LastUsedAt:      p.LastUsedAt,
+	}
+}
+
 // CreateProviderIdentity links a provider identity to a user.
 // Returns ErrAlreadyExists if this provider identity is already linked.
 func (s *MemoryStorage) CreateProviderIdentity(_ context.Context, identity *ProviderIdentity) error {
-	if identity == nil {
-		return fosite.ErrInvalidRequest.WithHint("identity cannot be nil")
-	}
-	if identity.UserID == "" {
-		return fosite.ErrInvalidRequest.WithHint("user ID cannot be empty")
-	}
-	if identity.ProviderID == "" {
-		return fosite.ErrInvalidRequest.WithHint("provider ID cannot be empty")
-	}
-	if identity.ProviderSubject == "" {
-		return fosite.ErrInvalidRequest.WithHint("provider subject cannot be empty")
+	if err := validateProviderIdentity(identity); err != nil {
+		return err
 	}
 
 	s.mu.Lock()
@@ -2256,14 +2264,44 @@ func (s *MemoryStorage) CreateProviderIdentity(_ context.Context, identity *Prov
 		return fmt.Errorf("%w: provider identity already linked", ErrAlreadyExists)
 	}
 
-	// Make a defensive copy
-	s.providerIdentities[key] = &ProviderIdentity{
-		UserID:          identity.UserID,
-		ProviderID:      identity.ProviderID,
-		ProviderSubject: identity.ProviderSubject,
-		LinkedAt:        identity.LinkedAt,
-		LastUsedAt:      identity.LastUsedAt,
+	s.providerIdentities[key] = cloneProviderIdentity(identity)
+	return nil
+}
+
+// CompareAndSwapProviderIdentity atomically updates a provider identity row iff
+// its stored (UserID, Issuer, SubjectClaim) matches expected.
+func (s *MemoryStorage) CompareAndSwapProviderIdentity(
+	_ context.Context, expected, replacement *ProviderIdentity,
+) error {
+	if err := validateProviderIdentityCAS(expected, replacement); err != nil {
+		return err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.users[replacement.UserID]; !exists {
+		return fmt.Errorf("%w: user not found", ErrNotFound)
+	}
+
+	key := providerIdentityKey(replacement.ProviderID, replacement.ProviderSubject)
+	cur, ok := s.providerIdentities[key]
+	if !ok {
+		return fmt.Errorf("%w: provider identity not found", ErrNotFound)
+	}
+
+	if cur.UserID != expected.UserID || cur.Issuer != expected.Issuer || cur.SubjectClaim != expected.SubjectClaim {
+		return ErrProviderIdentityChanged
+	}
+
+	if expected.UserID == replacement.UserID {
+		// Stamping an existing row for the same user preserves LinkedAt and LastUsedAt.
+		cur.Issuer = replacement.Issuer
+		cur.SubjectClaim = replacement.SubjectClaim
+		return nil
+	}
+
+	s.providerIdentities[key] = cloneProviderIdentity(replacement)
 	return nil
 }
 
@@ -2280,14 +2318,7 @@ func (s *MemoryStorage) GetProviderIdentity(_ context.Context, providerID, provi
 		return nil, fmt.Errorf("%w: provider identity not found", ErrNotFound)
 	}
 
-	// Return a defensive copy
-	return &ProviderIdentity{
-		UserID:          identity.UserID,
-		ProviderID:      identity.ProviderID,
-		ProviderSubject: identity.ProviderSubject,
-		LinkedAt:        identity.LinkedAt,
-		LastUsedAt:      identity.LastUsedAt,
-	}, nil
+	return cloneProviderIdentity(identity), nil
 }
 
 // UpdateProviderIdentityLastUsed updates the LastUsedAt timestamp for a provider identity.
@@ -2325,14 +2356,7 @@ func (s *MemoryStorage) GetUserProviderIdentities(_ context.Context, userID stri
 	var identities []*ProviderIdentity
 	for _, identity := range s.providerIdentities {
 		if identity.UserID == userID {
-			// Return defensive copies
-			identities = append(identities, &ProviderIdentity{
-				UserID:          identity.UserID,
-				ProviderID:      identity.ProviderID,
-				ProviderSubject: identity.ProviderSubject,
-				LinkedAt:        identity.LinkedAt,
-				LastUsedAt:      identity.LastUsedAt,
-			})
+			identities = append(identities, cloneProviderIdentity(identity))
 		}
 	}
 
@@ -2545,6 +2569,7 @@ var (
 	_ ClientRegistry                   = (*MemoryStorage)(nil)
 	_ UpstreamTokenStorage             = (*MemoryStorage)(nil)
 	_ UserStorage                      = (*MemoryStorage)(nil)
+	_ ProviderIdentitySwapper          = (*MemoryStorage)(nil)
 	_ DCRCredentialStore               = (*MemoryStorage)(nil)
 	_ AssertionJWTConsumer             = (*MemoryStorage)(nil)
 	_ ExchangeGrantStorage             = (*MemoryStorage)(nil)

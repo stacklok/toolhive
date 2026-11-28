@@ -121,6 +121,15 @@ func TestCallTool_CallBindingAtDispatch(t *testing.T) {
 		{name: "list-call token", identity: callBoundIdentity("", "", []any{map[string]any{
 			"type": toolcalldetails.Type, "server": testBackendID, "method": "tools/list",
 		}})},
+		{name: "token bound to the target backend, accepted after it expired", identity: func() *auth.Identity {
+			identity := callBoundIdentity(testBackendID, "tool_a", nil)
+			identity.AdmittedAfterExpiry = time.Now().Add(-time.Minute)
+			return identity
+		}()},
+		{name: "token without an entry, accepted after it expired", identity: &auth.Identity{
+			PrincipalInfo:       auth.PrincipalInfo{Claims: map[string]any{"iss": "https://as.example.com", "sub": "user-1"}},
+			AdmittedAfterExpiry: time.Now().Add(-time.Minute),
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

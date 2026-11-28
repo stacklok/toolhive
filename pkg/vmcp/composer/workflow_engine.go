@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
@@ -500,6 +501,9 @@ func (e *workflowEngine) callToolWithRetry(
 		if err != nil {
 			slog.Warn("tool call failed for step",
 				"step", step.ID, "attempt", attemptCount, "max_attempts", maxRetries+1, "error", err)
+			if authtypes.DelegatedCredentialError(err) != nil {
+				return nil, backoff.Permanent(err)
+			}
 			return nil, err
 		}
 
@@ -720,6 +724,9 @@ type iterationResult struct {
 	Status string
 	Output map[string]any
 	Error  string
+	// cause is the failed iteration's error, kept so the step's error chain
+	// survives (errors.Is/As) when the step fails on it. Error is its text.
+	cause error
 }
 
 // executeForEachStep executes a forEach step, iterating over a collection
@@ -777,8 +784,8 @@ func (e *workflowEngine) executeForEachStep(
 
 			r := e.executeForEachIteration(gCtx, step, workflowCtx, i, item, itemVar)
 			results[i] = r
-			if r.Error != "" && !continueOnIterError {
-				return fmt.Errorf("forEach step %s iteration %d: %s", step.ID, i, r.Error)
+			if r.cause != nil && !continueOnIterError {
+				return fmt.Errorf("forEach step %s iteration %d: %w", step.ID, i, r.cause)
 			}
 			return nil
 		})
@@ -858,10 +865,7 @@ func (e *workflowEngine) executeForEachIteration(
 		ctx, step.InnerStep.Arguments, workflowCtx, forEachCtx,
 	)
 	if expandErr != nil {
-		return iterationResult{
-			Index: index, Item: item, Status: "failed",
-			Error: fmt.Sprintf("template expansion failed: %v", expandErr),
-		}
+		return failedIteration(index, item, fmt.Errorf("template expansion failed: %v", expandErr))
 	}
 
 	// Coerce expanded arguments based on tool schema
@@ -873,18 +877,12 @@ func (e *workflowEngine) executeForEachIteration(
 
 	target, routeErr := e.router.RouteTool(ctx, step.InnerStep.Tool)
 	if routeErr != nil {
-		return iterationResult{
-			Index: index, Item: item, Status: "failed",
-			Error: fmt.Sprintf("failed to route tool: %v", routeErr),
-		}
+		return failedIteration(index, item, fmt.Errorf("failed to route tool: %v", routeErr))
 	}
 
 	result, _, callErr := e.callToolWithRetry(ctx, target, step.InnerStep, expandedArgs, workflowCtx)
 	if callErr != nil {
-		return iterationResult{
-			Index: index, Item: item, Status: "failed",
-			Error: callErr.Error(),
-		}
+		return failedIteration(index, item, callErr)
 	}
 
 	output := result.StructuredContent
@@ -895,6 +893,11 @@ func (e *workflowEngine) executeForEachIteration(
 	return iterationResult{
 		Index: index, Item: item, Status: "completed", Output: output,
 	}
+}
+
+// failedIteration records a failed forEach iteration, keeping err as its cause.
+func failedIteration(index int, item any, err error) iterationResult {
+	return iterationResult{Index: index, Item: item, Status: "failed", Error: err.Error(), cause: err}
 }
 
 // buildForEachOutput constructs the aggregated output map for a forEach step.

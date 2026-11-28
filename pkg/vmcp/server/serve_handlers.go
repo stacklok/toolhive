@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
@@ -266,6 +267,9 @@ func (s *Server) coreSessionPrompts(
 // caller's explicit identity. Admission (authorization) is the core's responsibility.
 func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		ctx, end := s.openRequests.begin(ctx, sessionID)
+		defer end()
+
 		// Label the audit event with the backend serving this tool. The audit
 		// middleware created the BackendInfo upstream and reads it after this handler
 		// returns (auditor.Middleware), so writing the pre-resolved name here — where
@@ -273,6 +277,11 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 		// backend-enrichment middleware and its per-request lookup (#5512 review).
 		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
 			bi.BackendName = backendName
+		}
+		// The session's DELETE is already in progress: skip the binding check,
+		// which would load the session again and may find it gone.
+		if ctx.Err() != nil {
+			return legacyToolCallError(server.ClientSessionFromContext(ctx), context.Cause(ctx))
 		}
 
 		// Shape-check on the SDK decode first: a non-object payload is rejected before the
@@ -302,7 +311,13 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 			return mcp.NewToolResultError(fmt.Sprintf("Unauthorized: %v", err)), nil
 		}
 
-		result, err := s.core.CallTool(ctx, caller, toolName, args, conversion.FromMCPMeta(req.Params.Meta))
+		// A call-bound token's call stays open while this dispatch runs, even
+		// after the client closes the call's POST, so its cancellation is
+		// still admitted (see callBinding.dispatching).
+		result, err := func() (*vmcp.ToolCallResult, error) {
+			defer s.callBinding.dispatching(caller)()
+			return s.core.CallTool(ctx, caller, toolName, args, conversion.FromMCPMeta(req.Params.Meta))
+		}()
 		if err != nil {
 			return legacyToolCallError(server.ClientSessionFromContext(ctx), err)
 		}
@@ -339,12 +354,20 @@ func gateParsedArgs(ctx context.Context, toolName string) map[string]any {
 // The result-returning shape forwards the backend's non-reserved _meta (trace ids,
 // custom fields) onto the wire result — reserved io.modelcontextprotocol/* keys are
 // stripped by conversion.ToMCPMeta, matching every other Legacy egress (#5986).
+// An unavailable delegated credential returns a bare -32603 with a fixed message,
+// as Modern resources/read does; other errors keep the SDK's default rendering.
 func (s *Server) coreResourceHandler(
 	sessionID, uri, backendName string,
 ) server.ResourceResultHandlerFunc {
 	return func(ctx context.Context, _ mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		ctx, end := s.openRequests.begin(ctx, sessionID)
+		defer end()
+
 		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
 			bi.BackendName = backendName
+		}
+		if ctx.Err() != nil {
+			return nil, context.Cause(ctx)
 		}
 
 		caller, _ := auth.IdentityFromContext(ctx)
@@ -357,6 +380,9 @@ func (s *Server) coreResourceHandler(
 		if err != nil {
 			if errors.Is(err, vmcp.ErrAuthorizationFailed) {
 				return nil, errors.New(vmcp.DenyMessageResourceRead)
+			}
+			if authtypes.DelegatedCredentialError(err) == authtypes.ErrDelegatedCredentialUnavailable {
+				return nil, delegatedCredentialUnavailableError()
 			}
 			return nil, err
 		}
@@ -385,12 +411,19 @@ func (s *Server) coreResourceTemplateHandler(
 // coreResourceHandler: audit label, binding check, then core.GetPrompt with explicit
 // identity. The request's string-typed prompt arguments are widened to map[string]any
 // for the domain call, and the domain result is converted to *mcp.GetPromptResult.
+// Errors are rendered as in coreResourceHandler.
 func (s *Server) corePromptHandler(
 	sessionID, promptName, backendName string,
 ) server.PromptHandlerFunc {
 	return func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		ctx, end := s.openRequests.begin(ctx, sessionID)
+		defer end()
+
 		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
 			bi.BackendName = backendName
+		}
+		if ctx.Err() != nil {
+			return nil, context.Cause(ctx)
 		}
 
 		caller, _ := auth.IdentityFromContext(ctx)
@@ -408,6 +441,9 @@ func (s *Server) corePromptHandler(
 		if err != nil {
 			if errors.Is(err, vmcp.ErrAuthorizationFailed) {
 				return nil, errors.New(vmcp.DenyMessagePromptGet)
+			}
+			if authtypes.DelegatedCredentialError(err) == authtypes.ErrDelegatedCredentialUnavailable {
+				return nil, delegatedCredentialUnavailableError()
 			}
 			return nil, err
 		}
@@ -442,6 +478,11 @@ func (s *Server) coreCompletionHandler(
 	sessionID := ""
 	if sess := server.ClientSessionFromContext(ctx); sess != nil {
 		sessionID = sess.SessionID()
+	}
+	ctx, end := s.openRequests.begin(ctx, sessionID)
+	defer end()
+	if ctx.Err() != nil {
+		return nil, context.Cause(ctx)
 	}
 
 	caller, _ := auth.IdentityFromContext(ctx)
@@ -492,6 +533,12 @@ func (s *Server) coreSubscribeHandler(ctx context.Context, capability, uri strin
 	sessionID := ""
 	if sess := server.ClientSessionFromContext(ctx); sess != nil {
 		sessionID = sess.SessionID()
+	}
+	// LookupResource may list the backends when the capability cache is cold.
+	ctx, end := s.openRequests.begin(ctx, sessionID)
+	defer end()
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
 	}
 
 	caller, _ := auth.IdentityFromContext(ctx)

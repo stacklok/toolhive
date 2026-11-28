@@ -8,8 +8,8 @@
 //
 // The rule: go-sdk puts a handler's error on the wire with its code and data
 // only when the error is a bare *jsonrpc.Error. For a wrapped one it keeps the
-// code but drops the data. A handler must therefore return what URLElicitationRequired
-// builds, or what FindURLElicitationRequired finds, without wrapping it.
+// code but drops the data. Return the errors this package builds or finds
+// without wrapping them.
 package wireerr
 
 import (
@@ -36,12 +36,27 @@ func URLElicitationRequired(data json.RawMessage) error {
 	}
 }
 
+// InternalError builds a bare JSON-RPC internal error for a tool handler to return unwrapped.
+func InternalError(message string) error {
+	return &jsonrpc.Error{Code: jsonrpc.CodeInternalError, Message: message}
+}
+
 // FindURLElicitationRequired returns the bare -32042 error in err's chain, or
 // nil when there is none. A handler that receives a wrapped -32042 from an
 // inner handler returns the result unwrapped, so the data reaches the wire.
 func FindURLElicitationRequired(err error) error {
 	var wireErr *jsonrpc.Error
 	if errors.As(err, &wireErr) && wireErr.Code == mcp.URL_ELICITATION_REQUIRED {
+		return wireErr
+	}
+	return nil
+}
+
+// FindInternalError returns the bare -32603 error in err's chain, or nil when
+// there is none. Return it unwrapped to preserve the original wire error.
+func FindInternalError(err error) error {
+	var wireErr *jsonrpc.Error
+	if errors.As(err, &wireErr) && wireErr != nil && wireErr.Code == jsonrpc.CodeInternalError {
 		return wireErr
 	}
 	return nil

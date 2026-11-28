@@ -304,6 +304,8 @@ func (s *RedisStorage) migrateSingleProviderIdentity(
 		UserID:          stored.UserID,
 		ProviderID:      providerName,
 		ProviderSubject: stored.ProviderSubject,
+		Issuer:          stored.Issuer,
+		SubjectClaim:    stored.SubjectClaim,
 		LinkedAt:        stored.LinkedAt,
 		LastUsedAt:      stored.LastUsedAt,
 	}

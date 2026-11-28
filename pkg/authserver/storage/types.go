@@ -16,7 +16,7 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,RememberedConsentStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,ExchangeGrantStorage
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,RememberedConsentStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,ProviderIdentitySwapper,ExchangeGrantStorage
 
 //go:generate mockgen -destination=mocks/mock_dcr_store.go -package=mocks github.com/stacklok/toolhive/pkg/authserver/storage DCRCredentialStore
 
@@ -120,6 +120,12 @@ var (
 	// ErrInvalidState is returned when an operation requires an item to be in a
 	// particular lifecycle state (e.g. a pending device request) but it is not.
 	ErrInvalidState = errors.New("storage: item is not in the required state")
+
+	// ErrProviderIdentityChanged is returned by
+	// ProviderIdentitySwapper.CompareAndSwapProviderIdentity when the currently
+	// stored row's (UserID, Issuer, SubjectClaim) no longer equals the caller's
+	// expected value. Nothing is written.
+	ErrProviderIdentityChanged = errors.New("storage: provider identity row changed concurrently")
 )
 
 // notFoundRFC6749Error preserves the storage and Fosite not-found identities.
@@ -297,11 +303,86 @@ type ProviderIdentity struct {
 	// ProviderSubject is the subject identifier from the upstream provider.
 	ProviderSubject string
 
+	// Issuer identifies the upstream authority that produced ProviderSubject:
+	// the OIDC issuer URL for OIDC upstreams, or
+	// oauth2:<mode>:sha256:<hex of host[:non-default port]> for plain OAuth 2.0
+	// upstreams (no endpoint URL is stored). Empty on legacy unstamped rows.
+	Issuer string
+
+	// SubjectClaim names the claim or extraction rule that produced
+	// ProviderSubject (e.g., "sub", "oid", or an OAuth 2.0 extractor rule).
+	// Empty on legacy unstamped rows.
+	SubjectClaim string
+
 	// LinkedAt is when this identity was linked to the user.
 	LinkedAt time.Time
 
 	// LastUsedAt is when this identity was last used to authenticate.
 	LastUsedAt time.Time
+}
+
+// IsUnstamped reports whether p was persisted without issuer or subject-claim
+// binding (both fields empty). A half-stamped row returns false so callers fail
+// closed rather than treating partial data as legacy unstamped state.
+func (p *ProviderIdentity) IsUnstamped() bool {
+	return p != nil && p.Issuer == "" && p.SubjectClaim == ""
+}
+
+// MatchesBinding reports whether p carries the exact non-empty issuer and
+// subject claim. Unstamped and half-stamped rows return false; callers that
+// accept legacy unstamped rows check IsUnstamped separately.
+func (p *ProviderIdentity) MatchesBinding(issuer, subjectClaim string) bool {
+	return p != nil && issuer != "" && subjectClaim != "" &&
+		p.Issuer == issuer && p.SubjectClaim == subjectClaim
+}
+
+// validateProviderIdentity validates the shared input invariants for
+// CreateProviderIdentity. Both Issuer and SubjectClaim may be empty (legacy /
+// unbound callers), or both non-empty; half-stamped rows are rejected.
+func validateProviderIdentity(identity *ProviderIdentity) error {
+	if identity == nil {
+		return fosite.ErrInvalidRequest.WithHint("identity cannot be nil")
+	}
+	if identity.UserID == "" {
+		return fosite.ErrInvalidRequest.WithHint("user ID cannot be empty")
+	}
+	if identity.ProviderID == "" {
+		return fosite.ErrInvalidRequest.WithHint("provider ID cannot be empty")
+	}
+	if identity.ProviderSubject == "" {
+		return fosite.ErrInvalidRequest.WithHint("provider subject cannot be empty")
+	}
+	if (identity.Issuer == "") != (identity.SubjectClaim == "") {
+		return fosite.ErrInvalidRequest.WithHint("issuer and subject claim must both be set or both be empty")
+	}
+	return nil
+}
+
+// validateProviderIdentityCAS enforces the input contract of
+// ProviderIdentitySwapper.CompareAndSwapProviderIdentity.
+func validateProviderIdentityCAS(expected, replacement *ProviderIdentity) error {
+	if expected == nil {
+		return fosite.ErrInvalidRequest.WithHint("expected identity cannot be nil")
+	}
+	if expected.UserID == "" {
+		return fosite.ErrInvalidRequest.WithHint("expected user ID cannot be empty")
+	}
+	if expected.ProviderID == "" {
+		return fosite.ErrInvalidRequest.WithHint("expected provider ID cannot be empty")
+	}
+	if expected.ProviderSubject == "" {
+		return fosite.ErrInvalidRequest.WithHint("expected provider subject cannot be empty")
+	}
+	if err := validateProviderIdentity(replacement); err != nil {
+		return err
+	}
+	if expected.ProviderID != replacement.ProviderID || expected.ProviderSubject != replacement.ProviderSubject {
+		return fosite.ErrInvalidRequest.WithHint("expected and replacement provider identities must share the same key")
+	}
+	if replacement.Issuer == "" || replacement.SubjectClaim == "" {
+		return fosite.ErrInvalidRequest.WithHint("replacement identity must set both issuer and subject claim")
+	}
+	return nil
 }
 
 // Consent stages for a pending client authorization. Empty is a legacy record
@@ -1520,6 +1601,57 @@ type UserStorage interface {
 	// Returns an empty slice (not error) if the user exists but has no linked identities.
 	// Returns ErrNotFound if the user does not exist.
 	GetUserProviderIdentities(ctx context.Context, userID string) ([]*ProviderIdentity, error)
+}
+
+// ProviderIdentitySwapper is an optional capability implemented by storage
+// backends that support atomic compare-and-swap on a provider identity's
+// ownership and (Issuer, SubjectClaim) binding.
+//
+// It is deliberately not embedded in UserStorage or Storage so external
+// storage decorators remain compatible without implementing local row
+// replacement. Callers find it through ProviderIdentitySwapperFor, which looks
+// underneath only ToolHive's own storage decorators (those marked by the
+// unexported storageDecorator interface). An external decorator must implement
+// this interface itself, or callers treat the capability as absent. When it is
+// absent, sign-in leaves unstamped rows unstamped and refuses a stamped
+// mismatch with the handlers package's ErrIdentityBindingMismatch.
+//
+// A storage wrapper that sits over real provider-identity rows should forward
+// this capability. A plain struct{ storage.Storage } embed does not forward it,
+// and ProviderIdentitySwapperFor follows Unwrap only through types that carry
+// the package's decorator marker, so an outside wrapper must implement the
+// method itself. Storage that serves identity rows itself (for example one
+// that builds each row from a directory service and refuses writes) should
+// leave it unimplemented. It must not fill in Issuer or SubjectClaim on the
+// rows it returns unless it computes them exactly as the auth server does,
+// because a differing value is refused as a binding mismatch.
+//
+// Unlike AssertionJWTConsumer, it is not forwarded through each decorator:
+// absence is a legitimate state here, and the resolver handles it deliberately.
+type ProviderIdentitySwapper interface {
+	// CompareAndSwapProviderIdentity atomically updates the row at
+	// (replacement.ProviderID, replacement.ProviderSubject) iff
+	// replacement.UserID exists, the row currently exists, and the stored
+	// row's (UserID, Issuer, SubjectClaim) equals expected's. LinkedAt and
+	// LastUsedAt are not part of the comparison.
+	//
+	// When expected.UserID == replacement.UserID (stamping an unstamped row),
+	// the backend updates Issuer and SubjectClaim while preserving the stored
+	// LinkedAt and LastUsedAt so concurrent UpdateProviderIdentityLastUsed
+	// calls are not clobbered.
+	//
+	// When expected.UserID != replacement.UserID (replacing a mismatched row),
+	// the backend writes replacement in full and moves the reverse-index entry
+	// from expected.UserID to replacement.UserID.
+	//
+	// Returns:
+	//   - fosite.ErrInvalidRequest if either argument is nil, required fields
+	//     are empty, expected and replacement name different (ProviderID,
+	//     ProviderSubject) keys, or replacement omits Issuer or SubjectClaim;
+	//   - ErrNotFound if replacement.UserID or the identity row does not exist;
+	//   - ErrProviderIdentityChanged if the stored row's (UserID, Issuer,
+	//     SubjectClaim) differs from expected.
+	CompareAndSwapProviderIdentity(ctx context.Context, expected, replacement *ProviderIdentity) error
 }
 
 // Storage combines fosite storage interfaces with ToolHive-specific storage for

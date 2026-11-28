@@ -5,7 +5,6 @@
 package authserver
 
 import (
-	"cmp"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -2482,8 +2481,14 @@ func (c *Config) validateIssuerAndConsentConfig() error {
 			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
 		}
 	}
-	return consentpolicy.Validate(
+	return ValidateConsentPolicy(
 		c.ConsentExemptClientIDs, c.AuthorizationEndpointBaseURL, c.Issuer, len(c.Upstreams))
+}
+
+// ValidateConsentPolicy checks consent-exempt client IDs and their deployment
+// prerequisites without resolving client registrations. An empty list is valid.
+func ValidateConsentPolicy(clientIDs []string, authorizationBase, issuer string, upstreamCount int) error {
+	return consentpolicy.Validate(clientIDs, authorizationBase, issuer, upstreamCount)
 }
 
 // validateDelegationAndTrustConfig groups the delegate-client and SPIFFE
@@ -2601,10 +2606,8 @@ func (c *Config) signInUpstream() *signInUpstream {
 		return nil
 	}
 	oidc := c.Upstreams[0].OIDCConfig
-	return &signInUpstream{
-		issuer:       oidc.Issuer,
-		subjectClaim: cmp.Or(oidc.SubjectClaim, upstream.DefaultSubjectClaim),
-	}
+	issuer, claim := oidcIdentityBinding(oidc.Issuer, oidc.SubjectClaim)
+	return &signInUpstream{issuer: issuer, subjectClaim: claim}
 }
 
 // validateResolveIssuers runs the resolve-issuer upstream check for the
@@ -2617,10 +2620,8 @@ func (c *RunConfig) validateResolveIssuers(issuers []tokenexchange.TrustedIssuer
 		return validateResolveIssuerUpstream(issuers, nil)
 	}
 	oidc := c.Upstreams[0].OIDCConfig
-	return validateResolveIssuerUpstream(issuers, &signInUpstream{
-		issuer:       oidc.IssuerURL,
-		subjectClaim: cmp.Or(oidc.SubjectClaim, upstream.DefaultSubjectClaim),
-	})
+	issuer, claim := oidcIdentityBinding(oidc.IssuerURL, oidc.SubjectClaim)
+	return validateResolveIssuerUpstream(issuers, &signInUpstream{issuer: issuer, subjectClaim: claim})
 }
 
 // signInUpstream is the first upstream's issuer and subject claim, which a

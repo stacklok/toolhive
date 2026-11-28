@@ -17,15 +17,20 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 )
 
+const cacheTestIssuer = "https://issuer.example"
+
 func ctxWithSubject(subject string) context.Context {
-	return auth.WithIdentity(context.Background(),
-		&auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: subject}})
+	return auth.WithIdentity(context.Background(), &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: subject,
+		Claims:  map[string]any{"iss": cacheTestIssuer, "sub": subject},
+	}})
 }
 
 var testBackends = []vmcp.Backend{{ID: "b1"}, {ID: "b2"}}
@@ -71,6 +76,217 @@ func TestCachingAggregator_KeyedByIdentityAndHeaders(t *testing.T) {
 		map[string]string{"Authorization": "Bearer xyz"})
 	_, err = c.AggregateCapabilities(aliceWithToken, testBackends)
 	require.NoError(t, err)
+}
+
+func cacheTestIdentity(route auth.AdmissionRoute, issuer, user, client, actor string) *auth.Identity {
+	claims := map[string]any{"sub": "alice"}
+	if issuer != "" {
+		claims["iss"] = issuer
+	}
+	if client != "" {
+		claims["client_id"] = client
+	}
+	if actor != "" {
+		claims["act"] = map[string]any{"iss": "https://actors.example", "sub": actor}
+	}
+	return &auth.Identity{
+		PrincipalInfo:  auth.PrincipalInfo{Subject: "alice", PlatformUserID: user, Claims: claims},
+		AdmissionRoute: route,
+	}
+}
+
+func TestCachingAggregator_IdentityBinding(t *testing.T) {
+	t.Parallel()
+	delegated, interactive := auth.AdmissionRouteDelegated, auth.AdmissionRouteInteractive
+	base := cacheTestIdentity(delegated, cacheTestIssuer, "user-1", "client-1", "actor-1")
+	local := cacheTestIdentity(interactive, cacheTestIssuer, "user-1", "", "")
+	const foreign = "https://other.example"
+	for _, tc := range []struct {
+		name          string
+		first, second *auth.Identity
+	}{
+		{"interactive vs delegated", base, local},
+		{"other actor", base, cacheTestIdentity(delegated, cacheTestIssuer, "user-1", "client-1", "actor-2")},
+		{"other client", base, cacheTestIdentity(delegated, cacheTestIssuer, "user-1", "client-2", "actor-1")},
+		{"other platform user", base, cacheTestIdentity(delegated, cacheTestIssuer, "user-2", "client-1", "actor-1")},
+		{"foreign delegated issuer", base, cacheTestIdentity(delegated, foreign, "user-1", "client-1", "actor-1")},
+		{"foreign interactive issuer", local, cacheTestIdentity(interactive, foreign, "user-1", "", "")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertIndependentCapabilitySweeps(t, tc.first, tc.second, true)
+		})
+	}
+}
+
+func TestCachingAggregator_InvalidBindingsBypassCacheAndSingleflight(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		route  auth.AdmissionRoute
+		issuer string
+	}{
+		{"interactive without issuer", auth.AdmissionRouteInteractive, ""},
+		{"unspecified without issuer", auth.AdmissionRouteUnspecified, ""},
+		{"delegated without client", auth.AdmissionRouteDelegated, cacheTestIssuer},
+		{"unknown route", "future-route", cacheTestIssuer},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			id := cacheTestIdentity(tc.route, tc.issuer, "user-1", "", "")
+			assertIndependentCapabilitySweeps(t, id, id, false)
+		})
+	}
+}
+
+func TestCachingAggregator_CacheKey(t *testing.T) {
+	t.Parallel()
+	delegated, interactive := auth.AdmissionRouteDelegated, auth.AdmissionRouteInteractive
+	withIdentity := func(id *auth.Identity) context.Context { return auth.WithIdentity(t.Context(), id) }
+	keyOf := func(id *auth.Identity) (string, error) {
+		return aggregator.CacheKeyForTest(withIdentity(id), testBackends)
+	}
+
+	// The platform user ID is appended to the binding, so these two identities concatenate
+	// to the same bytes ("alice"+"bob" vs "alicebob"+"") and differ only by length framing.
+	shifted := func(sub, platformUserID string) *auth.Identity {
+		return &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+			Subject: sub, PlatformUserID: platformUserID,
+			Claims: map[string]any{"iss": cacheTestIssuer, "sub": sub},
+		}}
+	}
+
+	for _, tc := range []struct {
+		name          string
+		first, second *auth.Identity
+	}{
+		{
+			"delegated with actor vs without",
+			cacheTestIdentity(delegated, cacheTestIssuer, "user-1", "client-1", "actor-1"),
+			cacheTestIdentity(delegated, cacheTestIssuer, "user-1", "client-1", ""),
+		},
+		{
+			"empty vs set platform user ID",
+			cacheTestIdentity(interactive, cacheTestIssuer, "", "", ""),
+			cacheTestIdentity(interactive, cacheTestIssuer, "user-1", "", ""),
+		},
+		{"binding and platform user ID boundary", shifted("alice", "bob"), shifted("alicebob", "")},
+	} {
+		t.Run("differ: "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, err := keyOf(tc.first)
+			require.NoError(t, err)
+			b, err := keyOf(tc.second)
+			require.NoError(t, err)
+			assert.NotEqual(t, a, b)
+		})
+	}
+
+	t.Run("nil identity is cacheable", func(t *testing.T) {
+		t.Parallel()
+		key, err := aggregator.CacheKeyForTest(t.Context(), testBackends)
+		require.NoError(t, err)
+		assert.NotEmpty(t, key)
+	})
+
+	t.Run("unbindable identity returns the binding error", func(t *testing.T) {
+		t.Parallel()
+		_, err := keyOf(cacheTestIdentity(interactive, "", "user-1", "", ""))
+		require.ErrorIs(t, err, sessionbinding.ErrInvalidBinding)
+	})
+}
+
+func TestCachingAggregator_BypassPreservesCancellation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(auth.WithIdentity(t.Context(), cacheTestIdentity(
+		auth.AdmissionRouteInteractive, "", "user-1", "", "")))
+	t.Cleanup(cancel)
+
+	mock := mocks.NewMockAggregator(gomock.NewController(t))
+	mock.EXPECT().AggregateCapabilities(gomock.Any(), testBackends).
+		DoAndReturn(func(context.Context, []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
+			cancel()
+			return &aggregator.AggregatedCapabilities{}, nil
+		})
+	c := aggregator.NewCachingAggregator(mock, time.Hour)
+
+	got := receive(t, callAsync(ctx, c))
+	require.ErrorIs(t, got.err, context.Canceled)
+	assert.Nil(t, got.caps)
+	assert.Zero(t, aggregator.CachedEntriesForTest(c))
+}
+
+func TestCachingAggregator_AnonymousCache(t *testing.T) {
+	t.Parallel()
+	mock := mocks.NewMockAggregator(gomock.NewController(t))
+	anonymousView, boundView := &aggregator.AggregatedCapabilities{}, &aggregator.AggregatedCapabilities{}
+	gomock.InOrder(
+		mock.EXPECT().AggregateCapabilities(gomock.Any(), testBackends).Return(anonymousView, nil),
+		mock.EXPECT().AggregateCapabilities(gomock.Any(), testBackends).Return(boundView, nil),
+	)
+	c := aggregator.NewCachingAggregator(mock, time.Hour)
+	bound := auth.WithIdentity(t.Context(), &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "anonymous",
+		Claims:  map[string]any{"iss": "toolhive-local", "sub": "anonymous"},
+	}})
+	var nilIdentity *auth.Identity
+	typedNil := context.WithValue(t.Context(), auth.IdentityContextKey{}, nilIdentity)
+	for _, tc := range []struct {
+		ctx  context.Context
+		want *aggregator.AggregatedCapabilities
+	}{
+		{t.Context(), anonymousView}, {bound, boundView}, {typedNil, anonymousView}, {bound, boundView},
+	} {
+		got, err := c.AggregateCapabilities(tc.ctx, testBackends)
+		require.NoError(t, err)
+		assert.Same(t, tc.want, got)
+	}
+}
+
+func assertIndependentCapabilitySweeps(t *testing.T, first, second *auth.Identity, cacheable bool) {
+	t.Helper()
+	mock := mocks.NewMockAggregator(gomock.NewController(t))
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
+	mock.EXPECT().AggregateCapabilities(gomock.Any(), testBackends).
+		DoAndReturn(func(context.Context, []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
+			started <- struct{}{}
+			<-release
+			return &aggregator.AggregatedCapabilities{}, nil
+		}).Times(2)
+	c := aggregator.NewCachingAggregator(mock, time.Hour)
+
+	firstCtx := auth.WithIdentity(t.Context(), first)
+	secondCtx := auth.WithIdentity(t.Context(), second)
+	a := callAsync(firstCtx, c)
+	receive(t, started)
+	b := callAsync(secondCtx, c)
+	receive(t, started) // Both must reach the wrapped aggregator before either can finish.
+	unblock()
+	ar, br := receive(t, a), receive(t, b)
+	require.NoError(t, ar.err)
+	require.NoError(t, br.err)
+	require.NotSame(t, ar.caps, br.caps)
+
+	if !cacheable {
+		require.Zero(t, aggregator.CachedEntriesForTest(c))
+		fresh := &aggregator.AggregatedCapabilities{}
+		mock.EXPECT().AggregateCapabilities(gomock.Any(), testBackends).Return(fresh, nil)
+		got := receive(t, callAsync(firstCtx, c))
+		require.NoError(t, got.err)
+		assert.Same(t, fresh, got.caps)
+		return
+	}
+	// A regression that sweeps again fails the gomock expectation on the singleflight
+	// goroutine, so the calls run asynchronously and are received with a timeout.
+	got := receive(t, callAsync(firstCtx, c))
+	require.NoError(t, got.err)
+	assert.Same(t, ar.caps, got.caps)
+	got = receive(t, callAsync(secondCtx, c))
+	require.NoError(t, got.err)
+	assert.Same(t, br.caps, got.caps)
 }
 
 // TestCachingAggregator_TTLExpiry: once the TTL elapses, the next call re-sweeps.
@@ -281,6 +497,12 @@ func TestCachingAggregator_LeaderCancelledWaiterSweepsOnOwnContext(t *testing.T)
 			name: "leader sweep fails with the cancellation",
 			leaderResult: func(ctx context.Context) (*aggregator.AggregatedCapabilities, error) {
 				return nil, fmt.Errorf("query backends: %w", ctx.Err())
+			},
+		},
+		{
+			name: "leader sweep fails as if no backend answered",
+			leaderResult: func(context.Context) (*aggregator.AggregatedCapabilities, error) {
+				return nil, fmt.Errorf("query backends: %w", aggregator.ErrNoBackendCapabilities)
 			},
 		},
 		{

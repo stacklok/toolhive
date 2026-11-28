@@ -98,7 +98,7 @@ func TestNewOIDCAuthMiddleware_MissingClientSecretEnv(t *testing.T) {
 		ClientSecretEnv: "MISSING_VMCP_OIDC_CLIENT_SECRET",
 	}
 
-	_, _, err := newOIDCAuthMiddleware(t.Context(), cfg, nil, nil, "")
+	_, _, err := newOIDCAuthMiddleware(t.Context(), cfg, nil, nil, "", nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "MISSING_VMCP_OIDC_CLIENT_SECRET")
@@ -140,7 +140,7 @@ func TestNewOIDCAuthMiddleware_ClientSecretReachesIntrospection(t *testing.T) {
 		JwksAllowPrivateIP: true,
 	}
 
-	authMw, _, err := newOIDCAuthMiddleware(t.Context(), cfg, nil, nil, "")
+	authMw, _, err := newOIDCAuthMiddleware(t.Context(), cfg, nil, nil, "", nil)
 	require.NoError(t, err)
 	require.NotNil(t, authMw)
 

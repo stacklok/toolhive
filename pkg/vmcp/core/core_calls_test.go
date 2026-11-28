@@ -16,6 +16,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -870,5 +871,59 @@ func TestExecuteComposite_URLElicitationFromStepFlattens(t *testing.T) {
 			assert.Contains(t, got.Content[0].Text, "Reconnect GitHub")
 			assert.NotContains(t, got.Content[0].Text, "connect.example.com")
 		})
+	}
+}
+
+// TestExecuteComposite_DelegatedCredentialFailure pins that a workflow failing
+// on a delegated credential returns the bare delegated error, without workflow
+// or step context, so the protocol renderers answer it as they answer a direct
+// call. A failure that also carries a denial or a URL elicitation answer, both
+// of which outrank it, is still flattened.
+func TestExecuteComposite_DelegatedCredentialFailure(t *testing.T) {
+	t.Parallel()
+
+	elicitation, err := vmcp.NewURLElicitation("github", "https://connect.example.com/github", "Reconnect GitHub")
+	require.NoError(t, err)
+	answer, err := vmcp.NewURLElicitationRequiredError(elicitation)
+	require.NoError(t, err)
+	authReq := authtypes.NewDelegatedAuthRequiredError("github", errors.New("private cause"))
+	unavailable := authtypes.ErrDelegatedCredentialUnavailable
+	stepErr := func(cause error) error {
+		return fmt.Errorf("%w: tool %s in step %s: %w", composer.ErrToolCallFailed, "be1.fetch", "fetch", cause)
+	}
+
+	def := &composer.WorkflowDefinition{Name: "wf"}
+	tests := []struct {
+		name     string
+		cause    error
+		wantErr  error
+		wantText string
+	}{
+		{name: "authorization required", cause: authReq, wantErr: authReq},
+		{name: "unavailable", cause: unavailable, wantErr: unavailable},
+		{name: "URL elicitation answer outranks it", cause: errors.Join(authReq, answer), wantText: "Reconnect GitHub"},
+		{name: "denial outranks it", cause: errors.Join(vmcp.ErrAuthorizationFailed, unavailable), wantText: "authorization failed"},
+	}
+	for _, tt := range tests {
+		for report, c := range map[string]stubComposer{
+			"execution error":      {err: stepErr(tt.cause)},
+			"result carries error": {result: &composer.WorkflowResult{Error: stepErr(tt.cause)}},
+		} {
+			t.Run(tt.name+"/"+report, func(t *testing.T) {
+				t.Parallel()
+				got, err := executeComposite(context.Background(), nil, c, def, nil)
+				if tt.wantErr != nil {
+					require.Nil(t, got)
+					assert.Same(t, tt.wantErr, err)
+					assert.NotContains(t, err.Error(), "fetch")
+					return
+				}
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.True(t, got.IsError)
+				require.Len(t, got.Content, 1)
+				assert.Contains(t, got.Content[0].Text, tt.wantText)
+			})
+		}
 	}
 }

@@ -53,7 +53,7 @@ func populatedLegacyConfig() *Config {
 		UsageMetricsMiddleware:  passthrough,
 		AuditConfig:             &audit.Config{},
 		AuditSubjectEnricher:    stubSubjectEnricher,
-		CallBinding:             callbinding.Config{Clients: []string{"c"}},
+		CallBinding:             testCallBinding(),
 		StatusReportingInterval: 11 * time.Second,
 		Watcher:                 stubWatcher{},
 		StatusReporter:          stubServeReporter{},
@@ -283,4 +283,11 @@ func assertAllFieldsPopulated(t *testing.T, v any, typeName string, skip map[str
 		}
 		assert.Falsef(t, rv.Field(i).IsZero(), "%s.%s was not populated by derivation", typeName, name)
 	}
+}
+
+// testCallBinding is a call binding that lists one client. New refuses only a
+// negative MaxCallDuration or an empty client ID, so it cannot fail here.
+func testCallBinding() *callbinding.Binding {
+	binding, _ := callbinding.New(callbinding.Config{Clients: []string{"c"}})
+	return binding
 }

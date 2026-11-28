@@ -59,6 +59,36 @@ remain 413). Valid client responses do not populate `ParsedMCPRequest`; their
 handling remains transport-specific. Authorization middleware still refuses
 POSTs without a parsed request, including client responses.
 
+### What authorization decides on
+
+Authorization decides on the request: the caller's claims, the operation, the
+resource ID, and the arguments. When a mutating webhook rewrites the request,
+authorization evaluates the rewritten version (see
+[Dynamic webhook middleware](middleware.md#dynamic-webhook-middleware)). It does not see or limit
+what the MCP server or its backend does while carrying out a permitted call,
+and the only responses it filters are the list operations (see
+[List operations](#list-operations)).
+
+This matters when an MCP server reaches its backend with one shared credential
+for every caller, such as a static API key or service account token. A policy
+that pins a tool to one object, for example `issue_read` on a given issue, can
+still permit a call whose result includes other objects the backend resolves
+on its own, such as linked or blocking issues the shared credential can see.
+A permitted write can also cause backend side effects outside the pinned
+object, such as cross-references the backend adds to other issues. The request
+looks the same whether or not this happens, so no request-level policy can
+tell the two apart.
+
+To keep callers apart at the data level, have each call reach the backend with
+the caller's own credential, so the backend's access controls decide what each
+caller can see and change. ToolHive supports this through token exchange and
+through the embedded authorization server's per-user upstream tokens (see
+[Understanding Auth, Upstream Swap, and Token Exchange Middleware](middleware.md#understanding-auth-upstream-swap-and-token-exchange-middleware)
+and the user guide's
+[Backend authentication](https://docs.stacklok.com/toolhive/concepts/backend-auth)). Confining
+an agent to a subset of its own user's objects needs narrower credentials from
+the backend itself, such as a token scoped to one repository.
+
 ### Virtual MCP parity
 
 Virtual MCP (`vmcp`) enforces the same Cedar policies through its core admission
@@ -94,9 +124,15 @@ with only that backend's items, all in one response without `nextCursor`; it can
 start a `tools/call`. Before that list call, a `tools/call` or another list method gets
 **HTTP 403** `method_mismatch`, and a list request that carries a `cursor` gets 403
 `invalid_params`. A backend the caller is not admitted to anything of, including one
-that does not exist, gets 403 `server_not_found`; one the caller can see but that is
-not served now for its health status gets **HTTP 503**. None of these uses up the
-token. Before its `exp`, such a token may also send, to the MCP endpoint:
+that does not exist or that cannot be discovered now, gets 403 `server_not_found`; one
+the caller can see but that is not served now, for its health status or because listing
+that kind of item failed for now, gets **HTTP 503**. The 403 `server_not_found` and the
+503 for a backend's health status run the same authorization checks, over every
+backend's items, whichever backend they name, so the time they take does not tell which
+backends exist. While no backend of a non-empty group
+can be discovered, a valid list call that has to discover backends gets **HTTP 503**,
+whatever backend it names; a caller whose view is still cached is answered from it. None
+of these uses up the token. Before its `exp`, such a token may also send, to the MCP endpoint:
 
 - the handshake (`initialize`, `notifications/initialized`), the Modern
   `server/discover` probe and `ping`; `initialize` only until the token has started
@@ -105,7 +141,8 @@ token. Before its `exp`, such a token may also send, to the MCP endpoint:
   up the token;
 - GET and DELETE on sessions its principal owns, and once the token has started its
   call, only on that call's session;
-- on the Legacy session of its tool call, while the call's request is open: a
+- on the Legacy session of its tool call, while the call is open (its request is
+  open, or its dispatch still runs, as after the client closes the call's POST): a
   `notifications/cancelled` for the call and any JSON-RPC response, such as an
   elicitation answer.
 
@@ -120,12 +157,69 @@ error and no `WWW-Authenticate`, like a Cedar denial. In both cases the message 
 with the reason, and the request is audited as `denied` with
 `metadata.extra.denial_reason`.
 
+A client that acts on the reason reads it from a field rather than from the message
+text, which may change:
+
+- On a 401, the reason is a `reason` auth-param on the challenge, after
+  `error_description`, and a `reason` member of the JSON body. `error` stays
+  `invalid_token`. For example:
+
+  ```text
+  WWW-Authenticate: Bearer error="invalid_token", error_description="the access token is not accepted (token_reused)", reason="token_reused"
+
+  {"error":"invalid_token","error_description":"the access token is not accepted (token_reused)","reason":"token_reused"}
+  ```
+
+- On a 403, the reason is `error.data.reason`:
+
+  ```json
+  {"jsonrpc":"2.0","id":2,"error":{"code":403,"message":"Forbidden: the access token does not permit this request (arguments_mismatch)","data":{"reason":"arguments_mismatch"}}}
+  ```
+
+The reasons are fixed strings, the `callbinding.Reason*` constants:
+
+| Reason | Status | Meaning |
+|--------|--------|---------|
+| `token_expired` | 401 | The token's `exp` has passed. |
+| `token_reused` | 401 | The token has already started its call, and the request would start another call or a new session. The first call may have run, so a client that cannot tell who sent it should not retry. |
+| `malformed_entry` | 401 | The `authorization_details` claim, or its `mcp_tool_call` entry, does not have the required shape. |
+| `single_entry_required` | 401 | The token carries more than one `mcp_tool_call` entry. |
+| `claims_required` | 401 | A call-bound token has no usable `jti`, `iss` or `exp`. |
+| `entry_required` | 403 | The token's client must use call-bound tokens, and the token has no `mcp_tool_call` entry. |
+| `method_not_allowed` | 403 | The request is not one a call-bound token may send, or is not sent to the MCP endpoint. |
+| `method_mismatch` | 403 | The entry names a list call, and the request is a `tools/call` or another list method. |
+| `tool_mismatch` | 403 | `params.name` is not the entry's tool. |
+| `tool_not_found` | 403 | The vMCP does not route the tool for this caller. |
+| `tool_not_bindable` | 403 | The tool has no single backend, such as a composite tool. |
+| `server_mismatch` | 403 | The vMCP routes the call to a backend other than the entry's server. |
+| `server_not_found` | 403 | The list call's server is not a backend the caller is admitted to. |
+| `invalid_arguments` | 403 | `params.arguments` is not one I-JSON object. |
+| `arguments_mismatch` | 403 | The arguments' hash is not the entry's `arguments_sha256`. |
+| `invalid_params` | 403 | The params cannot be read unambiguously, or a list call carries a `cursor`. |
+| `session_mismatch` | 403 | A GET or DELETE names a session other than the call's. |
+| `no_open_call` | 403 | A cancellation, response, GET or DELETE does not belong to an open call of the token. |
+
+A 401 without `reason` comes from the token validator, not from call binding: for
+example an expired token outside any admission grace, or a token whose signature
+fails.
+
 Two consequences are easy to miss. A token whose `authorization_details` claim is
 malformed is refused on every request, whatever its client, even one that never
-asked for call binding. And messages for a call are accepted only until the earlier of
-the token's `exp` and the end of the call's request: an elicitation answer or
-cancellation sent after `exp` gets 401, even while the call is still open, and a fresh
-token does not help because it has no call of its own. See
+asked for call binding. And `exp` is strict: once a call-bound token expires, every
+request with it gets 401, even one that cancels or answers a call still running.
+`vmcp serve` and the operator have no setting to change that. A Go embedder can opt
+in per issuer and client with `callbinding.Config.ExpiredTokenAdmission`, a list of
+`{Issuer, ClientID, Grace}` entries matched against the token's `iss` and `client_id`
+claims (`azp` is not read). For a matching token, a tool call that outlives its token
+keeps, on its session, its cancellation, elicitation answers, and GET and DELETE, for
+the entry's `Grace` after `exp`, and only until the call ends (its request has
+returned and its dispatch has finished) or has run for the maximum call duration (30
+minutes by default, which no `Grace` may exceed). Within the grace, a message for a
+call that has ended is answered without being dispatched: 202 for its cancellation or
+a response, 403 `no_open_call` for a GET or DELETE. Anything else after `exp` gets
+401. This needs the token validator to share the vMCP's call binding
+(`factory.WithCallBinding`).
+See
 [Call-bound access tokens](arch/10-virtual-mcp-architecture.md#call-bound-access-tokens).
 
 For Legacy vMCP and stateful proxy requests, a delegated session is bound to the
@@ -294,7 +388,7 @@ In the context of MCP servers, the following entities are used:
     - `Action::"get_skill"`: Get a skill
 
   Note: List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) are always
-  allowed but the response is filtered based on the corresponding call/get/read policies.
+  allowed, but the response is filtered by the user's permissions for the corresponding operation. `tools/list` uses the `tool:read` check, which a `tool:call` grant also satisfies (see List operations below).
   Define policies for the specific operations (call_tool, get_prompt, read_resource, get_skill)
   and the list responses will automatically show only the items the user is authorized to access.
 
@@ -552,7 +646,12 @@ List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) 
 They are always allowed but the response is automatically filtered based on the user's permissions
 for the corresponding operations:
 
-- `tools/list` shows only tools the user can call (based on `call_tool` policies); a result in which a tool repeats `name`, `annotations`, or the annotation `title` or a hint such as `readOnlyHint`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error, so policies evaluate exactly the hints the client receives.
+- `tools/list` shows only tools the user can read. The read check is `tool:read`, and a `tool:call` grant also satisfies it, so a user who can call a tool can also see it. `tool:read` never grants `tool:call`.
+  - **Cedar:** Cedar has no `tool:read` action, so it denies `tool:read` without evaluating policies and the `tool:call` check decides visibility. In policies this is `call_tool`, so a tool is listed only when a `call_tool` policy allows it.
+  - **HTTP PDP:** by default the PDP is asked only `mcp:tool:call`, so a call-only forbid keeps hiding its tool and visibility is unchanged. Each tool costs one PDP decision. Set `pdp.forward_tool_read: true` to ask `mcp:tool:read` instead: a tool is then listed when the PDP allows read, with one decision per tool and no call fallback. With that flag, the PDP must answer `mcp:tool:read`; an error from it hides the tool. With `forward_tool_read: true`, a PDP that allows `tool:read` and forbids `tool:call` for one tool lists that tool, and calls to it are still refused. With that flag the PDP must allow `tool:read` wherever it allows `tool:call`.
+  - **vMCP:** filtering uses the same `tool:read` check as the single-server path, so the same visibility rules apply.
+  - **Errors:** an error from either check skips that tool and logs a WARN, and a `tool:read` error does not fall back to `tool:call`. The whole filter runs under one 30 second deadline, and tools checked after it expires are hidden.
+  - A result in which a tool repeats `name`, `annotations`, or the annotation `title` or a hint such as `readOnlyHint`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error, so policies evaluate exactly the hints the client receives.
 - `prompts/list` shows only prompts the user can get (based on `get_prompt` policies)
 - `resources/list` shows only resources the user can read (based on `read_resource` policies)
 - `skills/list` shows only skill entries the user can get (based on `get_skill` policies); entries
@@ -1207,6 +1306,7 @@ The configuration fields are:
 - `pdp.http.url`: The base URL of the PDP server (required)
 - `pdp.http.timeout`: HTTP request timeout in seconds (default: 30)
 - `pdp.http.insecure_skip_verify`: Skip TLS certificate verification (default: false)
+- `pdp.forward_tool_read`: Ask the PDP for `mcp:tool:read` when deciding `tools/list` visibility, instead of `mcp:tool:call` (default: false)
 - `pdp.claim_mapping`: Claim mapper type (required)
   - `"mpe"`: Maps to m-prefixed claims (mroles, mgroups, mclearance, mannotations) - compatible with Manetu PolicyEngine and similar systems
   - `"standard"`: Uses standard OIDC claim names (roles, groups) - compatible with PDPs expecting standard OIDC conventions

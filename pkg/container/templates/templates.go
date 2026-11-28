@@ -134,17 +134,3 @@ func GetDockerfileTemplate(transportType TransportType, data TemplateData) (stri
 
 	return buf.String(), nil
 }
-
-// ParseTransportType parses a string into a transport type.
-func ParseTransportType(s string) (TransportType, error) {
-	switch s {
-	case "uvx":
-		return TransportTypeUVX, nil
-	case "npx":
-		return TransportTypeNPX, nil
-	case "go":
-		return TransportTypeGO, nil
-	default:
-		return "", fmt.Errorf("unsupported transport type: %s", s)
-	}
-}

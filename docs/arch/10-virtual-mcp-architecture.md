@@ -1173,7 +1173,7 @@ converter reads the client secret from the referenced Secret.
 
 Exchanged tokens are cached to avoid repeated exchange calls.
 
-**Implementation**: `pkg/vmcp/auth/`, `pkg/vmcp/cache/`
+**Implementation**: `pkg/vmcp/auth/`, `pkg/auth/obo/`
 
 #### Delegated upstream authentication
 

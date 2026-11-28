@@ -79,56 +79,6 @@ func TestValidateFilePath(t *testing.T) {
 	}
 }
 
-func TestValidateFileExists(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		setupFunc func(t *testing.T) string
-		wantErr   bool
-		errMsg    string
-	}{
-		{
-			name: "existing file",
-			setupFunc: func(t *testing.T) string {
-				t.Helper()
-				tmpFile, err := os.CreateTemp("", "test-*.txt")
-				require.NoError(t, err)
-				t.Cleanup(func() { os.Remove(tmpFile.Name()) })
-				return tmpFile.Name()
-			},
-			wantErr: false,
-		},
-		{
-			name: "non-existent file",
-			setupFunc: func(t *testing.T) string {
-				t.Helper()
-				return "/nonexistent/file.txt"
-			},
-			wantErr: true,
-			errMsg:  "file not found or not accessible",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			path := tt.setupFunc(t)
-			err := validateFileExists(path)
-
-			if tt.wantErr {
-				assert.Error(t, err)
-				if tt.errMsg != "" {
-					assert.Contains(t, err.Error(), tt.errMsg)
-				}
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
 func TestReadFile(t *testing.T) {
 	t.Parallel()
 

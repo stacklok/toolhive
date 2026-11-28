@@ -103,11 +103,6 @@ func TestSessionRouter_SetLogLevel_MaxReconciliation(t *testing.T) {
 	maxChanged, newMax = r.setLogLevel("sess-b", 0)
 	assert.True(t, maxChanged)
 	assert.Equal(t, 3, newMax, "max must fall back to the remaining highest tracked session")
-
-	r.dropLogLevel("sess-a")
-	r.dropLogLevel("sess-b")
-	// Dropping already-removed sessions is a no-op.
-	assert.NotPanics(t, func() { r.dropLogLevel("sess-a") })
 }
 
 // --- purgeSession ---
@@ -202,7 +197,6 @@ func TestSessionRouter_ConcurrentAccess(t *testing.T) {
 				r.removeSubscription(uri, sess)
 
 				r.setLogLevel(sess, j%8)
-				r.dropLogLevel(sess)
 
 				r.recordProgressToken(ptGlobal, progressRoute{deliver: make(chan jsonrpc2.Message, 1), originalToken: j})
 				r.lookupProgressToken(ptGlobal)

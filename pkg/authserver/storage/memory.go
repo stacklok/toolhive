@@ -262,22 +262,6 @@ func WithMaxDCRClients(n int) MemoryStorageOption {
 	}
 }
 
-// withMaxCIMDClients overrides defaultMaxMemoryCIMDClients, so tests can
-// reach the CIMD cap.
-func withMaxCIMDClients(n int) MemoryStorageOption {
-	return func(s *MemoryStorage) {
-		s.maxCIMDClients = n
-	}
-}
-
-// withClientClock sets the clock used for client expiry and exchange grants,
-// so tests can move past a TTL without sleeping.
-func withClientClock(now func() time.Time) MemoryStorageOption {
-	return func(s *MemoryStorage) {
-		s.now = now
-	}
-}
-
 // NewMemoryStorage creates a new MemoryStorage instance with initialized maps
 // and starts the background cleanup goroutine.
 func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {

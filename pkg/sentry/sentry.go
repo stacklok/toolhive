@@ -229,11 +229,6 @@ func Close() {
 	slog.Debug("sentry flushed and closed")
 }
 
-// Enabled reports whether the Sentry SDK was successfully initialized.
-func Enabled() bool {
-	return initialized.Load()
-}
-
 // CaptureException reports an error to Sentry using the hub from the request context.
 // Falls back to the current hub if no hub is attached to the context.
 // No-op when Sentry is not initialized.

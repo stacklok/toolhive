@@ -23,9 +23,9 @@ import (
 // This test exercises composite tool discovery and execution through the
 // optimizer's find_tool / call_tool interface.
 //
-// Composite tools are registered as session decorators (compositetools.Decorator)
+// Composite tools are advertised by the vMCP core alongside backend tools,
 // before the optimizer decorator is applied, so the optimizer indexes them
-// alongside backend tools.  Workflow steps reference backend tools via the
+// together.  Workflow steps reference backend tools via the
 // "{workloadID}.{originalCapabilityName}" dot convention, which the session
 // router resolves to the correct conflict-resolved routing table entry
 // regardless of which conflict resolution strategy is in use.

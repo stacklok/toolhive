@@ -173,10 +173,11 @@ func decodeExchangeGrantEntry(raw json.RawMessage) (exchangeGrantEntry, error) {
 	return entry, nil
 }
 
-// validateTopLevelEntry applies the client's policy to an entry sent with an
-// access-token subject. It returns the granted entry, with expires_at filled in
-// or capped (RFC 9396 section 7.1), and the grant's ExpiresAt. The input must
-// have passed Registry.Parse or be hook output.
+// validateTopLevelDecoded applies the client's policy to an entry sent with an
+// access-token subject, already decoded with decodeExchangeGrantEntry. It
+// returns the granted entry, with expires_at filled in or capped (RFC 9396
+// section 7.1), and the grant's ExpiresAt. The input must have passed
+// Registry.Parse or be hook output.
 //
 // The response's expires_in is exchangeGrantExpiresIn(expiresAt, now) with the
 // same now. Errors are plain authorizationdetails.Error values that
@@ -189,18 +190,6 @@ func decodeExchangeGrantEntry(raw json.RawMessage) (exchangeGrantEntry, error) {
 // kept. Logout and upstream revocation do not end the grant by themselves; it
 // ends at expiry or through revocation, which a user-wide revocation would
 // also use once there is one.
-func validateTopLevelEntry(
-	raw json.RawMessage, policy ConfiguredClientPolicy, now time.Time,
-) (json.RawMessage, time.Time, error) {
-	entry, err := decodeExchangeGrantEntry(raw)
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-	return validateTopLevelDecoded(entry, policy, now)
-}
-
-// validateTopLevelDecoded is validateTopLevelEntry for an entry the caller has
-// already decoded with decodeExchangeGrantEntry.
 func validateTopLevelDecoded(
 	entry exchangeGrantEntry, policy ConfiguredClientPolicy, now time.Time,
 ) (json.RawMessage, time.Time, error) {
@@ -213,29 +202,17 @@ func validateTopLevelDecoded(
 	return grantEntry(entry, tokenType, nowSec, nowSec+capSeconds)
 }
 
-// validateChildEntry applies the client's policy to an entry sent with a
-// refresh-token subject, whose grant is the source of the child. A child never
-// lists refresh_token, since derivation is one level deep, and never outlives
-// its source. The input must have passed
-// Registry.Parse or be hook output; errors and expires_in are as for
-// validateTopLevelEntry.
+// validateChildDecoded applies the client's policy to an entry sent with a
+// refresh-token subject, already decoded with decodeExchangeGrantEntry, whose
+// grant is the source of the child. A child never lists refresh_token, since
+// derivation is one level deep, and never outlives its source. The input must
+// have passed Registry.Parse or be hook output; errors and expires_in are as
+// for validateTopLevelDecoded.
 //
 // A child with no lifetime left is refused even though storage Live treats
 // now == source.ExpiresAt as live: a zero-lifetime child is useless. The derive
 // handler refuses a source with no whole second left before it gets here, so
 // this check is a fallback for direct callers.
-func validateChildEntry(
-	raw json.RawMessage, source *storage.ExchangeGrant, policy ConfiguredClientPolicy, now time.Time,
-) (json.RawMessage, time.Time, error) {
-	entry, err := decodeExchangeGrantEntry(raw)
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-	return validateChildDecoded(entry, source, policy, now)
-}
-
-// validateChildDecoded is validateChildEntry for an entry the caller has
-// already decoded with decodeExchangeGrantEntry.
 func validateChildDecoded(
 	entry exchangeGrantEntry, source *storage.ExchangeGrant, policy ConfiguredClientPolicy, now time.Time,
 ) (json.RawMessage, time.Time, error) {

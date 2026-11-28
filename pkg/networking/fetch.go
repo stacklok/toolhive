@@ -21,7 +21,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -31,9 +30,6 @@ const (
 
 	// contentTypeJSON is the JSON content type.
 	contentTypeJSON = "application/json"
-
-	// contentTypeFormURLEncoded is the form-urlencoded content type.
-	contentTypeFormURLEncoded = "application/x-www-form-urlencoded"
 )
 
 // FetchResult contains the result of a successful JSON fetch operation.
@@ -191,27 +187,4 @@ func FetchJSON[T any](
 		Data:    data,
 		Headers: resp.Header,
 	}, nil
-}
-
-// FetchJSONWithForm performs a POST request with form-urlencoded body and parses JSON response.
-// This is a convenience wrapper around FetchJSON for token endpoints and similar APIs.
-// It sets Content-Type to application/x-www-form-urlencoded and Accept to application/json.
-func FetchJSONWithForm[T any](
-	ctx context.Context,
-	client HTTPClient,
-	requestURL string,
-	formData url.Values,
-	opts ...FetchOption,
-) (*FetchResult[T], error) {
-	// Prepend form-specific options
-	formOpts := []FetchOption{
-		WithMethod(http.MethodPost),
-		WithHeader("Content-Type", contentTypeFormURLEncoded),
-		WithBody(strings.NewReader(formData.Encode())),
-	}
-
-	// Append user options (they can override form options if needed)
-	allOpts := append(formOpts, opts...)
-
-	return FetchJSON[T](ctx, client, requestURL, allOpts...)
 }

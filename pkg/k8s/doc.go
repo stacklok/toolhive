@@ -70,25 +70,6 @@
 //	// Use the client
 //	pods, err := clientset.CoreV1().Pods("default").List(ctx, metav1.ListOptions{})
 //
-// Creating a client from existing config:
-//
-//	import "github.com/stacklok/toolhive/pkg/k8s"
-//
-//	// Get config separately
-//	config, err := k8s.GetConfig()
-//	if err != nil {
-//	    return err
-//	}
-//
-//	// Customize config if needed
-//	config.Timeout = 30 * time.Second
-//
-//	// Create client from config
-//	clientset, err := k8s.NewClientWithConfig(config)
-//	if err != nil {
-//	    return err
-//	}
-//
 // Working with Custom Resource Definitions (CRDs):
 //
 //	import "github.com/stacklok/toolhive/pkg/k8s"

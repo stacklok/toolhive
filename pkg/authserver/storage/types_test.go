@@ -365,21 +365,6 @@ func TestUpstreamTokenRowIDResolution(t *testing.T) {
 	}
 }
 
-func TestDefaultConfig(t *testing.T) {
-	t.Parallel()
-
-	cfg := DefaultConfig()
-
-	if cfg == nil {
-		t.Fatal("DefaultConfig() returned nil")
-		return
-	}
-
-	if cfg.Type != TypeMemory {
-		t.Errorf("DefaultConfig().Type = %q, want %q", cfg.Type, TypeMemory)
-	}
-}
-
 // equal is the Redis round-trip oracle: whether f and o represent the same
 // logical client configuration: equal scope, audience, grant-type, response-type, resource
 // and redirect URI sets, token endpoint auth method, identity,

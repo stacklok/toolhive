@@ -54,201 +54,22 @@ func assertOwnerReference(t *testing.T, refs []metav1.OwnerReference, owner clie
 	assert.True(t, *ownerRef.BlockOwnerDeletion)
 }
 
-func TestGetServiceAccount(t *testing.T) {
-	t.Parallel()
-
-	scheme := testutil.NewScheme(t)
-
-	t.Run("successfully retrieves existing ServiceAccount", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		serviceAccount := &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-sa",
-				Namespace: "default",
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(serviceAccount).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-		retrieved, err := client.GetServiceAccount(ctx, "test-sa", "default")
-
-		require.NoError(t, err)
-		assert.NotNil(t, retrieved)
-		assert.Equal(t, "test-sa", retrieved.Name)
-		assert.Equal(t, "default", retrieved.Namespace)
-	})
-
-	t.Run("returns error when ServiceAccount does not exist", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-		retrieved, err := client.GetServiceAccount(ctx, "non-existent", "default")
-
-		require.Error(t, err)
-		assert.Nil(t, retrieved)
-		assert.Contains(t, err.Error(), "failed to get service account non-existent in namespace default")
-	})
-
-	t.Run("retrieves ServiceAccount from specific namespace", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		sa1 := &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-sa",
-				Namespace: "namespace1",
-			},
-		}
-
-		sa2 := &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-sa",
-				Namespace: "namespace2",
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(sa1, sa2).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-		retrieved, err := client.GetServiceAccount(ctx, "test-sa", "namespace2")
-
-		require.NoError(t, err)
-		assert.Equal(t, "namespace2", retrieved.Namespace)
-	})
+// getServiceAccount reads a ServiceAccount in the "default" namespace through the rbac Client's underlying client.
+func getServiceAccount(ctx context.Context, c *Client, name string) (*corev1.ServiceAccount, error) {
+	sa := &corev1.ServiceAccount{}
+	return sa, c.client.Get(ctx, client.ObjectKey{Name: name, Namespace: "default"}, sa)
 }
 
-func TestUpsertServiceAccount(t *testing.T) {
-	t.Parallel()
+// getRole reads a Role in the "default" namespace through the rbac Client's underlying client.
+func getRole(ctx context.Context, c *Client, name string) (*rbacv1.Role, error) {
+	role := &rbacv1.Role{}
+	return role, c.client.Get(ctx, client.ObjectKey{Name: name, Namespace: "default"}, role)
+}
 
-	scheme := testutil.NewScheme(t)
-
-	t.Run("successfully creates new ServiceAccount", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-
-		automountToken := true
-		serviceAccount := &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "new-sa",
-				Namespace: "default",
-				Labels: map[string]string{
-					"app":         "test",
-					"environment": "production",
-					"team":        "platform",
-				},
-				Annotations: map[string]string{
-					"annotation-key": "annotation-value",
-					"description":    "test service account",
-					"created-by":     "test-suite",
-				},
-			},
-			AutomountServiceAccountToken: &automountToken,
-			ImagePullSecrets: []corev1.LocalObjectReference{
-				{Name: "registry-secret"},
-			},
-			Secrets: []corev1.ObjectReference{
-				{Name: "token-secret"},
-			},
-		}
-
-		result, err := client.UpsertServiceAccount(ctx, serviceAccount)
-
-		require.NoError(t, err)
-		assert.Equal(t, "created", string(result))
-
-		// Verify the service account was created correctly with all fields preserved
-		retrieved, err := client.GetServiceAccount(ctx, "new-sa", "default")
-		require.NoError(t, err)
-		assert.Equal(t, "new-sa", retrieved.Name)
-		assert.Equal(t, "default", retrieved.Namespace)
-		assert.Equal(t, "test", retrieved.Labels["app"])
-		assert.Equal(t, "production", retrieved.Labels["environment"])
-		assert.Equal(t, "platform", retrieved.Labels["team"])
-		assert.Equal(t, "annotation-value", retrieved.Annotations["annotation-key"])
-		assert.Equal(t, "test service account", retrieved.Annotations["description"])
-		assert.Equal(t, "test-suite", retrieved.Annotations["created-by"])
-		require.NotNil(t, retrieved.AutomountServiceAccountToken)
-		assert.True(t, *retrieved.AutomountServiceAccountToken)
-		assert.Len(t, retrieved.ImagePullSecrets, 1)
-		assert.Equal(t, "registry-secret", retrieved.ImagePullSecrets[0].Name)
-		assert.Len(t, retrieved.Secrets, 1)
-		assert.Equal(t, "token-secret", retrieved.Secrets[0].Name)
-	})
-
-	t.Run("successfully updates existing ServiceAccount", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		automountTokenOld := true
-		existingSA := &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "existing-sa",
-				Namespace: "default",
-			},
-			AutomountServiceAccountToken: &automountTokenOld,
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(existingSA).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-
-		automountTokenNew := false
-		updatedSA := &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "existing-sa",
-				Namespace: "default",
-				Labels: map[string]string{
-					"updated": "true",
-				},
-			},
-			AutomountServiceAccountToken: &automountTokenNew,
-			ImagePullSecrets: []corev1.LocalObjectReference{
-				{Name: "new-secret"},
-			},
-		}
-
-		result, err := client.UpsertServiceAccount(ctx, updatedSA)
-
-		require.NoError(t, err)
-		assert.Equal(t, "updated", string(result))
-
-		// Verify the service account was updated correctly
-		retrieved, err := client.GetServiceAccount(ctx, "existing-sa", "default")
-		require.NoError(t, err)
-		assert.Equal(t, "true", retrieved.Labels["updated"])
-		require.NotNil(t, retrieved.AutomountServiceAccountToken)
-		assert.False(t, *retrieved.AutomountServiceAccountToken)
-		assert.Len(t, retrieved.ImagePullSecrets, 1)
-		assert.Equal(t, "new-secret", retrieved.ImagePullSecrets[0].Name)
-	})
+// getRoleBinding reads a RoleBinding in the "default" namespace through the rbac Client's underlying client.
+func getRoleBinding(ctx context.Context, c *Client, name string) (*rbacv1.RoleBinding, error) {
+	rb := &rbacv1.RoleBinding{}
+	return rb, c.client.Get(ctx, client.ObjectKey{Name: name, Namespace: "default"}, rb)
 }
 
 func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
@@ -286,7 +107,7 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 		assert.Equal(t, "created", string(result))
 
 		// Verify the service account was created with owner reference
-		retrieved, err := client.GetServiceAccount(ctx, "owned-sa", "default")
+		retrieved, err := getServiceAccount(ctx, client, "owned-sa")
 		require.NoError(t, err)
 		assertOwnerReference(t, retrieved.OwnerReferences, owner)
 		assert.Equal(t, "test", retrieved.Labels["managed-by"])
@@ -328,7 +149,7 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 		assert.Equal(t, "updated", string(result))
 
 		// Verify the service account was updated with owner reference
-		retrieved, err := client.GetServiceAccount(ctx, "existing-sa", "default")
+		retrieved, err := getServiceAccount(ctx, client, "existing-sa")
 		require.NoError(t, err)
 		require.NotNil(t, retrieved.AutomountServiceAccountToken)
 		assert.True(t, *retrieved.AutomountServiceAccountToken)
@@ -466,7 +287,7 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 		assert.Equal(t, "updated", string(result))
 
 		// Verify the service account was updated but preserved existing secrets
-		retrieved, err := client.GetServiceAccount(ctx, "openshift-sa", "default")
+		retrieved, err := getServiceAccount(ctx, client, "openshift-sa")
 		require.NoError(t, err)
 
 		// Labels should be updated
@@ -528,7 +349,7 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 		_, err := client.UpsertServiceAccountWithOwnerReference(ctx, updatedSA, owner)
 		require.NoError(t, err)
 
-		retrieved, err := client.GetServiceAccount(ctx, "empty-slice-sa", "default")
+		retrieved, err := getServiceAccount(ctx, client, "empty-slice-sa")
 		require.NoError(t, err)
 
 		// Both fields should be preserved, identical to the nil-input case.
@@ -585,7 +406,7 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "updated", string(result))
 
-		retrieved, err := client.GetServiceAccount(ctx, "explicit-sa", "default")
+		retrieved, err := getServiceAccount(ctx, client, "explicit-sa")
 		require.NoError(t, err)
 
 		// Secrets should be overwritten with the new values
@@ -595,230 +416,6 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 		// ImagePullSecrets should be overwritten with the new values
 		require.Len(t, retrieved.ImagePullSecrets, 1)
 		assert.Equal(t, "new-dockercfg", retrieved.ImagePullSecrets[0].Name)
-	})
-}
-
-func TestGetRole(t *testing.T) {
-	t.Parallel()
-
-	scheme := testutil.NewScheme(t)
-
-	t.Run("successfully retrieves existing Role", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		role := &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-role",
-				Namespace: "default",
-			},
-			Rules: []rbacv1.PolicyRule{
-				{
-					APIGroups: []string{""},
-					Resources: []string{"pods"},
-					Verbs:     []string{"get", "list"},
-				},
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(role).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-		retrieved, err := client.GetRole(ctx, "test-role", "default")
-
-		require.NoError(t, err)
-		assert.NotNil(t, retrieved)
-		assert.Equal(t, "test-role", retrieved.Name)
-		assert.Equal(t, "default", retrieved.Namespace)
-		assert.Len(t, retrieved.Rules, 1)
-	})
-
-	t.Run("returns error when Role does not exist", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-		retrieved, err := client.GetRole(ctx, "non-existent", "default")
-
-		require.Error(t, err)
-		assert.Nil(t, retrieved)
-		assert.Contains(t, err.Error(), "failed to get role non-existent in namespace default")
-	})
-
-	t.Run("retrieves Role from specific namespace", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		role1 := &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-role",
-				Namespace: "namespace1",
-			},
-		}
-
-		role2 := &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-role",
-				Namespace: "namespace2",
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(role1, role2).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-		retrieved, err := client.GetRole(ctx, "test-role", "namespace2")
-
-		require.NoError(t, err)
-		assert.Equal(t, "namespace2", retrieved.Namespace)
-	})
-}
-
-func TestUpsertRole(t *testing.T) {
-	t.Parallel()
-
-	scheme := testutil.NewScheme(t)
-
-	t.Run("successfully creates new Role", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-
-		role := &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "new-role",
-				Namespace: "default",
-				Labels: map[string]string{
-					"app":         "test",
-					"environment": "production",
-					"team":        "platform",
-				},
-				Annotations: map[string]string{
-					"description": "test role",
-					"created-by":  "test-suite",
-				},
-			},
-			Rules: []rbacv1.PolicyRule{
-				{
-					APIGroups: []string{""},
-					Resources: []string{"pods"},
-					Verbs:     []string{"get", "list"},
-				},
-				{
-					APIGroups: []string{"apps"},
-					Resources: []string{"deployments"},
-					Verbs:     []string{"get", "update"},
-				},
-				{
-					APIGroups: []string{""},
-					Resources: []string{"configmaps"},
-					Verbs:     []string{"get", "create", "update"},
-				},
-			},
-		}
-
-		result, err := client.UpsertRole(ctx, role)
-
-		require.NoError(t, err)
-		assert.Equal(t, "created", string(result))
-
-		// Verify the role was created correctly with all fields preserved
-		retrieved, err := client.GetRole(ctx, "new-role", "default")
-		require.NoError(t, err)
-		assert.Equal(t, "new-role", retrieved.Name)
-		assert.Equal(t, "default", retrieved.Namespace)
-		assert.Equal(t, "test", retrieved.Labels["app"])
-		assert.Equal(t, "production", retrieved.Labels["environment"])
-		assert.Equal(t, "platform", retrieved.Labels["team"])
-		assert.Equal(t, "test role", retrieved.Annotations["description"])
-		assert.Equal(t, "test-suite", retrieved.Annotations["created-by"])
-		assert.Len(t, retrieved.Rules, 3)
-		assert.Equal(t, []string{"pods"}, retrieved.Rules[0].Resources)
-		assert.Equal(t, []string{"get", "list"}, retrieved.Rules[0].Verbs)
-		assert.Equal(t, []string{"deployments"}, retrieved.Rules[1].Resources)
-		assert.Equal(t, []string{"get", "update"}, retrieved.Rules[1].Verbs)
-		assert.Equal(t, []string{"configmaps"}, retrieved.Rules[2].Resources)
-		assert.Equal(t, []string{"get", "create", "update"}, retrieved.Rules[2].Verbs)
-	})
-
-	t.Run("successfully updates existing Role", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		existingRole := &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "existing-role",
-				Namespace: "default",
-			},
-			Rules: []rbacv1.PolicyRule{
-				{
-					APIGroups: []string{""},
-					Resources: []string{"pods"},
-					Verbs:     []string{"get"},
-				},
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(existingRole).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-
-		updatedRole := &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "existing-role",
-				Namespace: "default",
-				Labels: map[string]string{
-					"updated": "true",
-				},
-			},
-			Rules: []rbacv1.PolicyRule{
-				{
-					APIGroups: []string{""},
-					Resources: []string{"pods"},
-					Verbs:     []string{"get", "list", "watch"},
-				},
-				{
-					APIGroups: []string{""},
-					Resources: []string{"services"},
-					Verbs:     []string{"get"},
-				},
-			},
-		}
-
-		result, err := client.UpsertRole(ctx, updatedRole)
-
-		require.NoError(t, err)
-		assert.Equal(t, "updated", string(result))
-
-		// Verify the role was updated correctly
-		retrieved, err := client.GetRole(ctx, "existing-role", "default")
-		require.NoError(t, err)
-		assert.Equal(t, "true", retrieved.Labels["updated"])
-		assert.Len(t, retrieved.Rules, 2)
-		assert.Equal(t, []string{"get", "list", "watch"}, retrieved.Rules[0].Verbs)
-		assert.Equal(t, []string{"services"}, retrieved.Rules[1].Resources)
 	})
 }
 
@@ -864,7 +461,7 @@ func TestUpsertRoleWithOwnerReference(t *testing.T) {
 		assert.Equal(t, "created", string(result))
 
 		// Verify the role was created with owner reference
-		retrieved, err := client.GetRole(ctx, "owned-role", "default")
+		retrieved, err := getRole(ctx, client, "owned-role")
 		require.NoError(t, err)
 		assertOwnerReference(t, retrieved.OwnerReferences, owner)
 		assert.Equal(t, "test", retrieved.Labels["managed-by"])
@@ -919,7 +516,7 @@ func TestUpsertRoleWithOwnerReference(t *testing.T) {
 		assert.Equal(t, "updated", string(result))
 
 		// Verify the role was updated with owner reference
-		retrieved, err := client.GetRole(ctx, "existing-role", "default")
+		retrieved, err := getRole(ctx, client, "existing-role")
 		require.NoError(t, err)
 		assert.Len(t, retrieved.Rules, 1)
 		assert.Equal(t, []string{"get", "list"}, retrieved.Rules[0].Verbs)
@@ -1024,261 +621,21 @@ func TestUpsertRoleWithOwnerReference(t *testing.T) {
 	})
 }
 
-func TestGetRoleBinding(t *testing.T) {
+func TestUpsertRoleBindingWithOwnerReference_RoleRef(t *testing.T) {
 	t.Parallel()
 
 	scheme := testutil.NewScheme(t)
-
-	t.Run("successfully retrieves existing RoleBinding", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		roleBinding := &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-rb",
-				Namespace: "default",
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     "test-role",
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      "test-sa",
-					Namespace: "default",
-				},
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(roleBinding).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-		retrieved, err := client.GetRoleBinding(ctx, "test-rb", "default")
-
-		require.NoError(t, err)
-		assert.NotNil(t, retrieved)
-		assert.Equal(t, "test-rb", retrieved.Name)
-		assert.Equal(t, "default", retrieved.Namespace)
-		assert.Equal(t, "test-role", retrieved.RoleRef.Name)
-		assert.Len(t, retrieved.Subjects, 1)
-	})
-
-	t.Run("returns error when RoleBinding does not exist", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-		retrieved, err := client.GetRoleBinding(ctx, "non-existent", "default")
-
-		require.Error(t, err)
-		assert.Nil(t, retrieved)
-		assert.Contains(t, err.Error(), "failed to get role binding non-existent in namespace default")
-	})
-
-	t.Run("retrieves RoleBinding from specific namespace", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		rb1 := &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-rb",
-				Namespace: "namespace1",
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     "role1",
-			},
-		}
-
-		rb2 := &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-rb",
-				Namespace: "namespace2",
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     "role2",
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(rb1, rb2).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-		retrieved, err := client.GetRoleBinding(ctx, "test-rb", "namespace2")
-
-		require.NoError(t, err)
-		assert.Equal(t, "namespace2", retrieved.Namespace)
-		assert.Equal(t, "role2", retrieved.RoleRef.Name)
-	})
-}
-
-func TestUpsertRoleBinding(t *testing.T) {
-	t.Parallel()
-
-	scheme := testutil.NewScheme(t)
-
-	t.Run("successfully creates new RoleBinding", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-
-		roleBinding := &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "new-rb",
-				Namespace: "default",
-				Labels: map[string]string{
-					"app": "test",
-				},
-				Annotations: map[string]string{
-					"description": "test role binding",
-				},
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     "test-role",
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      "test-sa",
-					Namespace: "default",
-				},
-				{
-					Kind: "User",
-					Name: "test-user",
-				},
-			},
-		}
-
-		result, err := client.UpsertRoleBinding(ctx, roleBinding)
-
-		require.NoError(t, err)
-		assert.Equal(t, "created", string(result))
-
-		// Verify the role binding was created correctly
-		retrieved, err := client.GetRoleBinding(ctx, "new-rb", "default")
-		require.NoError(t, err)
-		assert.Equal(t, "new-rb", retrieved.Name)
-		assert.Equal(t, "default", retrieved.Namespace)
-		assert.Equal(t, "test", retrieved.Labels["app"])
-		assert.Equal(t, "test role binding", retrieved.Annotations["description"])
-		assert.Equal(t, "test-role", retrieved.RoleRef.Name)
-		assert.Equal(t, "Role", retrieved.RoleRef.Kind)
-		assert.Equal(t, "rbac.authorization.k8s.io", retrieved.RoleRef.APIGroup)
-		assert.Len(t, retrieved.Subjects, 2)
-		assert.Equal(t, "test-sa", retrieved.Subjects[0].Name)
-		assert.Equal(t, "test-user", retrieved.Subjects[1].Name)
-	})
-
-	t.Run("successfully updates existing RoleBinding Subjects only", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		// Set CreationTimestamp to simulate an existing object
-		creationTime := metav1.Now()
-		existingRB := &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:              "existing-rb",
-				Namespace:         "default",
-				CreationTimestamp: creationTime,
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     "original-role",
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      "old-sa",
-					Namespace: "default",
-				},
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(existingRB).
-			Build()
-
-		client := NewClient(fakeClient, scheme)
-
-		// Update with different subjects and different role ref
-		updatedRB := &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "existing-rb",
-				Namespace: "default",
-				Labels: map[string]string{
-					"updated": "true",
-				},
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     "new-role", // This should NOT be updated
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      "new-sa",
-					Namespace: "default",
-				},
-				{
-					Kind: "User",
-					Name: "new-user",
-				},
-			},
-		}
-
-		result, err := client.UpsertRoleBinding(ctx, updatedRB)
-
-		require.NoError(t, err)
-		assert.Equal(t, "updated", string(result))
-
-		// Verify the role binding was updated correctly
-		retrieved, err := client.GetRoleBinding(ctx, "existing-rb", "default")
-		require.NoError(t, err)
-		assert.Equal(t, "true", retrieved.Labels["updated"])
-		// RoleRef should NOT have changed (immutability)
-		assert.Equal(t, "original-role", retrieved.RoleRef.Name)
-		// Subjects should be updated
-		assert.Len(t, retrieved.Subjects, 2)
-		assert.Equal(t, "new-sa", retrieved.Subjects[0].Name)
-		assert.Equal(t, "new-user", retrieved.Subjects[1].Name)
-	})
 
 	t.Run("RoleRef is set on creation", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := t.Context()
 
+		owner := createTestOwner("owner-cm", "test-uid-roleref-create")
+
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
+			WithObjects(owner).
 			Build()
 
 		client := NewClient(fakeClient, scheme)
@@ -1301,13 +658,13 @@ func TestUpsertRoleBinding(t *testing.T) {
 			},
 		}
 
-		result, err := client.UpsertRoleBinding(ctx, roleBinding)
+		result, err := client.UpsertRoleBindingWithOwnerReference(ctx, roleBinding, owner)
 
 		require.NoError(t, err)
 		assert.Equal(t, "created", string(result))
 
 		// Verify RoleRef was set correctly
-		retrieved, err := client.GetRoleBinding(ctx, "test-rb", "default")
+		retrieved, err := getRoleBinding(ctx, client, "test-rb")
 		require.NoError(t, err)
 		assert.Equal(t, "rbac.authorization.k8s.io", retrieved.RoleRef.APIGroup)
 		assert.Equal(t, "ClusterRole", retrieved.RoleRef.Kind)
@@ -1340,9 +697,11 @@ func TestUpsertRoleBinding(t *testing.T) {
 			},
 		}
 
+		owner := createTestOwner("owner-cm", "test-uid-roleref-update")
+
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
-			WithObjects(existingRB).
+			WithObjects(owner, existingRB).
 			Build()
 
 		client := NewClient(fakeClient, scheme)
@@ -1366,13 +725,13 @@ func TestUpsertRoleBinding(t *testing.T) {
 			},
 		}
 
-		result, err := client.UpsertRoleBinding(ctx, updatedRB)
+		result, err := client.UpsertRoleBindingWithOwnerReference(ctx, updatedRB, owner)
 
 		require.NoError(t, err)
 		assert.Equal(t, "updated", string(result))
 
 		// Verify RoleRef was NOT changed (immutability preserved)
-		retrieved, err := client.GetRoleBinding(ctx, "immutable-rb", "default")
+		retrieved, err := getRoleBinding(ctx, client, "immutable-rb")
 		require.NoError(t, err)
 		assert.Equal(t, "Role", retrieved.RoleRef.Kind)
 		assert.Equal(t, "immutable-role", retrieved.RoleRef.Name)
@@ -1428,7 +787,7 @@ func TestUpsertRoleBindingWithOwnerReference(t *testing.T) {
 		assert.Equal(t, "created", string(result))
 
 		// Verify the role binding was created with owner reference
-		retrieved, err := client.GetRoleBinding(ctx, "owned-rb", "default")
+		retrieved, err := getRoleBinding(ctx, client, "owned-rb")
 		require.NoError(t, err)
 		assertOwnerReference(t, retrieved.OwnerReferences, owner)
 		assert.Equal(t, "test", retrieved.Labels["managed-by"])
@@ -1492,7 +851,7 @@ func TestUpsertRoleBindingWithOwnerReference(t *testing.T) {
 		assert.Equal(t, "updated", string(result))
 
 		// Verify the role binding was updated with owner reference
-		retrieved, err := client.GetRoleBinding(ctx, "existing-rb", "default")
+		retrieved, err := getRoleBinding(ctx, client, "existing-rb")
 		require.NoError(t, err)
 		assert.Len(t, retrieved.Subjects, 1)
 		assert.Equal(t, "new-user", retrieved.Subjects[0].Name)
@@ -1924,149 +1283,5 @@ func TestEnsureRBACResources(t *testing.T) {
 		err = fakeClient.Get(ctx, types.NamespacedName{Name: "test-rbac", Namespace: "default"}, sa)
 		require.NoError(t, err)
 		assert.Nil(t, sa.Labels)
-	})
-}
-
-func TestGetAllRBACResources(t *testing.T) {
-	t.Parallel()
-
-	scheme := testutil.NewScheme(t)
-
-	t.Run("successfully retrieves all RBAC resources", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		// Create test resources
-		sa := &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-sa",
-				Namespace: "default",
-			},
-		}
-		role := &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-sa",
-				Namespace: "default",
-			},
-			Rules: []rbacv1.PolicyRule{
-				{
-					APIGroups: []string{""},
-					Resources: []string{"pods"},
-					Verbs:     []string{"get"},
-				},
-			},
-		}
-		rb := &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-sa",
-				Namespace: "default",
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: RBACAPIGroup,
-				Kind:     "Role",
-				Name:     "test-sa",
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      "test-sa",
-					Namespace: "default",
-				},
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(sa, role, rb).
-			Build()
-
-		rbacClient := NewClient(fakeClient, scheme)
-
-		// Get all resources
-		gotSA, gotRole, gotRB, err := rbacClient.GetAllRBACResources(ctx, "test-sa", "default")
-		require.NoError(t, err)
-
-		// Verify all resources were retrieved
-		assert.Equal(t, "test-sa", gotSA.Name)
-		assert.Equal(t, "default", gotSA.Namespace)
-		assert.Equal(t, "test-sa", gotRole.Name)
-		assert.Equal(t, "default", gotRole.Namespace)
-		assert.Equal(t, role.Rules, gotRole.Rules)
-		assert.Equal(t, "test-sa", gotRB.Name)
-		assert.Equal(t, "default", gotRB.Namespace)
-		assert.Equal(t, rb.RoleRef, gotRB.RoleRef)
-	})
-
-	t.Run("returns error when ServiceAccount not found", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			Build()
-
-		rbacClient := NewClient(fakeClient, scheme)
-
-		_, _, _, err := rbacClient.GetAllRBACResources(ctx, "nonexistent", "default")
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "service account")
-	})
-
-	t.Run("returns error when Role not found", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		// Only create ServiceAccount
-		sa := &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-sa",
-				Namespace: "default",
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(sa).
-			Build()
-
-		rbacClient := NewClient(fakeClient, scheme)
-
-		_, _, _, err := rbacClient.GetAllRBACResources(ctx, "test-sa", "default")
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "role")
-	})
-
-	t.Run("returns error when RoleBinding not found", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		// Create ServiceAccount and Role but not RoleBinding
-		sa := &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-sa",
-				Namespace: "default",
-			},
-		}
-		role := &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-sa",
-				Namespace: "default",
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(sa, role).
-			Build()
-
-		rbacClient := NewClient(fakeClient, scheme)
-
-		_, _, _, err := rbacClient.GetAllRBACResources(ctx, "test-sa", "default")
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "role binding")
 	})
 }

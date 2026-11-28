@@ -116,12 +116,9 @@ type StatelessMCPPinger struct {
 	client         *http.Client
 }
 
-// NewStatelessMCPPinger creates a pinger for stateless streamable-HTTP servers.
-func NewStatelessMCPPinger(targetURL string) healthcheck.MCPPinger {
-	return NewStatelessMCPPingerWithTimeout(targetURL, DefaultPingerTimeout)
-}
-
-// NewStatelessMCPPingerWithTimeout creates a stateless pinger with a custom timeout.
+// NewStatelessMCPPingerWithTimeout creates a pinger for stateless
+// streamable-HTTP servers with a custom timeout. A non-positive timeout selects
+// DefaultPingerTimeout.
 //
 // Same redirect restriction as NewMCPPingerWithTimeout, and for the same
 // reason: the target may be an untrusted remote endpoint. A 307/308 here would

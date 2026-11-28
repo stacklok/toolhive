@@ -324,8 +324,7 @@ func emptyCompletion() *vmcp.CompletionResult {
 
 // executeComposite runs a composite-tool workflow and converts the result to a
 // ToolCallResult. Workflow failures are returned as an IsError result (not a
-// transport error), mirroring the legacy compositeToolsDecorator
-// (internal/compositetools/decorator.go:76-114).
+// transport error).
 //
 // The exception is a delegated credential failure that no authorization
 // denial or URL elicitation answer outranks (vmcp.DelegatedCredentialFailure):

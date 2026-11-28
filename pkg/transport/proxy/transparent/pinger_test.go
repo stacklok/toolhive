@@ -65,7 +65,7 @@ func TestStatelessMCPPinger_Ping(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(tc.serverFunc))
 			defer srv.Close()
 
-			pinger := NewStatelessMCPPinger(srv.URL)
+			pinger := NewStatelessMCPPingerWithTimeout(srv.URL, DefaultPingerTimeout)
 			duration, err := pinger.Ping(context.Background())
 
 			if tc.wantErr {
@@ -103,7 +103,7 @@ func TestStatelessMCPPinger_Ping_UsesPost(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	pinger := NewStatelessMCPPinger(srv.URL)
+	pinger := NewStatelessMCPPingerWithTimeout(srv.URL, DefaultPingerTimeout)
 	_, err := pinger.Ping(context.Background())
 	require.NoError(t, err)
 
@@ -123,7 +123,7 @@ func TestStatelessMCPPinger_Ping_SendsJsonBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	pinger := NewStatelessMCPPinger(srv.URL)
+	pinger := NewStatelessMCPPingerWithTimeout(srv.URL, DefaultPingerTimeout)
 	_, err := pinger.Ping(context.Background())
 	require.NoError(t, err)
 

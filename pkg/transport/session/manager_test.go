@@ -4,6 +4,7 @@
 package session
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -264,4 +265,13 @@ func TestUpsertSession_ReplacesExistingSession(t *testing.T) {
 	require.True(t, ok, "session should still exist after replacement")
 	_, isStreamable := got.(*StreamableSession)
 	assert.True(t, isStreamable, "stored session should now be a *StreamableSession (the replacement)")
+}
+
+// cleanupExpiredOnce runs a single pass of the expiry sweep that
+// cleanupRoutine performs on every tick.
+func (m *Manager) cleanupExpiredOnce() error {
+	cutoff := time.Now().Add(-m.ttl)
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupOperationTimeout)
+	defer cancel()
+	return m.storage.DeleteExpired(ctx, cutoff)
 }

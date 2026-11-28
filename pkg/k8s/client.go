@@ -29,21 +29,6 @@ func NewClient() (kubernetes.Interface, *rest.Config, error) {
 	return clientset, config, nil
 }
 
-// NewClientWithConfig creates a new standard Kubernetes clientset from the provided config.
-// Use this when you have an existing config and only need standard Kubernetes resources.
-func NewClientWithConfig(config *rest.Config) (kubernetes.Interface, error) {
-	if config == nil {
-		return nil, fmt.Errorf("failed to create kubernetes client: config cannot be nil")
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
-	}
-
-	return clientset, nil
-}
-
 // NewControllerRuntimeClient creates a new controller-runtime client with a custom scheme.
 // This is useful for working with Custom Resource Definitions (CRDs) alongside standard resources.
 // The scheme should have all required types registered before calling this function.

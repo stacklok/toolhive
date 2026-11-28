@@ -17,7 +17,22 @@ import (
 
 func proxyFactory(id string) Session { return NewProxySession(id) }
 
-func TestNewManagerWithRedis(t *testing.T) {
+// newManagerWithRedis builds a Manager over a RedisStorage with a one-hour TTL the same way
+// production callers compose NewRedisStorage and NewManagerWithStorage.
+func newManagerWithRedis(
+	ctx context.Context,
+	factory Factory,
+	cfg redisconn.Config,
+	keyPrefix string,
+) (*Manager, error) {
+	storage, err := NewRedisStorage(ctx, cfg, keyPrefix, time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	return NewManagerWithStorage(time.Hour, factory, storage), nil
+}
+
+func TestManagerWithRedisStorage(t *testing.T) {
 	t.Parallel()
 
 	t.Run("valid config returns manager", func(t *testing.T) {
@@ -25,9 +40,8 @@ func TestNewManagerWithRedis(t *testing.T) {
 		mr := miniredis.RunT(t)
 		defer mr.Close()
 
-		m, err := NewManagerWithRedis(
+		m, err := newManagerWithRedis(
 			context.Background(),
-			time.Hour,
 			proxyFactory,
 			redisconn.Config{Addr: mr.Addr()},
 			"test:mgr:",
@@ -43,9 +57,8 @@ func TestNewManagerWithRedis(t *testing.T) {
 	t.Run("missing key prefix returns error", func(t *testing.T) {
 		t.Parallel()
 		// Empty keyPrefix fails session-invariant check before Ping.
-		m, err := NewManagerWithRedis(
+		m, err := newManagerWithRedis(
 			context.Background(),
-			time.Hour,
 			proxyFactory,
 			redisconn.Config{Addr: "localhost:6379"},
 			"",
@@ -59,9 +72,8 @@ func TestNewManagerWithRedis(t *testing.T) {
 		mr := miniredis.RunT(t)
 		defer mr.Close()
 
-		m, err := NewManagerWithRedis(
+		m, err := newManagerWithRedis(
 			context.Background(),
-			time.Hour,
 			proxyFactory,
 			redisconn.Config{Addr: mr.Addr()},
 			"test:mgr:",
@@ -82,9 +94,8 @@ func TestNewManagerWithRedis(t *testing.T) {
 		mr := miniredis.RunT(t)
 		defer mr.Close()
 
-		m, err := NewManagerWithRedis(
+		m, err := newManagerWithRedis(
 			context.Background(),
-			time.Hour,
 			proxyFactory,
 			redisconn.Config{Addr: mr.Addr()},
 			"test:mgr:",
@@ -108,14 +119,4 @@ func TestNewManagerUsesLocalStorage(t *testing.T) {
 
 	_, isLocal := m.storage.(*LocalStorage)
 	assert.True(t, isLocal, "NewManager should use *LocalStorage")
-}
-
-func TestNewTypedManagerUsesLocalStorage(t *testing.T) {
-	t.Parallel()
-
-	m := NewTypedManager(time.Hour, SessionTypeMCP)
-	defer m.Stop()
-
-	_, isLocal := m.storage.(*LocalStorage)
-	assert.True(t, isLocal, "NewTypedManager should use *LocalStorage")
 }

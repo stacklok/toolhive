@@ -580,3 +580,11 @@ func TestConstants(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "default", defaultSecretsProviderName)
 }
+
+// NewSecretsRoutesWithProvider creates a SecretsRoutes backed by provider
+// instead of the default config provider.
+func NewSecretsRoutesWithProvider(provider config.Provider) *SecretsRoutes {
+	return &SecretsRoutes{
+		configProvider: provider,
+	}
+}

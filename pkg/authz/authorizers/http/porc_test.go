@@ -10,6 +10,23 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
+// buildPORC creates a PORC with all context options enabled.
+func buildPORC(
+	feature authorizers.MCPFeature,
+	operation authorizers.MCPOperation,
+	resourceID string,
+	claims map[string]interface{},
+	arguments map[string]interface{},
+) PORC {
+	// Use a config with all context enabled and MPE claim mapper for testing
+	contextConfig := ContextConfig{
+		IncludeArgs:      true,
+		IncludeOperation: true,
+	}
+	claimMapper := &MPEClaimMapper{}
+	return NewPORCBuilder("test", contextConfig, claimMapper).Build(feature, operation, resourceID, claims, arguments)
+}
+
 func TestBuildPORC(t *testing.T) {
 	t.Parallel()
 

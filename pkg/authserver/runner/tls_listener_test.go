@@ -77,13 +77,13 @@ func newTestTLSListener(t *testing.T, pair testCertificate, authorities func() [
 	t.Helper()
 	dir := t.TempDir()
 	certFile, keyFile := writeTestCertificate(t, dir, "server", pair)
-	listener, err := newTLSListener("127.0.0.1", &authserver.TLSListenerRunConfig{
-		CertFile: certFile,
-		KeyFile:  keyFile,
-	}, map[string]http.Handler{"/test": http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "ok")
-	})}, authorities, requestClientCert)
+	cache, err := newTLSKeyPairCache(certFile, keyFile)
 	require.NoError(t, err)
+	listener := newTLSListenerWithCache("127.0.0.1", cache, map[string]http.Handler{
+		"/test": http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, "ok")
+		}),
+	}, authorities, requestClientCert)
 	listener.port = 0
 	return listener
 }
@@ -285,8 +285,8 @@ func TestValidateTLSListenerIssuer(t *testing.T) {
 	assert.NoError(t, validateTLSListenerIssuer(&authserver.RunConfig{Issuer: "https://example.com:443", InboundGrants: badScheme.InboundGrants}, listener.keyPair.leaf))
 }
 
-func TestTLSListenerConstructorRejectsInvalidCertificate(t *testing.T) {
+func TestTLSKeyPairCacheRejectsInvalidCertificate(t *testing.T) {
 	t.Parallel()
-	_, err := newTLSListener("127.0.0.1", &authserver.TLSListenerRunConfig{CertFile: "missing", KeyFile: "missing"}, nil, nil, false)
+	_, err := newTLSKeyPairCache("missing", "missing")
 	require.Error(t, err)
 }

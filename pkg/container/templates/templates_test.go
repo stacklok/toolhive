@@ -695,55 +695,6 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 	}
 }
 
-func TestParseTransportType(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		s       string
-		want    TransportType
-		wantErr bool
-	}{
-		{
-			name:    "UVX transport",
-			s:       "uvx",
-			want:    TransportTypeUVX,
-			wantErr: false,
-		},
-		{
-			name:    "NPX transport",
-			s:       "npx",
-			want:    TransportTypeNPX,
-			wantErr: false,
-		},
-		{
-			name:    "GO transport",
-			s:       "go",
-			want:    TransportTypeGO,
-			wantErr: false,
-		},
-		{
-			name:    "Unsupported transport",
-			s:       "unsupported",
-			want:    "",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := ParseTransportType(tt.s)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseTransportType() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if got != tt.want {
-				t.Errorf("ParseTransportType() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestStripVersionSuffix(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

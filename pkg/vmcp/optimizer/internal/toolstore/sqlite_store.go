@@ -132,13 +132,6 @@ type Option func(*sqliteToolStore)
 // the backend in parallel in exactly the case the turn exists for.
 const defaultEmbedTurnWait = 30 * time.Second
 
-// withEmbedTurnWait overrides defaultEmbedTurnWait.
-func withEmbedTurnWait(wait time.Duration) Option {
-	return func(s *sqliteToolStore) {
-		s.embedTurnWait = wait
-	}
-}
-
 // WithEmbeddingCache shares the store's verified embeddings through cache, so
 // a replica reuses vectors other replicas computed. It shares vectors only:
 // each replica keeps its own rows and index, and replicas that miss the same

@@ -72,10 +72,10 @@ func TestRegistry_Register(t *testing.T) {
 				require.NotPanics(t, func() {
 					reg.Register(tt.info)
 				})
-				got := reg.Get(tt.info.Name)
-				require.NotNil(t, got)
-				assert.Equal(t, tt.info.Name, got.Name)
-				assert.Equal(t, tt.info.Priority, got.Priority)
+				all := reg.All()
+				require.Len(t, all, 1)
+				assert.Equal(t, tt.info.Name, all[0].Name)
+				assert.Equal(t, tt.info.Priority, all[0].Priority)
 			}
 		})
 	}
@@ -95,28 +95,6 @@ func TestRegistry_DuplicatePanics(t *testing.T) {
 	assert.PanicsWithValue(t, "runtime already registered: dup-rt", func() {
 		reg.Register(info)
 	})
-}
-
-func TestRegistry_Get_NotFound(t *testing.T) {
-	t.Parallel()
-	reg := NewRegistry()
-
-	assert.Nil(t, reg.Get("nonexistent"))
-}
-
-func TestRegistry_IsRegistered(t *testing.T) {
-	t.Parallel()
-	reg := NewRegistry()
-
-	assert.False(t, reg.IsRegistered("check-rt"))
-
-	reg.Register(&Info{
-		Name:        "check-rt",
-		Priority:    100,
-		Initializer: noopInitializer,
-	})
-
-	assert.True(t, reg.IsRegistered("check-rt"))
 }
 
 func TestRegistry_All(t *testing.T) {
@@ -178,9 +156,11 @@ func TestRegistry_Isolation(t *testing.T) {
 	reg1.Register(&Info{Name: "only-in-reg1", Priority: 100, Initializer: noopInitializer})
 	reg2.Register(&Info{Name: "only-in-reg2", Priority: 100, Initializer: noopInitializer})
 
-	assert.True(t, reg1.IsRegistered("only-in-reg1"))
-	assert.False(t, reg1.IsRegistered("only-in-reg2"))
+	all1 := reg1.All()
+	require.Len(t, all1, 1)
+	assert.Equal(t, "only-in-reg1", all1[0].Name)
 
-	assert.True(t, reg2.IsRegistered("only-in-reg2"))
-	assert.False(t, reg2.IsRegistered("only-in-reg1"))
+	all2 := reg2.All()
+	require.Len(t, all2, 1)
+	assert.Equal(t, "only-in-reg2", all2[0].Name)
 }

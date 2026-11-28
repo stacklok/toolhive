@@ -53,6 +53,25 @@ func ValidateActorForTest(
 // that are not about the timeout run with the same budget the server uses.
 const ActorValidationTimeoutForTest = actorValidationTimeout
 
+// withActorValidationTimeout replaces the budget of one actor validation, which
+// is actorValidationTimeout by default.
+func withActorValidationTimeout(timeout time.Duration) RefreshTokenOption {
+	return func(o *refreshTokenOptions) { o.actorTimeout = timeout }
+}
+
+// withClock replaces time.Now as the handler's clock: the instant that decides
+// a request and the instant an actor validator's answer is checked.
+func withClock(clock func() time.Time) RefreshTokenOption {
+	return func(o *refreshTokenOptions) { o.clock = clock }
+}
+
+// withActorValidatorCapacity replaces the number of actor validator calls that
+// may run at once, which is defaultActorValidatorCapacity by default. A value
+// below 1 fails RefreshTokenFactory.
+func withActorValidatorCapacity(capacity int) RefreshTokenOption {
+	return func(o *refreshTokenOptions) { o.actorCapacity = capacity }
+}
+
 // WithActorValidationTimeoutForTest and WithClockForTest expose the
 // RefreshTokenFactory options that control actor validation timing.
 var (

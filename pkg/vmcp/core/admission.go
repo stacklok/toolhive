@@ -134,17 +134,6 @@ type cedarAdmission struct {
 // cedarOption configures a cedarAdmission at construction.
 type cedarOption func(*cedarAdmission)
 
-// withLogger overrides the logger the seam emits its warnings to. Used by tests
-// to capture log output without mutating the global slog default.
-func withLogger(logger *slog.Logger) cedarOption {
-	return func(c *cedarAdmission) { c.logger = logger }
-}
-
-// withFilterBudget overrides the FilterTools deadline. Used by tests.
-func withFilterBudget(budget time.Duration) cedarOption {
-	return func(c *cedarAdmission) { c.filterBudget = budget }
-}
-
 // newCedarAdmission wraps an already-built authorizer. Separated from newAdmission
 // so tests can inject a stub authorizer (or a real cedar.NewCedarAuthorizer)
 // without round-tripping through the config/factory.

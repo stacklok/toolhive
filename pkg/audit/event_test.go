@@ -38,22 +38,6 @@ func TestNewAuditEvent(t *testing.T) {
 	assert.WithinDuration(t, time.Now().UTC(), event.LoggedAt, time.Second)
 }
 
-func TestNewAuditEventWithID(t *testing.T) {
-	t.Parallel()
-	auditID := "custom-audit-id"
-	source := EventSource{Type: SourceTypeLocal, Value: "localhost"}
-	subjects := map[string]string{SubjectKeyUser: "admin"}
-
-	event := NewAuditEventWithID(auditID, "admin_action", source, OutcomeSuccess, subjects, "admin-panel")
-
-	assert.Equal(t, auditID, event.Metadata.AuditID)
-	assert.Equal(t, "admin_action", event.Type)
-	assert.Equal(t, OutcomeSuccess, event.Outcome)
-	assert.Equal(t, source, event.Source)
-	assert.Equal(t, subjects, event.Subjects)
-	assert.Equal(t, "admin-panel", event.Component)
-}
-
 func TestAuditEventWithTarget(t *testing.T) {
 	t.Parallel()
 	event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")

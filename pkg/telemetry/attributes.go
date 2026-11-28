@@ -7,8 +7,6 @@ package telemetry
 import (
 	"fmt"
 	"strings"
-
-	"go.opentelemetry.io/otel/attribute"
 )
 
 // ParseCustomAttributes parses a comma-separated list of key=value pairs into a map.
@@ -45,13 +43,4 @@ func ParseCustomAttributes(input string) (map[string]string, error) {
 	}
 
 	return attributes, nil
-}
-
-// ConvertMapToAttributes converts a map[string]string to OpenTelemetry attributes
-func ConvertMapToAttributes(attrs map[string]string) []attribute.KeyValue {
-	var result []attribute.KeyValue
-	for k, v := range attrs {
-		result = append(result, attribute.String(k, v))
-	}
-	return result
 }

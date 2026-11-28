@@ -327,7 +327,7 @@ For distributed tracing, `thv serve` uses **OTEL `otelhttp` middleware** (not `s
 
 ### When Sentry Is Disabled
 
-When no DSN is configured, all Sentry operations are no-ops. `sentrypkg.Enabled()`, `sentrypkg.CaptureException()`, `sentrypkg.RecoverPanic()`, and `sentrypkg.SpanProcessor()` all check an atomic boolean and return immediately, adding no overhead.
+When no DSN is configured, all Sentry operations are no-ops. `sentrypkg.CaptureException()`, `sentrypkg.RecoverPanic()`, and `sentrypkg.SpanProcessor()` all check an atomic boolean and return immediately, adding no overhead.
 
 ### Configuration
 

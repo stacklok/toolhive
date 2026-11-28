@@ -40,9 +40,8 @@ func ClassificationErrorResponse(req *http.Request, requestID any, err error) *h
 }
 
 // jsonRPCErrorResponse builds an HTTP 400 *http.Response carrying the JSON-RPC
-// error rendered from a CodedError. It backs both ClassificationErrorResponse
-// and BatchUnsupportedResponse so the RoundTripper-layer error shape lives in
-// one place.
+// error rendered from a CodedError. It backs ClassificationErrorResponse so the
+// RoundTripper-layer error shape lives in one place.
 func jsonRPCErrorResponse(req *http.Request, requestID any, err error) *http.Response {
 	body := classificationErrorBody(requestID, err)
 	hdr := make(http.Header)

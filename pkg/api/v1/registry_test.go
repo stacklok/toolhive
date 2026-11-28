@@ -751,3 +751,12 @@ func TestUpdateRegistry_AllowedByDefaultGate(t *testing.T) {
 	assert.NotEqual(t, http.StatusForbidden, w.Code,
 		"Default gate should not return 403")
 }
+
+// NewRegistryRoutesWithProvider creates a RegistryRoutes backed by provider
+// instead of the default config provider.
+func NewRegistryRoutesWithProvider(provider config.Provider) *RegistryRoutes {
+	return &RegistryRoutes{
+		configProvider: provider,
+		configService:  registry.NewConfiguratorWithProvider(provider),
+	}
+}

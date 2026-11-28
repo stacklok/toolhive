@@ -1787,3 +1787,19 @@ func TestDeployWorkload_PreservesKubectlRestartedAt(t *testing.T) {
 	require.NoError(t, getErr)
 	assert.Equal(t, restartedAt, got.Spec.Template.Annotations[KubectlRestartedAtAnnotation])
 }
+
+// NewClientWithConfigAndPlatformDetector creates a container client with a
+// provided config and platform detector, for tests that use fake clientsets
+// and mock platform detectors.
+func NewClientWithConfigAndPlatformDetector(
+	clientset kubernetes.Interface,
+	config *rest.Config,
+	platformDetector PlatformDetector,
+) *Client {
+	return &Client{
+		runtimeType:      runtime.TypeKubernetes,
+		client:           clientset,
+		config:           config,
+		platformDetector: platformDetector,
+	}
+}

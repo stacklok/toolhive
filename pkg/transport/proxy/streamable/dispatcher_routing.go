@@ -170,14 +170,6 @@ func (r *sessionRouter) setLogLevel(sess string, rank int) (maxChanged bool, new
 	return after != before, after
 }
 
-// dropLogLevel removes sess's tracked verbosity rank, if any. It is always
-// safe to call, including for a sess that was never recorded.
-func (r *sessionRouter) dropLogLevel(sess string) {
-	r.logMu.Lock()
-	defer r.logMu.Unlock()
-	delete(r.logLvl, sess)
-}
-
 // maxLogLevelLocked returns the maximum rank across all tracked sessions, or
 // -1 if none are tracked. Callers MUST hold logMu.
 func (r *sessionRouter) maxLogLevelLocked() int {

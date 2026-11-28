@@ -4,7 +4,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -162,44 +161,4 @@ func TestToggleCollapse(t *testing.T) {
 		toggleCollapse(vis, len(vis))
 		toggleCollapse(nil, 0)
 	})
-}
-
-func TestNodeToJSON(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name  string
-		input string
-	}{
-		{
-			name:  "simple object roundtrip",
-			input: `{"name":"test","value":42}`,
-		},
-		{
-			name:  "array roundtrip",
-			input: `[1,2,3]`,
-		},
-		{
-			name:  "nested structure roundtrip",
-			input: `{"items":[{"id":1},{"id":2}],"total":2}`,
-		},
-		{
-			name:  "booleans and null",
-			input: `{"active":true,"deleted":false,"meta":null}`,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			root := parseJSONTree(tc.input)
-			require.NotNil(t, root)
-
-			output := nodeToJSON(root)
-
-			// Parse both to compare structurally (formatting may differ)
-			var expected, actual any
-			require.NoError(t, json.Unmarshal([]byte(tc.input), &expected))
-			require.NoError(t, json.Unmarshal([]byte(output), &actual))
-			assert.Equal(t, expected, actual)
-		})
-	}
 }

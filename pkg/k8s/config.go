@@ -78,18 +78,3 @@ func getConfigWithLoader(loader configLoader) (*rest.Config, error) {
 
 	return config, nil
 }
-
-// getConfigFromKubeconfigFile loads config from a specific kubeconfig file path
-// This is primarily useful for testing
-func getConfigFromKubeconfigFile(kubeconfigPath string) (*rest.Config, error) {
-	loadingRules := &clientcmd.ClientConfigLoadingRules{
-		ExplicitPath: kubeconfigPath,
-	}
-	configOverrides := &clientcmd.ConfigOverrides{}
-	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
-	config, err := kubeConfig.ClientConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load config from %s: %w", kubeconfigPath, err)
-	}
-	return config, nil
-}

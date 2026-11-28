@@ -47,16 +47,3 @@ func CreateMiddlewareFromConfig(
 	// Return the middleware
 	return func(handler http.Handler) http.Handler { return Middleware(authz, handler, passThroughTools) }, nil
 }
-
-// GetMiddlewareFromFile loads the authorization configuration from a file and creates an HTTP middleware.
-// The passThroughTools parameter is optional (pass nil for none). Tool names in
-// this set bypass the response filter's policy check in tools/list responses.
-func GetMiddlewareFromFile(serverName, path string, passThroughTools map[string]struct{}) (types.MiddlewareFunction, error) {
-	config, err := LoadConfig(path)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create the middleware
-	return CreateMiddlewareFromConfig(config, serverName, passThroughTools)
-}

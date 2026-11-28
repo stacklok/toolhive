@@ -415,19 +415,6 @@ func (p *Processor) Cleanup() error {
 	return lastErr
 }
 
-// GetOverlayPaths returns container paths that should be overlaid
-// based on the loaded ignore patterns (kept for backward compatibility)
-func (p *Processor) GetOverlayPaths(bindMount, containerPath string) []string {
-	overlayMounts := p.GetOverlayMounts(bindMount, containerPath)
-	var overlayPaths []string
-
-	for _, mount := range overlayMounts {
-		overlayPaths = append(overlayPaths, mount.ContainerPath)
-	}
-
-	return overlayPaths
-}
-
 // getMatchingPaths returns all paths that match the given pattern in the directory
 func (*Processor) getMatchingPaths(dir, pattern string) []string {
 	var matchingPaths []string
@@ -471,29 +458,4 @@ func (*Processor) getMatchingPaths(dir, pattern string) []string {
 	}
 
 	return matches
-}
-
-// patternMatchesInDirectory checks if a pattern matches any files/directories in the given directory
-func (p *Processor) patternMatchesInDirectory(dir, pattern string) bool {
-	return len(p.getMatchingPaths(dir, pattern)) > 0
-}
-
-// ShouldIgnore checks if a given path should be ignored based on loaded patterns
-func (p *Processor) ShouldIgnore(path string) bool {
-	// Combine global and local patterns
-	allPatterns := append(p.GlobalPatterns, p.LocalPatterns...)
-
-	for _, pattern := range allPatterns {
-		// Simple pattern matching - can be enhanced with more sophisticated gitignore-style matching
-		if matched, err := filepath.Match(pattern, filepath.Base(path)); err == nil && matched {
-			return true
-		}
-
-		// Check if path contains the pattern
-		if strings.Contains(path, pattern) {
-			return true
-		}
-	}
-
-	return false
 }

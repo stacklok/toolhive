@@ -37,13 +37,6 @@ func NewSecretsRoutes() *SecretsRoutes {
 	}
 }
 
-// NewSecretsRoutesWithProvider creates a new SecretsRoutes with a custom config provider
-func NewSecretsRoutesWithProvider(provider config.Provider) *SecretsRoutes {
-	return &SecretsRoutes{
-		configProvider: provider,
-	}
-}
-
 // SecretsRouter creates a new router for the secrets API.
 func SecretsRouter() http.Handler {
 	routes := NewSecretsRoutes()

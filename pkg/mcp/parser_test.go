@@ -1191,27 +1191,10 @@ func TestConvenienceFunctions(t *testing.T) {
 	resourceID := GetMCPResourceID(ctx)
 	assert.Equal(t, "weather", resourceID)
 
-	// Test GetMCPArguments
-	arguments := GetMCPArguments(ctx)
-	expected := map[string]interface{}{
-		"location": "NYC",
-	}
-	assert.Equal(t, expected, arguments)
-
-	// Test GetMCPMeta
-	meta := GetMCPMeta(ctx)
-	expectedMeta := map[string]interface{}{
-		"progressToken": "abc123",
-		"traceparent":   "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-	}
-	assert.Equal(t, expectedMeta, meta)
-
 	// Test with empty context
 	emptyCtx := context.Background()
 	assert.Equal(t, "", GetMCPMethod(emptyCtx))
 	assert.Equal(t, "", GetMCPResourceID(emptyCtx))
-	assert.Nil(t, GetMCPArguments(emptyCtx))
-	assert.Nil(t, GetMCPMeta(emptyCtx))
 }
 
 func TestMetaFieldParsing(t *testing.T) {
@@ -1398,14 +1381,6 @@ func TestMetaFieldParsing(t *testing.T) {
 			} else {
 				assert.Equal(t, tt.expectedMeta, parsed.Meta)
 			}
-
-			// Also test the convenience function
-			meta := GetMCPMeta(capturedCtx)
-			if tt.expectedMeta == nil {
-				assert.Nil(t, meta)
-			} else {
-				assert.Equal(t, tt.expectedMeta, meta)
-			}
 		})
 	}
 }
@@ -1521,9 +1496,6 @@ func TestModernMetaParsing(t *testing.T) {
 			require.NotNil(t, parsed)
 			assert.Equal(t, tt.expectedClientInfo, parsed.ClientInfo)
 			assert.Equal(t, tt.expectedProtocolVersion, parsed.ProtocolVersion)
-
-			assert.Equal(t, tt.expectedClientInfo, GetMCPClientInfo(capturedCtx))
-			assert.Equal(t, tt.expectedProtocolVersion, GetMCPProtocolVersion(capturedCtx))
 		})
 	}
 }
@@ -1902,7 +1874,6 @@ func TestConvenienceFunctionsWithNilContext(t *testing.T) {
 
 	assert.Equal(t, "", GetMCPMethod(ctx))
 	assert.Equal(t, "", GetMCPResourceID(ctx))
-	assert.Nil(t, GetMCPArguments(ctx))
 }
 
 func TestHandlerFunctionsEdgeCases(t *testing.T) {

@@ -211,27 +211,6 @@ func TestNewManagerFromRuntime(t *testing.T) {
 	assert.NotNil(t, defaultMgr.configProvider)
 }
 
-func TestNewManagerFromRuntimeWithProvider(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	mockRuntime := runtimeMocks.NewMockRuntime(ctrl)
-	mockConfigProvider := configMocks.NewMockProvider(ctrl)
-
-	manager, err := NewManagerFromRuntimeWithProvider(mockRuntime, mockConfigProvider)
-
-	require.NoError(t, err)
-	require.NotNil(t, manager)
-
-	defaultMgr, ok := manager.(*DefaultManager)
-	require.True(t, ok)
-	assert.Equal(t, mockRuntime, defaultMgr.runtime)
-	assert.Equal(t, mockConfigProvider, defaultMgr.configProvider)
-	assert.NotNil(t, defaultMgr.statuses)
-}
-
 func TestDefaultManager_DoesWorkloadExist(t *testing.T) {
 	t.Parallel()
 
@@ -2708,4 +2687,29 @@ func TestRemoteProxyActive(t *testing.T) {
 			assert.Equal(t, tt.want, remoteProxyActive(tt.status))
 		})
 	}
+}
+
+// managerOption configures a DefaultManager.
+type managerOption func(*DefaultManager)
+
+// withRetryConfig overrides the retry loop's tunable parameters.
+func withRetryConfig(cfg retryConfig) managerOption {
+	return func(d *DefaultManager) { d.retryConfig = &cfg }
+}
+
+// withRunnerFactory overrides the per-attempt runner constructor.
+func withRunnerFactory(f mcpRunnerFactory) managerOption {
+	return func(d *DefaultManager) { d.newRunner = f }
+}
+
+// withDetachedSpawner overrides the function used to start the detached
+// workload process. Intended for tests so they do not re-exec the test binary.
+func withDetachedSpawner(s detachedProcessSpawner) managerOption {
+	return func(d *DefaultManager) { d.detachedSpawner = s }
+}
+
+// withPortFreer overrides the function used to free an orphaned proxy port
+// during stop/delete. Intended for tests so they do not make real OS calls.
+func withPortFreer(f portFreer) managerOption {
+	return func(d *DefaultManager) { d.portFreer = f }
 }

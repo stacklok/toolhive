@@ -20,6 +20,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
 
+// withEmbedTurnWait overrides defaultEmbedTurnWait.
+func withEmbedTurnWait(wait time.Duration) Option {
+	return func(s *sqliteToolStore) {
+		s.embedTurnWait = wait
+	}
+}
+
 // testDBCounter ensures each test gets a unique in-memory database.
 var testDBCounter atomic.Int64
 

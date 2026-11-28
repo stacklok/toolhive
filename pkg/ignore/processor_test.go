@@ -172,7 +172,7 @@ func TestLoadLocal(t *testing.T) {
 	}
 }
 
-func TestPatternMatchesInDirectory(t *testing.T) {
+func TestGetMatchingPaths(t *testing.T) {
 	t.Parallel()
 	// Create test directory structure
 	tmpDir := t.TempDir()
@@ -236,67 +236,11 @@ func TestPatternMatchesInDirectory(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			result := processor.patternMatchesInDirectory(tmpDir, tc.pattern)
+			result := len(processor.getMatchingPaths(tmpDir, tc.pattern)) > 0
 			if result != tc.expected {
 				t.Errorf("Expected pattern '%s' to match: %v, but got: %v", tc.pattern, tc.expected, result)
 			}
 		})
-	}
-}
-
-func TestGetOverlayPaths(t *testing.T) {
-	t.Parallel()
-	// Create test directory structure
-	tmpDir := t.TempDir()
-
-	// Create test files and directories
-	sshDir := filepath.Join(tmpDir, ".ssh")
-	err := os.Mkdir(sshDir, 0755)
-	if err != nil {
-		t.Fatalf("Failed to create .ssh directory: %v", err)
-	}
-
-	envFile := filepath.Join(tmpDir, ".env")
-	err = os.WriteFile(envFile, []byte("TEST=value"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create .env file: %v", err)
-	}
-
-	processor := NewProcessor(&Config{
-		LoadGlobal:    true,
-		PrintOverlays: false,
-	})
-	processor.GlobalPatterns = []string{"node_modules/", ".DS_Store"}
-	processor.LocalPatterns = []string{".ssh/", ".env"}
-
-	overlayPaths := processor.GetOverlayPaths(tmpDir, "/app")
-
-	// Should get overlays for patterns that match existing files/dirs
-	expectedPaths := []string{
-		"/app/.ssh", // matches .ssh/ directory
-		"/app/.env", // matches .env file
-	}
-
-	if len(overlayPaths) != len(expectedPaths) {
-		t.Errorf("Expected %d overlay paths, but got %d", len(expectedPaths), len(overlayPaths))
-	}
-
-	for _, expectedPath := range expectedPaths {
-		found := false
-		for _, actualPath := range overlayPaths {
-			if actualPath == expectedPath {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Expected overlay path '%s' not found in results", expectedPath)
-		}
-	}
-
-	// Clean up processor artifacts
-	if err := processor.Cleanup(); err != nil {
-		t.Errorf("Failed to cleanup processor: %v", err)
 	}
 }
 
@@ -576,53 +520,6 @@ func TestProcessorCleanup(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Errorf("Expected artifact %s to be removed after cleanup", path)
 		}
-	}
-}
-
-func TestShouldIgnore(t *testing.T) {
-	t.Parallel()
-	processor := NewProcessor(&Config{
-		LoadGlobal:    true,
-		PrintOverlays: false,
-	})
-	processor.GlobalPatterns = []string{"node_modules", "*.log"}
-	processor.LocalPatterns = []string{".ssh", ".env"}
-
-	testCases := []struct {
-		name     string
-		path     string
-		expected bool
-	}{
-		{
-			name:     "matches global pattern",
-			path:     "/some/path/node_modules",
-			expected: true,
-		},
-		{
-			name:     "matches local pattern",
-			path:     "/home/user/.ssh",
-			expected: true,
-		},
-		{
-			name:     "matches glob pattern",
-			path:     "/var/log/app.log",
-			expected: true,
-		},
-		{
-			name:     "does not match any pattern",
-			path:     "/home/user/document.txt",
-			expected: false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			result := processor.ShouldIgnore(tc.path)
-			if result != tc.expected {
-				t.Errorf("Expected ShouldIgnore('%s') to return %v, but got %v", tc.path, tc.expected, result)
-			}
-		})
 	}
 }
 

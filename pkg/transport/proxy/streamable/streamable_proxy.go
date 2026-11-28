@@ -1585,7 +1585,7 @@ func (p *HTTPProxy) reapRoutingState() {
 // registry lock held, exactly like sessionRouter.reap's two-phase discipline:
 // isActive may perform I/O (e.g. a Redis-backed session.Manager), and running
 // it while holding serverStreams.mu would block every concurrent
-// broadcast/dispatchTo/deliverToMany/register/deregister call for the
+// broadcast/deliverToMany/register/deregister call for the
 // (possibly slow) duration of every liveness check. closeStream itself only
 // ever takes the lock for the in-memory work of removing one already-decided
 // stale entry, never across isActive.

@@ -313,7 +313,9 @@ func TestToolRead_UpdatePoliciesRebuildsReadSet(t *testing.T) {
 	require.NoError(t, a.(*Authorizer).UpdatePolicies([]string{`permit(principal, action == Action::"read_tool", resource);`}))
 	assert.True(t, read(), "read_tool permit added by update lists weather")
 
-	require.NoError(t, a.(*Authorizer).UpdatePolicies([]string{"permit(principal, action == Action::\"call_tool\", resource == Tool::\"other\");"}))
+	require.NoError(t, a.(*Authorizer).UpdatePolicies([]string{
+		`permit(principal, action == Action::"call_tool", resource == Tool::"other");`,
+	}))
 	assert.False(t, read(), "read_tool permit removed by update hides weather again")
 
 	require.NoError(t, a.(*Authorizer).UpdatePolicies([]string{

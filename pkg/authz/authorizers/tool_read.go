@@ -29,9 +29,10 @@ func WithToolCallImpliesRead(a Authorizer) Authorizer {
 }
 
 // ToolReadNative is implemented by an authorizer that decides tool:read itself. Cedar
-// does (it answers true), and so does the HTTP PDP when forward_tool_read is set. AnswersToolRead returns true when the authorizer answers tool:read
-// directly; false means it should be asked only tool:call, which is then the visibility
-// decision. An authorizer that does not implement it gets read first, then call.
+// does (it answers true), and so does the HTTP PDP when forward_tool_read is set.
+// AnswersToolRead returns true when the authorizer answers tool:read directly; false
+// means it should be asked only tool:call, which is then the visibility decision.
+// An authorizer that does not implement it gets read first, then call.
 type ToolReadNative interface {
 	AnswersToolRead() bool
 }

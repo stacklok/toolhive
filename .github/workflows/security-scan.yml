@@ -72,7 +72,7 @@ jobs:
       - name: Report findings
         uses: zizmorcore/zizmor-action@bd12b495c90993a4301c73398142281a61499af3 # v0.9.0
         with:
-          version: "1.33.0"
+          version: "1.33.1"
           inputs: .github/
           persona: regular
 
@@ -90,7 +90,7 @@ jobs:
       - name: Fail on new findings
         uses: zizmorcore/zizmor-action@bd12b495c90993a4301c73398142281a61499af3 # v0.9.0
         with:
-          version: "1.33.0"
+          version: "1.33.1"
           inputs: .github/
           persona: regular
           min-severity: medium

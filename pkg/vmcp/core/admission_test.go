@@ -622,14 +622,13 @@ func TestNewAdmission(t *testing.T) {
 		assert.False(t, ok)
 	})
 
-	t.Run("cedar config lists tools through the tool:read fallback", func(t *testing.T) {
+	t.Run("non-native authorizer lists tools through the tool:read fallback", func(t *testing.T) {
 		t.Parallel()
-		// Cedar denies every tool:read check. Without the decorator in the factory
-		// path, FilterTools would hide every tool. Keeping weather proves the fallback.
-		adm, err := newAdmission(
-			cedarAuthzConfig(t, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`),
-			"test-vmcp")
-		require.NoError(t, err)
+		// The stub does not answer tool:read itself (no ToolReadNative), so it denies
+		// tool:read and allows tool:call. Only the decorator in newCedarAdmission can make
+		// weather visible; without it FilterTools would hide every tool. Cedar answers
+		// tool:read natively and never takes this path, so the stub is what tests it.
+		adm := newCedarAdmission(callOnlyStub{allow: "weather"})
 
 		filtered, err := adm.FilterTools(context.Background(), cedarIdentity(), []vmcp.Tool{
 			{Name: "weather"},
@@ -949,4 +948,21 @@ func TestCedarAdmission_FilterToolsHidesToolOnReadError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, filtered, "a tool:read error hides the tool without a tool:call check")
 	assert.Len(t, mock.calls, 1, "tool:call must not be asked after a tool:read error")
+}
+
+// callOnlyStub is a non-native authorizer: it denies tool:read for every tool and allows
+// tool:call only for allow. It does not implement ToolReadNative, so the decorator must
+// fall back from tool:read to tool:call for it.
+type callOnlyStub struct {
+	allow string
+}
+
+func (s callOnlyStub) AuthorizeWithJWTClaims(
+	_ context.Context,
+	_ authorizers.MCPFeature,
+	operation authorizers.MCPOperation,
+	resourceID string,
+	_ map[string]interface{},
+) (bool, error) {
+	return operation == authorizers.MCPOperationCall && resourceID == s.allow, nil
 }

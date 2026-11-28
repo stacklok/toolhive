@@ -195,6 +195,12 @@ const (
 type Authorizer struct {
 	// Cedar policy set
 	policySet *cedar.PolicySet
+	// readSet holds only the policies that name Action::"read_tool" in their action
+	// scope. It decides tool:read visibility (see authorizeToolRead).
+	readSet *cedar.PolicySet
+	// permitErrWarned holds the policy IDs whose call_tool permit error was already logged
+	// at Warn. It is cleared by UpdatePolicies, so each error is logged once per policy set.
+	permitErrWarned sync.Map
 	// Cedar entities
 	entities cedar.EntityMap
 	// Entity factory for creating entities
@@ -405,6 +411,7 @@ func NewCedarAuthorizer(options ConfigOptions, serverName string) (authorizers.A
 		return nil, err
 	}
 	authorizer.policySet = policySet
+	authorizer.readSet = readToolPolicySet(policySet)
 
 	// Load entities if provided
 	if options.EntitiesJSON != "" {
@@ -484,6 +491,11 @@ func (a *Authorizer) UpdatePolicies(policies []string) error {
 	}
 
 	a.policySet = newPolicySet
+	a.readSet = readToolPolicySet(newPolicySet)
+	a.permitErrWarned.Range(func(k, _ any) bool {
+		a.permitErrWarned.Delete(k)
+		return true
+	})
 	return nil
 }
 
@@ -552,32 +564,53 @@ func (a *Authorizer) IsAuthorized(
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
+	decision, diagnostic, err := a.evaluate(a.policySet, principal, action, resource, contextMap, entities...)
+	if err != nil {
+		return false, err
+	}
+
+	// Check if the Diagnostic contains any errors
+	if len(diagnostic.Errors) > 0 {
+		return false, fmt.Errorf("authorization error: %v", diagnostic.Errors)
+	}
+	return decision == cedar.Allow, nil
+}
+
+// evaluate runs one Cedar request against ps and returns the raw decision and
+// diagnostic. The caller must hold a.mu (read or write). Errors reported by Cedar
+// are returned in the diagnostic, not as an error, so callers decide how to treat them.
+func (a *Authorizer) evaluate(
+	ps *cedar.PolicySet,
+	principal, action, resource string,
+	contextMap map[string]interface{},
+	entities ...cedar.EntityMap,
+) (cedar.Decision, cedar.Diagnostic, error) {
 	if principal == "" {
-		return false, ErrMissingPrincipal
+		return cedar.Deny, cedar.Diagnostic{}, ErrMissingPrincipal
 	}
 
 	if action == "" {
-		return false, ErrMissingAction
+		return cedar.Deny, cedar.Diagnostic{}, ErrMissingAction
 	}
 
 	if resource == "" {
-		return false, ErrMissingResource
+		return cedar.Deny, cedar.Diagnostic{}, ErrMissingResource
 	}
 
 	// Parse principal, action, and resource
 	principalType, principalID, err := parseCedarEntityID(principal)
 	if err != nil {
-		return false, err
+		return cedar.Deny, cedar.Diagnostic{}, err
 	}
 
 	actionType, actionID, err := parseCedarEntityID(action)
 	if err != nil {
-		return false, err
+		return cedar.Deny, cedar.Diagnostic{}, err
 	}
 
 	resourceType, resourceID, err := parseCedarEntityID(resource)
 	if err != nil {
-		return false, err
+		return cedar.Deny, cedar.Diagnostic{}, err
 	}
 
 	// Create context record
@@ -613,18 +646,11 @@ func (a *Authorizer) IsAuthorized(
 		"principal", req.Principal, "action", req.Action, "resource", req.Resource)
 	slog.Debug("cedar context", "context", req.Context)
 
-	// Check authorization
-	decision, diagnostic := cedar.Authorize(a.policySet, entityMap, req)
+	decision, diagnostic := cedar.Authorize(ps, entityMap, req)
 
 	// Log the decision
 	slog.Debug("cedar decision", "decision", decision, "diagnostic", diagnostic)
-
-	// Cedar's Authorize returns a Decision and a Diagnostic
-	// Check if the Diagnostic contains any errors
-	if len(diagnostic.Errors) > 0 {
-		return false, fmt.Errorf("authorization error: %v", diagnostic.Errors)
-	}
-	return decision == cedar.Allow, nil
+	return decision, diagnostic, nil
 }
 
 // resolveClaims determines which JWT claims to use for Cedar policy evaluation,
@@ -1316,14 +1342,30 @@ func (a *Authorizer) authorizeToolCall(
 	attrsMap map[string]interface{},
 	groups []string,
 ) (bool, error) {
+	principal, resource, contextMap, entities, err := a.toolRequest(
+		ctx, clientID, toolName, callToolActionEntity, "call", claimsMap, attrsMap, groups)
+	if err != nil {
+		return false, err
+	}
+	return a.IsAuthorized(principal, callToolActionEntity, resource, contextMap, entities)
+}
+
+// toolRequest builds the principal, resource, context and entities for a tool
+// request with the given action and operation ("call" or "read"). Annotations and
+// the backend parent come from the context, so every tool request uses the same
+// resource entity whichever action it asks.
+func (a *Authorizer) toolRequest(
+	ctx context.Context,
+	clientID, toolName, action, operation string,
+	claimsMap map[string]interface{},
+	attrsMap map[string]interface{},
+	groups []string,
+) (principal, resource string, contextMap map[string]interface{}, entities cedar.EntityMap, err error) {
 	// Extract principal from client ID
-	principal := fmt.Sprintf("Client::%s", clientID)
+	principal = fmt.Sprintf("Client::%s", clientID)
 
-	// Action is to call a tool
-	action := "Action::call_tool"
-
-	// Resource is the tool being called
-	resource := fmt.Sprintf("Tool::%s", toolName)
+	// Resource is the tool being called or read
+	resource = fmt.Sprintf("Tool::%s", toolName)
 
 	// Read tool annotations from context and include in resource attributes.
 	// Annotations are merged first so that the standard attributes ("name",
@@ -1335,7 +1377,7 @@ func (a *Authorizer) authorizeToolCall(
 	// Create attributes for the entities
 	attributes := mergeContexts(annotationAttrs, attrsMap, map[string]interface{}{
 		"name":      toolName,
-		"operation": "call",
+		"operation": operation,
 		"feature":   "tool",
 	})
 	resourceParents := func() []cedar.EntityUID {
@@ -1348,17 +1390,15 @@ func (a *Authorizer) authorizeToolCall(
 	}()
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(
+	entities, err = a.entityFactory.CreateEntitiesForRequest(
 		principal, action, resource, claimsMap, attributes, groups, a.serverName, resourceParents...,
 	)
 	if err != nil {
-		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
+		return "", "", nil, nil, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
 
-	contextMap := mergeContexts(claimsMap, attrsMap)
-
-	// Check authorization with entities
-	return a.IsAuthorized(principal, action, resource, contextMap, entities)
+	contextMap = mergeContexts(claimsMap, attrsMap)
+	return principal, resource, contextMap, entities, nil
 }
 
 // authorizePromptGet authorizes a prompt get operation.
@@ -1539,14 +1579,6 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 	resourceID string,
 	arguments map[string]interface{},
 ) (bool, error) {
-	// Cedar has no read_tool action, so tool:read is a plain deny. The tool:call
-	// decorator then lets call_tool policies decide visibility. Returning here, before
-	// claims and upstream tokens are resolved, avoids that work for a result that is
-	// always discarded on every tools/list.
-	if feature == authorizers.MCPFeatureTool && operation == authorizers.MCPOperationRead {
-		return false, nil
-	}
-
 	// Extract Identity from the context
 	identity, ok := auth.IdentityFromContext(ctx)
 	if !ok {
@@ -1614,6 +1646,9 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 	case authorizers.MCPOperationRead:
 		if feature == authorizers.MCPFeatureResource {
 			return a.authorizeResourceRead(clientID, resourceID, processedClaims, processedArgs, groups)
+		}
+		if feature == authorizers.MCPFeatureTool {
+			return a.authorizeToolRead(ctx, clientID, resourceID, processedClaims, processedArgs, groups)
 		}
 	case authorizers.MCPOperationList:
 		return a.authorizeFeatureList(clientID, feature, processedClaims, processedArgs, groups)

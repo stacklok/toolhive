@@ -5582,7 +5582,7 @@ func TestAuthorizeNonScalarArguments(t *testing.T) {
 
 }
 
-func TestAuthorizer_ToolReadIsAPlainDeny(t *testing.T) {
+func TestAuthorizer_ToolReadWithoutIdentityErrors(t *testing.T) {
 	t.Parallel()
 
 	a, err := NewCedarAuthorizer(ConfigOptions{
@@ -5591,10 +5591,10 @@ func TestAuthorizer_ToolReadIsAPlainDeny(t *testing.T) {
 	}, "")
 	require.NoError(t, err)
 
-	// No identity is attached: the deny must come before claims are resolved.
+	// No identity is attached: tool:read needs the principal, so it fails closed.
 	ok, err := a.AuthorizeWithJWTClaims(
 		context.Background(), authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
 
-	require.NoError(t, err)
-	assert.False(t, ok, "Cedar has no read_tool action, so tool:read is denied")
+	require.ErrorIs(t, err, ErrMissingPrincipal)
+	assert.False(t, ok)
 }

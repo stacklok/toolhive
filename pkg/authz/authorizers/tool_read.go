@@ -10,9 +10,11 @@ import (
 // ToolCallImpliesRead decorates an Authorizer so that tool:call implies tool:read.
 //
 // A tool:read check is answered by the inner authorizer first. If that does not
-// allow it, the decorator asks the inner authorizer the tool:call question. The
-// implication is one-way: a tool:call check never falls back to tool:read, so a
-// tool:read grant can never allow invocation.
+// allow it, the decorator asks the inner authorizer the tool:call question. An
+// inner authorizer that implements ToolReadNative and answers true (Cedar) decides
+// tool:read itself, so the fallback does not apply to it. The implication is
+// one-way: a tool:call check never falls back to tool:read, so a tool:read grant
+// can never allow invocation.
 type ToolCallImpliesRead struct {
 	inner Authorizer
 }
@@ -26,10 +28,11 @@ func WithToolCallImpliesRead(a Authorizer) Authorizer {
 	return &ToolCallImpliesRead{inner: a}
 }
 
-// ToolReadNative is implemented by an authorizer that decides tool:read itself, such as
-// the HTTP PDP. AnswersToolRead returns true when the authorizer answers tool:read
-// directly; false means it should be asked only tool:call, which is then the visibility
-// decision. An authorizer that does not implement it (Cedar) gets read first, then call.
+// ToolReadNative is implemented by an authorizer that decides tool:read itself. Cedar
+// does (it answers true), and so does the HTTP PDP when forward_tool_read is set.
+// AnswersToolRead returns true when the authorizer answers tool:read directly; false
+// means it should be asked only tool:call, which is then the visibility decision.
+// An authorizer that does not implement it gets read first, then call.
 type ToolReadNative interface {
 	AnswersToolRead() bool
 }

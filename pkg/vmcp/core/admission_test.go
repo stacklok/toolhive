@@ -617,10 +617,7 @@ func TestNewAdmission(t *testing.T) {
 		// tool:read and allows tool:call. Only the decorator in newCedarAdmission can make
 		// weather visible; without it FilterTools would hide every tool. Cedar answers
 		// tool:read natively and never takes this path, so the stub is what tests it.
-		stub := &mockAuthorizer{allowed: map[authorizers.MCPOperation]bool{
-			authorizers.MCPOperationCall: true,
-		}}
-		adm := newCedarAdmission(stub)
+		adm := newCedarAdmission(callOnlyStub{allow: "weather"})
 
 		filtered, err := adm.FilterTools(context.Background(), cedarIdentity(), []vmcp.Tool{
 			{Name: "weather"},
@@ -940,4 +937,21 @@ func TestCedarAdmission_FilterToolsHidesToolOnReadError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, filtered, "a tool:read error hides the tool without a tool:call check")
 	assert.Len(t, mock.calls, 1, "tool:call must not be asked after a tool:read error")
+}
+
+// callOnlyStub is a non-native authorizer: it denies tool:read for every tool and allows
+// tool:call only for allow. It does not implement ToolReadNative, so the decorator must
+// fall back from tool:read to tool:call for it.
+type callOnlyStub struct {
+	allow string
+}
+
+func (s callOnlyStub) AuthorizeWithJWTClaims(
+	_ context.Context,
+	_ authorizers.MCPFeature,
+	operation authorizers.MCPOperation,
+	resourceID string,
+	_ map[string]interface{},
+) (bool, error) {
+	return operation == authorizers.MCPOperationCall && resourceID == s.allow, nil
 }

@@ -90,16 +90,16 @@ func WithClientAccessTokenLifespans(lifespans map[string]time.Duration) FactoryO
 // or negative value would produce delegated tokens with an expiry already in the past, and a
 // value above the access token ceiling would only be caught at request time by the per-request cap.
 //
-// shared is used as the subject-token validator when non-nil; it is REQUIRED
-// whenever trustedIssuers is non-empty (an error is returned otherwise). A
-// MultiIssuerTokenValidator owns per-issuer JWKS refresh worker pools that only
-// its Close releases, and the returned closure (built at fosite-compose time,
-// from config not available at this call) has no way to hand a locally-built
-// instance back to the caller for shutdown. Callers build it once with
-// NewSharedTrustedIssuerValidator, hold it for Close, and can reuse the same
-// instance across the RFC 8693 token-exchange and RFC 7523 JWT-bearer grants.
-// With no trusted issuers and a nil shared validator the self-issued validator
-// is used directly.
+// shared may be nil when trustedIssuers is empty; the self-issued validator is
+// then used directly. When non-nil it is used as the subject-token validator,
+// and it is REQUIRED whenever trustedIssuers is non-empty (an error is returned
+// otherwise). A MultiIssuerTokenValidator owns per-issuer JWKS refresh worker
+// pools that only its Close releases, and the returned closure (built at
+// fosite-compose time, from config not available at this call) has no way to
+// hand a locally-built instance back to the caller for shutdown. Callers build
+// it once with NewSharedTrustedIssuerValidator, hold it for Close, and can reuse
+// the same instance across the RFC 8693 token-exchange and RFC 7523 JWT-bearer
+// grants.
 //
 // configuredDelegateClients is the operator-configured list of delegate
 // client IDs (Config.DelegateClients, projected down to just their

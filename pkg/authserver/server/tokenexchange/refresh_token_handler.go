@@ -164,8 +164,9 @@ type RefreshTokenHandler struct {
 	clock           func() time.Time
 }
 
-// RefreshTokenOption configures RefreshTokenFactory. Factory takes FactoryOption
-// instead, so an option cannot be passed to the wrong factory.
+// RefreshTokenOption configures RefreshTokenFactory.
+// FactoryWithSharedTrustedIssuerValidator and IDJAGIssuanceFactory take
+// FactoryOption instead, so an option cannot be passed to the wrong factory.
 type RefreshTokenOption func(*refreshTokenOptions)
 
 type refreshTokenOptions struct {

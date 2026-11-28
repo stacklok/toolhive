@@ -536,6 +536,11 @@ func (t *StdioTransport) attemptReattachment(ctx context.Context, stdout io.Read
 		// Try to re-attach to the container
 		newStdin, newStdout, attachErr := t.deployer.AttachToWorkload(ctx, t.containerName)
 		if attachErr != nil {
+			if errors.Is(attachErr, rt.ErrReattachNotSupported) {
+				slog.Warn("container runtime does not support re-attaching stdio streams",
+					"container", t.containerName, "error", attachErr)
+				return nil, backoff.Permanent(attachErr)
+			}
 			slog.Error("failed to re-attach to container",
 				"attempt", attemptCount, "max_retries", maxRetries, "error", attachErr)
 			return nil, attachErr // Retry

@@ -242,7 +242,17 @@ const (
 	TypeKubernetes Type = "kubernetes"
 	// TypeColima represents the Colima runtime
 	TypeColima Type = "colima"
+	// TypeApple represents Apple's macOS native container runtime
+	TypeApple Type = "apple"
 )
+
+// HostGatewayResolver is an optional capability interface implemented by runtimes
+// that can resolve the hostname or IP address a container should use to reach
+// services listening on the host machine (for example, "host.docker.internal",
+// "host.containers.internal", or Apple's vmnet gateway IP).
+type HostGatewayResolver interface {
+	HostGateway(ctx context.Context) (string, error)
+}
 
 // MountType represents the type of mount
 type MountType string

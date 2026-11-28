@@ -1525,6 +1525,13 @@ type BearerChallenge struct {
 // "invalid_token", or "insufficient_scope"), it appends the error and optional
 // error_description.
 func (c BearerChallenge) Header(errorCode string, errDescription string) string {
+	return c.header(errorCode, errDescription, "")
+}
+
+// header is Header with an optional reason auth-param after
+// error_description, written only with an errorCode. RFC 6750 §3 allows
+// auth-params beyond the ones it defines.
+func (c BearerChallenge) header(errorCode, errDescription, reason string) string {
 	var parts []string
 
 	// realm (RFC 6750)
@@ -1564,6 +1571,9 @@ func (c BearerChallenge) Header(errorCode string, errDescription string) string 
 		if errDescription != "" {
 			parts = append(parts, fmt.Sprintf(`error_description="%s"`, EscapeQuotes(errDescription)))
 		}
+		if reason != "" {
+			parts = append(parts, fmt.Sprintf(`reason="%s"`, EscapeQuotes(reason)))
+		}
 	}
 	return "Bearer " + strings.Join(parts, ", ")
 }
@@ -1572,8 +1582,17 @@ func (c BearerChallenge) Header(errorCode string, errDescription string) string 
 // error body, the way the token validator answers a token it refuses.
 // description must not carry the token or other secrets.
 func (c BearerChallenge) WriteInvalidToken(w http.ResponseWriter, description string) {
-	w.Header().Set("WWW-Authenticate", c.Header(OAuthErrInvalidToken, description))
-	writeOAuthError(w, OAuthErrInvalidToken, description)
+	c.WriteInvalidTokenReason(w, description, "")
+}
+
+// WriteInvalidTokenReason is WriteInvalidToken with a reason: a fixed,
+// machine-readable code saying why the token is refused, for a client that
+// must act on it without matching description. A non-empty reason is sent as
+// a reason auth-param on the challenge and a reason member of the body; error
+// stays invalid_token. reason must not carry request data or secrets.
+func (c BearerChallenge) WriteInvalidTokenReason(w http.ResponseWriter, description, reason string) {
+	w.Header().Set("WWW-Authenticate", c.header(OAuthErrInvalidToken, description, reason))
+	writeOAuthErrorReason(w, OAuthErrInvalidToken, description, reason)
 }
 
 // RFC 6750 error code constants for Bearer token authentication.
@@ -1592,13 +1611,23 @@ const upstreamReauthRequired = "upstream token is no longer valid; re-authentica
 type RFC6750Error struct {
 	Error            string `json:"error"`
 	ErrorDescription string `json:"error_description"`
+	// Reason is a machine-readable code refining Error, omitted when empty.
+	// See BearerChallenge.WriteInvalidTokenReason.
+	Reason string `json:"reason,omitempty"`
 }
 
 // writeOAuthError writes an RFC 6750 compliant JSON error response.
 func writeOAuthError(w http.ResponseWriter, errorCode, description string) {
+	writeOAuthErrorReason(w, errorCode, description, "")
+}
+
+// writeOAuthErrorReason is writeOAuthError with a reason member, omitted when
+// reason is empty.
+func writeOAuthErrorReason(w http.ResponseWriter, errorCode, description, reason string) {
 	body, err := json.Marshal(RFC6750Error{
 		Error:            errorCode,
 		ErrorDescription: description,
+		Reason:           reason,
 	})
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)

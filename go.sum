@@ -633,8 +633,8 @@ github.com/shibumi/go-pathspec v1.3.0 h1:QUyMZhFo0Md5B8zV8x2tesohbb5kfbpTi9rBnKh
 github.com/shibumi/go-pathspec v1.3.0/go.mod h1:Xutfslp817l2I1cZvgcfeMQJG5QnU2lh5tVaaMCl3jE=
 github.com/shirou/gopsutil/v4 v4.26.10 h1:MJN6euesJx53MVEjscYeyRSRcrdIcy3sz5k9nosjldg=
 github.com/shirou/gopsutil/v4 v4.26.10/go.mod h1:XpkIrcUMQhwte/dGxu57KtnMMFsbKelI7PP23zweKBk=
-github.com/sigstore/protobuf-specs v0.5.3-0.20261112181914-a84bc5ff572a h1:5XG2LytaPWuYUctAEGtTPchXcqXs5VTa4RbJgVFaq4A=
-github.com/sigstore/protobuf-specs v0.5.3-0.20261112181914-a84bc5ff572a/go.mod h1:1QTwiRx4i1dbHGub43GV+0G/Y1rZdlyJDxPmJ+6RUOk=
+github.com/sigstore/protobuf-specs v0.5.3-0.20261124074135-7eccec11d5be h1:+psNBsXnyZCmiJmUkZQdlAogjGyfSqSZqHU/+DMCX/0=
+github.com/sigstore/protobuf-specs v0.5.3-0.20261124074135-7eccec11d5be/go.mod h1:1QTwiRx4i1dbHGub43GV+0G/Y1rZdlyJDxPmJ+6RUOk=
 github.com/sigstore/rekor v1.6.3 h1:g4tBRFOw2gj6Xa3ACVn44yRr4AKr2fRhFx2I3bq0fiU=
 github.com/sigstore/rekor v1.6.3/go.mod h1:Eku/Wrn9EQsWbSyeIbkkLgyuFh3cyzWiDkGTdKRkByk=
 github.com/sigstore/rekor-tiles/v2 v2.4.2 h1:Qvt1L8oWkQpAK5lr8QnKuE0JYnA44kMWUvXl4hhxD+I=

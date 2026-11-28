@@ -61,7 +61,7 @@ require (
 	github.com/prometheus/common v0.74.0
 	github.com/redis/go-redis/v9 v9.24.1
 	github.com/shirou/gopsutil/v4 v4.26.10
-	github.com/sigstore/protobuf-specs v0.5.3-0.20261112181914-a84bc5ff572a
+	github.com/sigstore/protobuf-specs v0.5.3-0.20261124074135-7eccec11d5be
 	github.com/sigstore/sigstore v1.11.4
 	github.com/sigstore/sigstore-go v1.4.1
 	github.com/spf13/cobra v1.10.2

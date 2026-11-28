@@ -164,6 +164,13 @@ func (r *EmbeddingServerReconciler) handleDeletion(
 	}
 
 	if controllerutil.ContainsFinalizer(embedding, embeddingFinalizerName) {
+		// If finalization fails (e.g. the final status update errors), requeue
+		// with the finalizer still in place so the status is not silently
+		// lost (#4624). The finalizer is only removed after it succeeds.
+		// finalizeEmbeddingServer records the Terminating status best-effort
+		// and never blocks deletion: a failing status write is surfaced as a
+		// Warning event, but finalization continues so the finalizer is always
+		// removed and the object is deleted (#4624).
 		r.finalizeEmbeddingServer(ctx, embedding)
 
 		controllerutil.RemoveFinalizer(embedding, embeddingFinalizerName)
@@ -1003,21 +1010,46 @@ func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 	return nil
 }
 
-// finalizeEmbeddingServer performs cleanup before the EmbeddingServer is deleted
+// finalizeEmbeddingServer performs cleanup before the EmbeddingServer is deleted.
+//
+// The final status write is observational, not part of cleanup: Kubernetes
+// cascade-deletes the owned resources, so nothing here holds external state.
+// A status write that keeps failing (status schema or webhook rejection,
+// missing status RBAC) must therefore never pin the finalizer — that would
+// hang deletion and stall namespace teardown, which is worse than losing the
+// cosmetic Terminating phase. The failure is surfaced as a Warning event plus
+// a log line instead, so it is no longer silent (#4624). The error return is
+// kept for future real cleanup steps, whose failures *should* requeue (see
+// finalizeMCPServer).
 func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context, embedding *mcpv1beta1.EmbeddingServer) {
 	ctxLogger := log.FromContext(ctx)
 	ctxLogger.Info("Finalizing EmbeddingServer", "name", embedding.Name)
 
-	// Update status to Terminating
+	// Update status to Terminating. Best effort: deletion proceeds either way.
 	embedding.Status.Phase = mcpv1beta1.EmbeddingServerPhaseTerminating
 	if err := r.Status().Update(ctx, embedding); err != nil {
-		ctxLogger.Error(err, "Failed to update EmbeddingServer status to Terminating")
+		ctxLogger.Error(
+			err,
+			"Failed to record the Terminating status before deletion; "+
+				"continuing with finalization",
+		)
+		r.Recorder.Eventf(
+			embedding,
+			nil,
+			corev1.EventTypeWarning,
+			"StatusUpdateFailed",
+			"Finalize",
+			"Could not record the Terminating status before deletion: %v",
+			err,
+		)
+		return nil
 	}
 
 	// Cleanup logic here if needed
 	// For now, Kubernetes will handle cascade deletion of owned resources
 
 	r.Recorder.Eventf(embedding, nil, corev1.EventTypeNormal, "Deleted", "Finalize", "EmbeddingServer has been finalized")
+	// finalization never blocks deletion; errors are surfaced via Warning event
 }
 
 // SetupWithManager sets up the controller with the Manager.

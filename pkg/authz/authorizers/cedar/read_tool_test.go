@@ -241,9 +241,9 @@ func TestToolRead_CedarErrorsFailClosed(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name: "permit error on the call check does not hide a read_tool grant",
+			name: "argument-conditioned call permit does not hide a read_tool grant",
 			policies: []string{
-				`permit(principal, action == Action::"call_tool", resource) when { context.missing == "x" };`,
+				`permit(principal, action == Action::"call_tool", resource) when { context.arg_location == "New York" };`,
 				`permit(principal, action == Action::"read_tool", resource);`,
 			},
 			wantOK: true,

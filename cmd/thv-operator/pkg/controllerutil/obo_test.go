@@ -4,7 +4,6 @@
 package controllerutil
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"math"
@@ -75,7 +74,7 @@ func oboClient(t *testing.T, objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().WithScheme(testutil.NewScheme(t)).WithObjects(objs...).Build()
 }
 
-func TestOBOValidate(t *testing.T) {
+func TestValidateOBO(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -184,7 +183,7 @@ func TestOBOValidate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := OBOValidate(oboCR("obo-config", tt.cfg))
+			err := ValidateOBO(oboCR("obo-config", tt.cfg))
 			if tt.wantMsg == "" {
 				require.NoError(t, err)
 				return
@@ -534,62 +533,4 @@ func TestOBOVMCPSecretEnvVars_UniquePerConfig(t *testing.T) {
 	_, err = OBOVMCPSecretEnvVars(oboCR("bad", mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) { c.ClientSecretRef = nil })))
 	var vErr *obo.ValidationError
 	assert.ErrorAs(t, err, &vErr)
-}
-
-// withOBOHandlerRestored restores the package-level OBO handler after a test
-// that calls the deprecated RegisterOBOHandler.
-func withOBOHandlerRestored(t *testing.T) {
-	t.Helper()
-	oboMu.RLock()
-	original := oboHandler
-	oboMu.RUnlock()
-	t.Cleanup(func() {
-		oboMu.Lock()
-		oboHandler = original
-		oboMu.Unlock()
-	})
-}
-
-//nolint:paralleltest // Mutates package-level oboHandler; must not race other tests.
-func TestRegisterOBOHandler_OverridesBuiltIn(t *testing.T) {
-	withOBOHandlerRestored(t)
-
-	sentinel := errors.New("registered handler")
-	envs := []corev1.EnvVar{{Name: "OVERRIDE", Value: "x"}}
-	RegisterOBOHandler(OBOHandler{
-		Validate: func(*mcpv1beta1.MCPExternalAuthConfig) error { return sentinel },
-		ApplyRunConfig: func(context.Context, client.Client, string,
-			*mcpv1beta1.MCPExternalAuthConfig, *[]runner.RunConfigBuilderOption) error {
-			return sentinel
-		},
-		SecretEnvVars: func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) { return envs, nil },
-	})
-
-	assert.ErrorIs(t, OBOValidate(nil), sentinel)
-	assert.ErrorIs(t, OBOApplyRunConfig(t.Context(), nil, oboTestNamespace, nil, nil), sentinel)
-	got, err := OBOSecretEnvVars(nil)
-	require.NoError(t, err)
-	assert.Equal(t, envs, got)
-}
-
-func TestRegisterOBOHandler_PanicsOnNilField(t *testing.T) {
-	t.Parallel()
-
-	validate := func(*mcpv1beta1.MCPExternalAuthConfig) error { return nil }
-	apply := func(context.Context, client.Client, string,
-		*mcpv1beta1.MCPExternalAuthConfig, *[]runner.RunConfigBuilderOption) error {
-		return nil
-	}
-	secretEnvVars := func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) { return nil, nil }
-
-	for name, h := range map[string]OBOHandler{
-		"Validate nil":       {ApplyRunConfig: apply, SecretEnvVars: secretEnvVars},
-		"ApplyRunConfig nil": {Validate: validate, SecretEnvVars: secretEnvVars},
-		"SecretEnvVars nil":  {Validate: validate, ApplyRunConfig: apply},
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			assert.Panics(t, func() { RegisterOBOHandler(h) })
-		})
-	}
 }

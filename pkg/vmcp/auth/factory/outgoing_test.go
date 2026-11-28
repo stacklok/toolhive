@@ -148,7 +148,7 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		assert.NoError(t, err, "unauthenticated strategy should accept empty strategy")
 	})
 
-	t.Run("obo strategy is the built-in Entra OBO strategy", func(t *testing.T) {
+	t.Run("obo strategy is the Entra OBO strategy", func(t *testing.T) {
 		t.Parallel()
 
 		registry, err := NewOutgoingAuthRegistry(context.Background(), &env.OSReader{})
@@ -158,11 +158,35 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		require.NoError(t, err, "obo strategy should be registered")
 		assert.IsType(t, &strategies.OBOStrategy{}, strategy)
 
-		// A strategy with no OBO block at all is rejected by the real validator,
-		// not by a licensing stub.
+		// A strategy with no OBO block at all is rejected by the real validator.
 		err = strategy.Validate(&authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO})
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "OBO configuration is required")
+	})
+
+	t.Run("obo strategy resolves secrets through the injected env reader", func(t *testing.T) {
+		t.Parallel()
+
+		oboStrategy := &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeOBO,
+			OBO: &authtypes.OBOConfig{
+				TokenURL:        "https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/token",
+				ClientID:        "client-id",
+				ClientSecretEnv: "OBO_TEST_CLIENT_SECRET",
+				Scopes:          []string{"api://backend/.default"},
+			},
+		}
+		validate := func(reader env.Reader) error {
+			registry, err := NewOutgoingAuthRegistry(context.Background(), reader)
+			require.NoError(t, err)
+			strategy, err := registry.GetStrategy(authtypes.StrategyTypeOBO)
+			require.NoError(t, err)
+			return strategy.Validate(oboStrategy)
+		}
+
+		assert.NoError(t, validate(stubEnvReader{"OBO_TEST_CLIENT_SECRET": "from-the-injected-reader"}),
+			"the secret is only resolvable through the reader passed to NewOutgoingAuthRegistry")
+		assert.ErrorContains(t, validate(stubEnvReader{}), "OBO_TEST_CLIENT_SECRET")
 	})
 
 	t.Run("all strategies have correct names", func(t *testing.T) {

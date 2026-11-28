@@ -31,7 +31,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/audit"
@@ -77,47 +76,14 @@ const (
 // of the audit record.
 const auditComponent = "toolhive-obo"
 
-// factoryMu guards reads and writes of currentFactory.
-var factoryMu sync.RWMutex
-
-// currentFactory holds the factory CreateMiddleware dispatches to. It is the
-// built-in DefaultFactory unless out-of-tree code replaced it through the
-// deprecated RegisterFactory.
-var currentFactory types.MiddlewareFactory = DefaultFactory
-
-// CreateMiddleware is the package-level OBO middleware factory registered in
-// the runner's middleware factory map. It dispatches to DefaultFactory unless
-// a replacement was registered through RegisterFactory.
+// CreateMiddleware is the OBO middleware factory registered in the runner's
+// middleware factory map. It parses the MiddlewareParameters contract, reads
+// the client secret from the named environment variable, builds the cached
+// Entra Exchanger, and installs the middleware under the config's type name.
+// It fails loudly at startup (returns an error, installs nothing) on malformed
+// parameters or a missing secret rather than deferring the failure to the
+// first request.
 func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
-	factoryMu.RLock()
-	f := currentFactory
-	factoryMu.RUnlock()
-	return f(config, runner)
-}
-
-// RegisterFactory replaces the factory CreateMiddleware dispatches to.
-// Last-write-wins. Panics if f is nil.
-//
-// Deprecated: OBO is built in and DefaultFactory is the implementation.
-// RegisterFactory is kept only so out-of-tree code that still calls it keeps
-// compiling; it will be removed once out-of-tree users are gone (see
-// stacklok/toolhive#7200).
-func RegisterFactory(f types.MiddlewareFactory) {
-	if f == nil {
-		panic("obo.RegisterFactory: factory is nil")
-	}
-	factoryMu.Lock()
-	defer factoryMu.Unlock()
-	currentFactory = f
-}
-
-// DefaultFactory is the built-in OBO middleware factory. It parses the
-// MiddlewareParameters contract, reads the client secret from the named
-// environment variable, builds the cached Entra Exchanger, and installs the
-// middleware under the config's type name. It fails loudly at startup
-// (returns an error, installs nothing) on malformed parameters or a missing
-// secret rather than deferring the failure to the first request.
-func DefaultFactory(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
 	params, err := parseParameters(config.Parameters)
 	if err != nil {
 		return err

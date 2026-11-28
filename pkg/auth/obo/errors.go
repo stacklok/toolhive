@@ -3,17 +3,6 @@
 
 package obo
 
-import "errors"
-
-// ErrEnterpriseRequired was returned by the OBO dispatch points before OBO
-// shipped in ToolHive itself. No code path in this module returns it any more.
-//
-// Deprecated: OBO is built in. The sentinel is kept only so out-of-tree code
-// that still references it keeps compiling; it will be removed once
-// out-of-tree users are gone (see stacklok/toolhive#7200).
-var ErrEnterpriseRequired = errors.New(
-	"on-behalf-of (OBO) external auth type requires an enterprise build")
-
 // ValidationError is the typed error OBO validation returns when its input is
 // genuinely malformed and the user must fix the spec for the failure to clear.
 // It is the contract for the "permanent, user-fix" bucket the operator's OBO

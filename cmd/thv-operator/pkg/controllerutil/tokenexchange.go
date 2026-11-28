@@ -132,7 +132,7 @@ func AddExternalAuthConfigOptions(
 		if err := ValidateOBOIncomingAuth(externalAuthConfig, oidcConfig != nil); err != nil {
 			return err
 		}
-		return OBOApplyRunConfig(ctx, c, namespace, externalAuthConfig, options)
+		return applyOBORunConfig(ctx, c, namespace, externalAuthConfig, options)
 	case mcpv1beta1.ExternalAuthTypeHeaderInjection,
 		mcpv1beta1.ExternalAuthTypeUpstreamInject,
 		mcpv1beta1.ExternalAuthTypeXAA:

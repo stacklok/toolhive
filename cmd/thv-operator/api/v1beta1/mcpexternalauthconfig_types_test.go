@@ -328,7 +328,8 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			// Go Validate() intentionally does NOT check OBOConfig fields: the
 			// required-field, pattern, and "at least one of audience or scopes"
 			// rules are enforced by the kubebuilder markers + CEL at admission,
-			// and the registered OBO handler validates semantics at reconcile.
+			// and the operator's reconcile-time OBO validation
+			// (controllerutil.ValidateOBO) validates semantics.
 			// So a minimal obo block passes the Go method even though the
 			// apiserver would reject it (covered by the envtest CEL suite).
 			name: "obo type with minimal OBOConfig passes Go Validate (field checks deferred)",

@@ -2668,14 +2668,6 @@ const (
 // literals are part of the user-facing contract — external consumers and
 // downstream tooling pattern-match on them.
 const (
-	// ConditionReasonEnterpriseRequired was set on obo-typed configs before OBO
-	// shipped in ToolHive itself. The operator no longer sets it.
-	//
-	// Deprecated: OBO is built in. Kept only so out-of-tree code that
-	// references it keeps compiling; it will be removed once out-of-tree users
-	// are gone, see stacklok/toolhive#7200.
-	ConditionReasonEnterpriseRequired = "EnterpriseRequired"
-
 	// ConditionReasonInvalidConfig: an obo-typed MCPExternalAuthConfig is
 	// well-formed at the CRD level but fails the operator's OBO validation
 	// (for example a missing tenant, client ID, client secret reference, or
@@ -2868,7 +2860,7 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		// only for values that are present. All presence and combination
 		// requirements (a tenant, a client-auth credential, at least one of
 		// audience/scopes) and protocol-level checks are owned by the operator's
-		// reconcile-time OBO validation (controllerutil.OBOValidate), which maps
+		// reconcile-time OBO validation (controllerutil.ValidateOBO), which maps
 		// a violation to status.conditions[Valid] = False / Reason:
 		// InvalidConfig. Splitting the tiers this way keeps the CRD schema
 		// backward compatible with the earlier empty placeholder.
@@ -2891,11 +2883,12 @@ type typeConfigEntry struct {
 //
 // Each ExternalAuthType with a config sub-field is one row in the typeConfigEntry
 // table, checked by a uniform biconditional in the loop below ("config set iff
-// type matches"). OBO is checked separately because its handler is registered
-// out-of-tree; the unauthenticated guard then asserts no config is set for the
+// type matches"). OBO gets the same biconditional, checked before the table
+// loop; the unauthenticated guard then asserts no config is set for the
 // unauthenticated type. Each row still maps one-to-one onto the corresponding
-// CEL XValidation rule on MCPExternalAuthConfigSpec, so a reviewer can audit the
-// structural-validation contract by comparing the table against the markers.
+// CEL XValidation rule on MCPExternalAuthConfigSpec, so a reviewer can audit
+// the structural-validation contract by comparing the table against the
+// markers.
 // See issue #5329 for the broader discussion.
 func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	entries := []typeConfigEntry{

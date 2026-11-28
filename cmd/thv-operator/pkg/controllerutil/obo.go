@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -39,95 +38,12 @@ const (
 		"set spec.oidcConfigRef so the proxy has an authenticated user token to exchange"
 )
 
-// OBOHandler bundles the three operator-time OBO dispatch points.
-//
-// Deprecated: OBO is built in. OBOHandler and RegisterOBOHandler are kept only
-// so out-of-tree code that still registers a handler keeps compiling; they will
-// be removed once out-of-tree users are gone, see stacklok/toolhive#7200. A
-// registered handler applies to MCPServer and MCPRemoteProxy only. Its
-// SecretEnvVars is deliberately not used for VirtualMCPServer, which always
-// mounts each OBO client secret under the built-in per-config name
-// (OBOVMCPSecretEnvVars) so that two OBO backends in one vMCP pod never
-// collide on a single env var name.
-type OBOHandler struct {
-	// Validate verifies an obo-typed MCPExternalAuthConfig is well-formed.
-	Validate func(*mcpv1beta1.MCPExternalAuthConfig) error
-
-	// ApplyRunConfig appends the OBO runner options for a consuming MCPServer
-	// or MCPRemoteProxy.
-	ApplyRunConfig func(
-		ctx context.Context, c client.Client, namespace string,
-		cfg *mcpv1beta1.MCPExternalAuthConfig,
-		opts *[]runner.RunConfigBuilderOption,
-	) error
-
-	// SecretEnvVars returns the pod env vars the OBO proxy middleware needs.
-	SecretEnvVars func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error)
-}
-
-// oboMu guards reads and writes of oboHandler.
-var oboMu sync.RWMutex
-
-// oboHandler holds the OBO dispatch functions: the built-in implementation
-// unless out-of-tree code replaced it through the deprecated RegisterOBOHandler.
-var oboHandler = OBOHandler{
-	Validate:       validateOBO,
-	ApplyRunConfig: applyOBORunConfig,
-	SecretEnvVars:  oboProxySecretEnvVars,
-}
-
-// RegisterOBOHandler replaces the built-in OBO handler. Last-write-wins.
-// Panics if any of the three function fields is nil.
-//
-// Deprecated: OBO is built in; it will be removed once out-of-tree users are
-// gone, see stacklok/toolhive#7200. As documented on OBOHandler, the
-// registered SecretEnvVars does not apply to VirtualMCPServer.
-func RegisterOBOHandler(h OBOHandler) {
-	switch {
-	case h.Validate == nil:
-		panic("controllerutil.RegisterOBOHandler: Validate is nil")
-	case h.ApplyRunConfig == nil:
-		panic("controllerutil.RegisterOBOHandler: ApplyRunConfig is nil")
-	case h.SecretEnvVars == nil:
-		panic("controllerutil.RegisterOBOHandler: SecretEnvVars is nil")
-	}
-	oboMu.Lock()
-	defer oboMu.Unlock()
-	oboHandler = h
-}
-
-// currentOBOHandler returns a snapshot of the handler under the read lock.
-func currentOBOHandler() OBOHandler {
-	oboMu.RLock()
-	defer oboMu.RUnlock()
-	return oboHandler
-}
-
-// OBOValidate validates an obo-typed MCPExternalAuthConfig. Every failure the
+// ValidateOBO validates an obo-typed MCPExternalAuthConfig. Every failure the
 // user can fix by editing the spec is an *obo.ValidationError, whose message is
 // safe to surface in a status condition.
-func OBOValidate(cfg *mcpv1beta1.MCPExternalAuthConfig) error {
-	return currentOBOHandler().Validate(cfg)
-}
-
-// OBOSecretEnvVars returns the env var that mounts the OBO client secret into
-// a proxyrunner pod (MCPServer or MCPRemoteProxy) under obo.ClientSecretEnvVar.
-// The vMCP pod uses per-config names instead; see GenerateUniqueOBOSecretEnvVarName.
-func OBOSecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
-	return currentOBOHandler().SecretEnvVars(cfg)
-}
-
-// OBOApplyRunConfig appends the OBO middleware config for a consuming MCPServer
-// or MCPRemoteProxy to opts. A malformed config is an *obo.ValidationError; a
-// referenced Secret that is not available yet is a plain (transient) error.
-func OBOApplyRunConfig(
-	ctx context.Context,
-	c client.Client,
-	namespace string,
-	cfg *mcpv1beta1.MCPExternalAuthConfig,
-	opts *[]runner.RunConfigBuilderOption,
-) error {
-	return currentOBOHandler().ApplyRunConfig(ctx, c, namespace, cfg, opts)
+func ValidateOBO(cfg *mcpv1beta1.MCPExternalAuthConfig) error {
+	_, err := buildOBOMiddlewareParameters(oboSpec(cfg))
+	return err
 }
 
 // ValidateOBOIncomingAuth rejects an obo-typed MCPExternalAuthConfig referenced
@@ -169,14 +85,13 @@ func AddOBOSecretEnvVars(
 	if externalAuthConfig.Spec.Type != mcpv1beta1.ExternalAuthTypeOBO {
 		return nil, nil
 	}
-	return OBOSecretEnvVars(externalAuthConfig)
+	return oboProxySecretEnvVars(externalAuthConfig)
 }
 
 // OBOVMCPSecretEnvVars returns the env var that mounts an OBO client secret
 // into the vMCP pod. The name is unique per MCPExternalAuthConfig
 // (GenerateUniqueOBOSecretEnvVarName) so several OBO backends in one vMCP never
-// collide. It never dispatches through a handler registered with the deprecated
-// RegisterOBOHandler: a handler's SecretEnvVars returns a single fixed name.
+// collide.
 func OBOVMCPSecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
 	if oboSpec(cfg) == nil {
 		return nil, &obo.ValidationError{Message: msgOBOConfigRequired}
@@ -187,16 +102,13 @@ func OBOVMCPSecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVa
 	return []corev1.EnvVar{oboSecretEnvVar(GenerateUniqueOBOSecretEnvVarName(cfg.Name), cfg.Spec.OBO.ClientSecretRef)}, nil
 }
 
-// validateOBO is the built-in OBOHandler.Validate.
-func validateOBO(cfg *mcpv1beta1.MCPExternalAuthConfig) error {
-	_, err := buildOBOMiddlewareParameters(oboSpec(cfg))
-	return err
-}
-
-// applyOBORunConfig is the built-in OBOHandler.ApplyRunConfig. It builds the
-// obo.MiddlewareParameters contract, verifies the referenced client Secret is
-// present, and appends the "obo"-typed MiddlewareConfig through the runner's
-// AdditionalMiddlewareConfigs seam. It does not mutate opts on error.
+// applyOBORunConfig appends the OBO middleware config for a consuming MCPServer
+// or MCPRemoteProxy to opts. It builds the obo.MiddlewareParameters contract,
+// verifies the referenced client Secret is present, and appends the
+// "obo"-typed MiddlewareConfig through the runner's AdditionalMiddlewareConfigs
+// seam. A malformed config is an *obo.ValidationError; a referenced Secret that
+// is not available yet is a plain (transient) error. It does not mutate opts
+// on error.
 func applyOBORunConfig(
 	ctx context.Context,
 	c client.Client,
@@ -220,9 +132,11 @@ func applyOBORunConfig(
 	return nil
 }
 
-// oboProxySecretEnvVars is the built-in OBOHandler.SecretEnvVars. The env var
-// name matches the contract's clientSecretEnvVar; the secret value never
-// enters the RunConfig ConfigMap.
+// oboProxySecretEnvVars returns the env var that mounts the OBO client secret
+// into a proxyrunner pod (MCPServer or MCPRemoteProxy) under
+// obo.ClientSecretEnvVar, the name the contract's clientSecretEnvVar carries.
+// The secret value never enters the RunConfig ConfigMap. The vMCP pod uses
+// per-config names instead; see OBOVMCPSecretEnvVars.
 func oboProxySecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
 	if oboSpec(cfg) == nil {
 		return nil, &obo.ValidationError{Message: msgOBOConfigRequired}

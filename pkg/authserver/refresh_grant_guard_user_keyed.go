@@ -42,11 +42,12 @@ type userKeyedCheck struct {
 // The identity provider is the first of providerNames.
 func newUserKeyedUpstreamRefreshGuard(
 	stor storage.Storage, refresher storage.UpstreamTokenRefresher, providerNames []string,
+	opts ...func(*upstreamRefreshGuard),
 ) (*upstreamRefreshGuard, error) {
 	if len(providerNames) == 0 {
 		return nil, errors.New("user-keyed upstream refresh guard requires an identity provider")
 	}
-	guard, err := newUpstreamRefreshGuard(stor, refresher, providerNames)
+	guard, err := newUpstreamRefreshGuard(stor, refresher, providerNames, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -118,6 +119,12 @@ func (g *upstreamRefreshGuard) deadUserKeyedUpstream(ctx context.Context, tsid, 
 
 	if holdsLiveToken(snapshot, userID) {
 		return nil
+	}
+	if snapshot != nil && snapshot.UserID == userID && !storage.UpstreamIssuerMatches(snapshot.Issuer, g.providerIssuers[idp]) {
+		return &refusal{
+			provider: idp,
+			reason:   "upstream access token expired and its issuer does not match the configured provider",
+		}
 	}
 
 	err = g.askUserCredential(ctx, userID, idp)

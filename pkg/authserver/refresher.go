@@ -70,6 +70,7 @@ const upstreamConflictReadTimeout = 5 * time.Second
 //     optimization layered on top of the CAS guarantee, not a substitute for it.
 type upstreamTokenRefresher struct {
 	providers            map[string]upstream.OAuth2Provider
+	providerIssuers      map[string]string
 	storage              storage.UpstreamTokenStorage
 	refreshTokenLifespan time.Duration
 	sfGroup              singleflight.Group
@@ -123,6 +124,9 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 	}
 	if _, ok := r.providers[expired.ProviderID]; !ok {
 		return nil, fmt.Errorf("no upstream provider configured for %q", expired.ProviderID)
+	}
+	if err := r.checkProviderIssuer(expired); err != nil {
+		return nil, err
 	}
 
 	ctx, err := r.withCanonicalUser(ctx, expired)
@@ -219,6 +223,9 @@ func (r *upstreamTokenRefresher) refreshFromAuthoritativeRow(
 				"upstream token row missing on re-read for provider %q", expired.ProviderID,
 			)
 		}
+		if issuerErr := r.checkProviderIssuer(authoritative); issuerErr != nil {
+			return nil, issuerErr
+		}
 		if !authoritative.IsExpired(time.Now()) && rowChanged(expired, authoritative) {
 			return authoritative, nil
 		}
@@ -226,6 +233,9 @@ func (r *upstreamTokenRefresher) refreshFromAuthoritativeRow(
 	}
 	if !errors.Is(readErr, storage.ErrExpired) || authoritative == nil {
 		return nil, readErr
+	}
+	if issuerErr := r.checkProviderIssuer(authoritative); issuerErr != nil {
+		return nil, issuerErr
 	}
 	return r.redeem(ctx, sessionID, rowID, authoritative)
 }
@@ -276,6 +286,9 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 	if !ok {
 		return nil, fmt.Errorf("no upstream provider configured for %q", expired.ProviderID)
 	}
+	if err := r.checkProviderIssuer(expired); err != nil {
+		return nil, err
+	}
 
 	// Refresh tokens via the upstream provider
 	newTokens, err := provider.RefreshTokens(ctx, expired.RefreshToken, expired.UpstreamSubject)
@@ -312,9 +325,17 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 		)
 	}
 
+	// Preserve the token's recorded issuer, or stamp the current provider's
+	// issuer onto legacy rows written before issuer binding existed.
+	issuer := expired.Issuer
+	if issuer == "" {
+		issuer = r.providerIssuers[expired.ProviderID]
+	}
+
 	// Build updated storage tokens preserving binding fields from the original
 	updated := &storage.UpstreamTokens{
 		ProviderID:       expired.ProviderID,
+		Issuer:           issuer,
 		AccessToken:      newTokens.AccessToken,
 		RefreshToken:     newTokens.RefreshToken,
 		IDToken:          newTokens.IDToken,
@@ -640,4 +661,18 @@ func rowChanged(callerRow, stored *storage.UpstreamTokens) bool {
 		callerRow.RefreshToken != stored.RefreshToken ||
 		callerRow.IDToken != stored.IDToken ||
 		!callerRow.ExpiresAt.Equal(stored.ExpiresAt)
+}
+
+// checkProviderIssuer ensures a stored upstream token row is not refreshed
+// against an upstream whose configured issuer/authority no longer matches the
+// issuer that created the row.
+func (r *upstreamTokenRefresher) checkProviderIssuer(row *storage.UpstreamTokens) error {
+	configured := r.providerIssuers[row.ProviderID]
+	if !storage.UpstreamIssuerMatches(row.Issuer, configured) {
+		return fmt.Errorf(
+			"%w: provider %q token issuer %q does not match configured issuer %q",
+			storage.ErrIssuerMismatch, row.ProviderID, row.Issuer, configured,
+		)
+	}
+	return nil
 }

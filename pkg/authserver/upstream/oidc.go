@@ -342,6 +342,16 @@ func (*OIDCProviderImpl) Type() ProviderType {
 	return ProviderTypeOIDC
 }
 
+// Issuer returns the configured OIDC issuer URL for this provider, overriding
+// BaseOAuth2Provider.Issuer so OIDC tokens are bound to the OIDC issuer
+// rather than a discovered token endpoint.
+func (p *OIDCProviderImpl) Issuer() string {
+	if p == nil || p.oidcConfig == nil {
+		return ""
+	}
+	return p.oidcConfig.Issuer
+}
+
 // ExchangeCodeForIdentity exchanges an authorization code for tokens and validates
 // the ID token (including nonce) in a single atomic operation.
 // Per OIDC Core Section 3.1.3.3, the ID token MUST be present. The nonce is validated

@@ -127,12 +127,35 @@ func buildUpstreams(ctx context.Context, cfg Config) ([]handlers.NamedUpstream, 
 		}
 		issuer, subjectClaim := upstreamIdentityBinding(upCfg)
 		upstreams = append(upstreams, handlers.NamedUpstream{
-			Name: upCfg.Name, DisplayName: upCfg.DisplayName, Provider: provider,
-			Issuer: issuer, SubjectClaim: subjectClaim,
+			Name:         upCfg.Name,
+			DisplayName:  upCfg.DisplayName,
+			Provider:     provider,
+			Issuer:       issuer,
+			SubjectClaim: subjectClaim,
+			TokenIssuer:  configuredUpstreamIssuer(upCfg, provider),
 		})
 		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
 	}
 	return upstreams, nil
+}
+
+// configuredUpstreamIssuer resolves the canonical authority identifier for upCfg
+// (OIDC issuer URL or OAuth 2.0 token endpoint URL), falling back to querying
+// provider directly when the config field is unset.
+func configuredUpstreamIssuer(upCfg *UpstreamConfig, provider upstream.OAuth2Provider) string {
+	if upCfg != nil {
+		switch upCfg.Type {
+		case UpstreamProviderTypeOIDC:
+			if upCfg.OIDCConfig != nil && upCfg.OIDCConfig.Issuer != "" {
+				return upCfg.OIDCConfig.Issuer
+			}
+		case UpstreamProviderTypeOAuth2:
+			if upCfg.OAuth2Config != nil && upCfg.OAuth2Config.TokenEndpoint != "" {
+				return upCfg.OAuth2Config.TokenEndpoint
+			}
+		}
+	}
+	return upstream.ProviderIssuer(provider)
 }
 
 // upstreamIdentityBinding returns the (issuer, subjectClaim) stamped onto
@@ -1115,14 +1138,18 @@ func refreshGrantValidatorChain(
 		return cfg.RefreshGrantHandlers, nil
 	}
 	upstreamNames := make([]string, len(upstreams))
+	upstreamIssuers := make(map[string]string, len(upstreams))
 	for i, u := range upstreams {
 		upstreamNames[i] = u.Name
+		if issuer := u.EffectiveIssuer(); issuer != "" {
+			upstreamIssuers[u.Name] = issuer
+		}
 	}
 	newGuard := newUpstreamRefreshGuard
 	if storage.IsUserKeyed(stor) {
 		newGuard = newUserKeyedUpstreamRefreshGuard
 	}
-	guard, err := newGuard(stor, refresher, upstreamNames)
+	guard, err := newGuard(stor, refresher, upstreamNames, withRefreshGuardIssuers(upstreamIssuers))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create upstream refresh guard: %w", err)
 	}
@@ -1313,8 +1340,12 @@ func newUpstreamTokenRefresher(
 		return nil
 	}
 	providers := make(map[string]upstream.OAuth2Provider, len(upstreams))
+	providerIssuers := make(map[string]string, len(upstreams))
 	for _, u := range upstreams {
 		providers[u.Name] = u.Provider
+		if issuer := u.EffectiveIssuer(); issuer != "" {
+			providerIssuers[u.Name] = issuer
+		}
 	}
 	rejected, err := newRejectedRefreshes(rejectedRefreshesMaxEntries, rejectedRefreshesTTL, time.Now)
 	if err != nil {
@@ -1323,6 +1354,7 @@ func newUpstreamTokenRefresher(
 	}
 	return &upstreamTokenRefresher{
 		providers:            providers,
+		providerIssuers:      providerIssuers,
 		storage:              stor,
 		refreshTokenLifespan: refreshTokenLifespan,
 		rejected:             rejected,

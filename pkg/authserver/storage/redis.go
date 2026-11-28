@@ -1457,6 +1457,7 @@ func (s *RedisStorage) DeletePKCERequestSession(ctx context.Context, signature s
 // read path can use a consistent != 0 check for both.
 type storedUpstreamTokens struct {
 	ProviderID       string `json:"provider_id"`
+	Issuer           string `json:"issuer,omitempty"`
 	AccessToken      string `json:"access_token"`  //nolint:gosec // G117: field legitimately holds sensitive data
 	RefreshToken     string `json:"refresh_token"` //nolint:gosec // G117: field legitimately holds sensitive data
 	IDToken          string `json:"id_token"`
@@ -1480,6 +1481,7 @@ func (s *storedUpstreamTokens) toUpstreamTokens() *UpstreamTokens {
 	}
 	return &UpstreamTokens{
 		ProviderID:       s.ProviderID,
+		Issuer:           s.Issuer,
 		AccessToken:      s.AccessToken,
 		RefreshToken:     s.RefreshToken,
 		IDToken:          s.IDToken,
@@ -1509,6 +1511,7 @@ func newStoredUpstreamTokens(tokens *UpstreamTokens) *storedUpstreamTokens {
 	}
 	return &storedUpstreamTokens{
 		ProviderID:       tokens.ProviderID,
+		Issuer:           tokens.Issuer,
 		AccessToken:      tokens.AccessToken,
 		RefreshToken:     tokens.RefreshToken,
 		IDToken:          tokens.IDToken,

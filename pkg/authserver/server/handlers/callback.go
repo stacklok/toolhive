@@ -318,6 +318,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// still bounds the storage lifetime instead of leaving the row indefinitely.
 	storageTokens := &storage.UpstreamTokens{
 		ProviderID:       providerID,
+		Issuer:           h.upstreamIssuerFor(providerID, result),
 		AccessToken:      idpTokens.AccessToken,
 		RefreshToken:     idpTokens.RefreshToken,
 		IDToken:          idpTokens.IDToken,
@@ -444,6 +445,15 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 		// runs before the synthetic branch precisely so "synthetic" can never imply
 		// "carry forward from a non-existent prior row".
 		if prior == nil || prior.RefreshToken == "" {
+			return
+		}
+		if !storage.UpstreamIssuerMatches(prior.Issuer, storageTokens.Issuer) {
+			slog.Warn("skipping upstream refresh token carry-forward: prior token issuer mismatches configured upstream",
+				"user_id", subject,
+				"provider_id", providerID,
+				"prior_issuer", prior.Issuer,
+				"current_issuer", storageTokens.Issuer,
+			)
 			return
 		}
 		// Non-synthetic: defense-in-depth account-linking guard requires the prior

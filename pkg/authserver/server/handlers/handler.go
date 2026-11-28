@@ -53,6 +53,19 @@ type NamedUpstream struct {
 	// Either both are set or both are empty.
 	Issuer       string
 	SubjectClaim string
+	// TokenIssuer optionally records the upstream's configured token-binding
+	// authority identifier (OIDC issuer URL or OAuth 2.0 token endpoint). When
+	// empty, EffectiveIssuer falls back to upstream.ProviderIssuer(Provider).
+	TokenIssuer string
+}
+
+// EffectiveIssuer returns the upstream's configured token-binding issuer/authority
+// identifier, falling back to querying Provider if TokenIssuer is empty.
+func (u NamedUpstream) EffectiveIssuer() string {
+	if u.TokenIssuer != "" {
+		return u.TokenIssuer
+	}
+	return upstream.ProviderIssuer(u.Provider)
 }
 
 // Handler provides HTTP handlers for the OAuth authorization server endpoints.
@@ -578,6 +591,10 @@ func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string, cha
 			// No token stored for this leg — prompt.
 			return name, nil
 		}
+		// Reject stored rows issued by a previous authority after the upstream was repointed.
+		if !storage.UpstreamIssuerMatches(tokens.Issuer, h.upstreamIssuer(name)) {
+			return name, nil
+		}
 		// A live token (or one with no asserted expiry) satisfies the leg.
 		if tokens.ExpiresAt.IsZero() || !tokens.IsExpired(time.Now()) {
 			continue
@@ -789,6 +806,28 @@ func (h *Handler) upstreamByName(name string) (upstream.OAuth2Provider, bool) {
 		}
 	}
 	return nil, false
+}
+
+// upstreamIssuer returns the configured authority identifier for the named upstream.
+func (h *Handler) upstreamIssuer(name string) string {
+	for i := range h.upstreams {
+		if h.upstreams[i].Name == name {
+			return h.upstreams[i].EffectiveIssuer()
+		}
+	}
+	return ""
+}
+
+// upstreamIssuerFor returns the configured authority identifier for providerName,
+// falling back to result.VerifiedIssuer when the configured provider exposes none.
+func (h *Handler) upstreamIssuerFor(providerName string, result *upstream.Identity) string {
+	if issuer := h.upstreamIssuer(providerName); issuer != "" {
+		return issuer
+	}
+	if result != nil {
+		return result.VerifiedIssuer
+	}
+	return ""
 }
 
 // issuer returns the authorization-server issuer URL. NewHandler enforces

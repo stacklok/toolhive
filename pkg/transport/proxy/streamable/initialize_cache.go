@@ -7,8 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sync/atomic"
 
+	"github.com/google/uuid"
 	"golang.org/x/exp/jsonrpc2"
 	"golang.org/x/sync/singleflight"
 
@@ -48,18 +50,22 @@ type initializeCache struct {
 	// start.
 	flight singleflight.Group
 
-	// result is the raw InitializeResult of the first successful handshake,
+	// result is the raw InitializeResult of the latest successful handshake,
 	// nil until one completes.
 	//
-	// UNSYNCHRONISED BY DESIGN: only the flight callback in interceptInitialize
-	// may read or write this field. singleflight runs at most one callback per
-	// key at a time and a later callback starts only after the previous one has
-	// completed through the group's own mutex, so callback-only access can
-	// never overlap. Reading it anywhere else -- a status endpoint, a helper
-	// accessor -- reintroduces a data race, which is why no accessor exists.
-	// Once assigned it is never mutated, so the same bytes may be handed to
-	// concurrent responses.
+	// UNSYNCHRONISED BY DESIGN: only the flight callbacks (interceptInitialize
+	// and replayInitialize) may read or write this field. singleflight runs at
+	// most one callback per key at a time and a later callback starts only
+	// after the previous one has completed through the group's own mutex, so
+	// callback-only access can never overlap. Reading it anywhere else -- a
+	// status endpoint, a helper accessor -- reintroduces a data race, which is
+	// why no accessor exists. It is replaced, never mutated, so the same bytes
+	// may be handed to concurrent responses.
 	result json.RawMessage
+
+	// params holds the initialize params behind result, for ReinitializeBackend
+	// to replay. Atomic because it is read outside the flight.
+	params atomic.Pointer[json.RawMessage]
 
 	// initializedForwarded records whether a notifications/initialized has
 	// already been passed to the backend. This deliberately does NOT use the
@@ -85,6 +91,49 @@ const initializeFlightKey = "initialize"
 // newInitializeCache creates an empty initializeCache.
 func newInitializeCache() *initializeCache {
 	return &initializeCache{}
+}
+
+// maxReplayJoins bounds ReinitializeBackend's retries after it joins a flight
+// another caller started, which may finish without replaying the handshake.
+const maxReplayJoins = 3
+
+// ReinitializeBackend replays the cached handshake to the backend after the
+// transport re-attached to it, since a replaced backend process rejects every
+// request until it is initialized. It does nothing before a handshake has
+// succeeded, and client handshakes arriving meanwhile wait for its outcome.
+//
+// A success replaces the cached result and sends notifications/initialized.
+// A JSON-RPC error is taken to mean the process kept running and is already
+// initialized, so the cache is kept; a new process that rejects initialize for
+// another reason goes undetected. No answer clears the cache, so the next
+// client's handshake goes to the backend. A malformed reply changes nothing.
+func (p *HTTPProxy) ReinitializeBackend(ctx context.Context) {
+	c := p.initialize
+	params := c.params.Load()
+	if params == nil {
+		return
+	}
+	id, err := uuid.NewRandom()
+	if err != nil {
+		slog.Warn("failed to mint an id for the replayed initialize", "error", err)
+		return
+	}
+	req, err := jsonrpc2.NewCall(jsonrpc2.StringID(id.String()), string(sdkmcp.MethodInitialize), *params)
+	if err != nil {
+		slog.Warn("failed to build the replayed initialize", "error", err)
+		return
+	}
+	for range maxReplayJoins {
+		ran := false
+		// replayInitialize logs every failure itself.
+		_, _, _ = c.flight.Do(initializeFlightKey, func() (any, error) {
+			ran = true
+			return p.replayInitialize(ctx, req)
+		})
+		if ran || ctx.Err() != nil {
+			return
+		}
+	}
 }
 
 // interceptInitialize answers a client's initialize request: the first caller's
@@ -148,14 +197,59 @@ func (p *HTTPProxy) interceptInitialize(
 		}
 
 		c.result = resp.Result
+		c.params.Store(&req.Params)
 		return handshake{result: resp.Result}, nil
 	})
 	if err != nil {
 		return upstreamErrorResponse(req.ID, err)
 	}
 
-	h := v.(handshake) // the callback returns a handshake or a non-nil error
+	h := v.(handshake) // every callback on this key returns a handshake or a non-nil error
 	return &jsonrpc2.Response{ID: req.ID, Result: h.result, Error: h.rpcErr}
+}
+
+// replayInitialize is the flight callback of ReinitializeBackend.
+func (p *HTTPProxy) replayInitialize(ctx context.Context, req *jsonrpc2.Request) (any, error) {
+	c := p.initialize
+	// "" is the internal session ID reconcileUpstreamLogLevel also uses; no
+	// client request is ever keyed under it.
+	msg, err := p.forwardUpstream(ctx, "", req)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, err // shutting down
+		}
+		slog.Warn("backend did not answer the replayed initialize, the next client handshake goes upstream",
+			"error", err)
+		c.result = nil
+		c.initializedForwarded.Store(false)
+		return nil, err
+	}
+
+	resp, ok := msg.(*jsonrpc2.Response)
+	if !ok || (resp.Error == nil && len(resp.Result) == 0) {
+		slog.Warn("backend sent a malformed reply to the replayed initialize, keeping the cached handshake")
+		return nil, errUnexpectedInitializeReply
+	}
+	if resp.Error != nil {
+		slog.Debug("backend rejected the replayed initialize, keeping the cached handshake",
+			"error", resp.Error)
+		if c.result == nil {
+			return handshake{rpcErr: resp.Error}, nil
+		}
+		return handshake{result: c.result}, nil
+	}
+
+	c.result = resp.Result
+	notification, err := jsonrpc2.NewNotification(string(sdkmcp.MethodNotificationInitialized), nil)
+	if err == nil {
+		err = p.SendMessageToDestination(notification)
+	}
+	if err != nil {
+		slog.Warn("failed to send notifications/initialized after the replayed initialize, "+
+			"the next client's will be forwarded", "error", err)
+	}
+	c.initializedForwarded.Store(err == nil)
+	return handshake{result: c.result}, nil
 }
 
 // claimInitializedForward reports whether a client's notifications/initialized

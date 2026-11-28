@@ -414,8 +414,12 @@ func TestIDJAGResolve_HandlerDoesNotNarrowResolver(t *testing.T) {
 					Return(nil, storage.ErrNotFound).AnyTimes()
 			}
 			resolver, err := subjectresolver.New(map[string]subjectresolver.Provider{
-				resolveTestUpstreamIssuer: {Name: "first", SubjectClaim: resolveTestClaim},
-				secondIssuer:              {Name: "second", SubjectClaim: secondClaim},
+				resolveTestUpstreamIssuer: {
+					Name: "first", SubjectClaim: resolveTestClaim,
+				},
+				secondIssuer: {
+					Name: "second", SubjectClaim: secondClaim,
+				},
 			}, store)
 			require.NoError(t, err)
 			f := newResolveFixture(t, resolver)

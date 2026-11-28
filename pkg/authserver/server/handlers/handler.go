@@ -48,6 +48,11 @@ type NamedUpstream struct {
 	// It is display-only: never compared, stored, or used to route.
 	DisplayName string
 	Provider    upstream.OAuth2Provider
+	// Issuer and SubjectClaim identify the upstream authority and subject
+	// extraction rule bound onto provider-identity rows for this upstream.
+	// Either both are set or both are empty.
+	Issuer       string
+	SubjectClaim string
 }
 
 // Handler provides HTTP handlers for the OAuth authorization server endpoints.
@@ -239,18 +244,8 @@ func NewHandler(
 		return nil, fmt.Errorf(
 			"handlers: AuthorizationServerConfig with embedded *fosite.Config must be non-nil")
 	}
-	seen := make(map[string]struct{}, len(upstreams))
-	for _, u := range upstreams {
-		if u.Name == "" {
-			return nil, fmt.Errorf("handlers: upstream entry has empty name")
-		}
-		if u.Provider == nil {
-			return nil, fmt.Errorf("handlers: upstream %q has nil provider", u.Name)
-		}
-		if _, dup := seen[u.Name]; dup {
-			return nil, fmt.Errorf("handlers: duplicate upstream name %q", u.Name)
-		}
-		seen[u.Name] = struct{}{}
+	if err := validateNamedUpstreams(upstreams); err != nil {
+		return nil, err
 	}
 	h := &Handler{
 		provider:                 provider,
@@ -404,6 +399,28 @@ func (h *Handler) initConsentExemptions() error {
 	return nil
 }
 
+// validateNamedUpstreams checks that every upstream entry has a unique non-empty
+// name, a non-nil provider, and either both or neither binding fields set.
+func validateNamedUpstreams(upstreams []NamedUpstream) error {
+	seen := make(map[string]struct{}, len(upstreams))
+	for _, u := range upstreams {
+		if u.Name == "" {
+			return fmt.Errorf("handlers: upstream entry has empty name")
+		}
+		if u.Provider == nil {
+			return fmt.Errorf("handlers: upstream %q has nil provider", u.Name)
+		}
+		if (u.Issuer == "") != (u.SubjectClaim == "") {
+			return fmt.Errorf("handlers: upstream %q must set both Issuer and SubjectClaim or neither", u.Name)
+		}
+		if _, dup := seen[u.Name]; dup {
+			return fmt.Errorf("handlers: duplicate upstream name %q", u.Name)
+		}
+		seen[u.Name] = struct{}{}
+	}
+	return nil
+}
+
 // newUserResolver builds the resolver for the configured upstreams. Only the
 // first upstream creates users. Every login chain starts there, and later
 // upstreams carry the user it resolved, so a later upstream's identity may resolve
@@ -412,7 +429,14 @@ func newUserResolver(stor storage.UserStorage, upstreams []NamedUpstream) *UserR
 	if len(upstreams) == 0 {
 		return NewUserResolver(stor)
 	}
-	return NewUserResolver(stor, WithCreateOnlyFor(upstreams[0].Name))
+	opts := make([]ResolverOption, 0, 1+len(upstreams))
+	opts = append(opts, WithCreateOnlyFor(upstreams[0].Name))
+	for _, u := range upstreams {
+		if u.Issuer != "" && u.SubjectClaim != "" {
+			opts = append(opts, WithIdentityBinding(u.Name, u.Issuer, u.SubjectClaim))
+		}
+	}
+	return NewUserResolver(stor, opts...)
 }
 
 // limiterRetryAfterSeconds returns the Retry-After value for a request l

@@ -1497,6 +1497,12 @@ registration, and again in `Config.Validate`.
 | `resolve` on an issuer that accepts `jwt_bearer` assertions (an unset `accepted_assertion_types` accepts both forms) | `issuer_url "<url>": jwt_bearer_grant.subject_mode resolve requires accepted_assertion_types [id_jag]` |
 | `resolve` when the server has no upstream, or its first upstream is not `oidc` | `trusted_issuers: issuer_url "<url>": jwt_bearer_grant.subject_mode resolve needs an OIDC identity provider as the first upstream` |
 | `resolve` when the first upstream's `subject_claim` is mutable (`email`, `preferred_username`, `upn` and the others `subject.ValidateBindingClaim` refuses) | `trusted_issuers: issuer_url "<url>": jwt_bearer_grant.subject_mode resolve needs a stable subject_claim on the first upstream: <reason>` |
+| More than one issuer mapped to the same provider when the resolver is built | `subject resolver: provider "<name>" maps to more than one issuer (<issuers>); a second issuer for one provider is not supported yet because rows are stamped with the sign-in issuer` |
+
+The issuer-per-provider row is not a config check: it fires when the server
+builds its subject resolver, which every construction path (run-config and
+library) goes through. Today the server maps only the first upstream's issuer,
+so it guards a future second mapping.
 
 `subject_bindings` stays required for a `namespaced` issuer, with the same
 error as before, and must be empty for a `resolve` issuer. A file-based
@@ -1511,17 +1517,38 @@ no bindings. The other ID-JAG checks run unchanged.
 
 The first upstream must be OIDC because the first upstream is the only sign-in
 leg that writes the provider-identity rows a subject is resolved against, and
-only an OIDC upstream records the issuer URL and subject claim those rows are
-keyed by. An OAuth2 first upstream also writes rows, but they carry no issuer
-URL or subject claim. A later OIDC upstream does not count, and a token-only
-server (no upstreams) is refused. The ID-JAG's `upstream_subject` claim is
-resolved by a resolver built from this server's configuration. Today it knows
-one pair: the first upstream's issuer and `subject_claim` (default `sub`). The
-resolver refuses any other `iss` or `claim` with `subject.ErrNotConfigured`, and
-the handler does not check the pair itself. The stored
-provider-identity rows are keyed only by the upstream name and the subject
-value, so the issuer and claim are not read from the rows. The `value` is looked
-up under the first upstream's name.
+only an OIDC upstream records the OIDC issuer URL and subject claim those rows
+are bound to. An OAuth2 first upstream also writes rows, bound to a hash of its
+endpoint's host (plus any non-default port) and its extraction rule rather than
+an OIDC issuer. A path change does not change the binding. A later OIDC upstream does
+not count, and a token-only server (no upstreams) is refused. The ID-JAG's
+`upstream_subject` claim is resolved by a resolver built from this server's
+configuration. Today it knows one pair: the first upstream's issuer and
+`subject_claim` (default `sub`). The resolver refuses any other `iss` or `claim`
+with `subject.ErrNotConfigured`, and the handler does not check the pair itself.
+When a row is found under the first upstream's name and `value`, the resolver
+checks the row's stored `Issuer` and `SubjectClaim` against the `iss` of the
+token being resolved and the provider's subject claim. While a provider has a
+single issuer, these equal the binding that sign-in stamps on the upstream's
+rows. There is no setting for a second issuer for one provider today. If a future
+change adds one, startup refuses it until the mapping is built, because rows
+are stamped with the sign-in issuer. A cross-issuer
+mapping (for example a token from an Okta custom authorization server that
+carries the subject in `uid`) will need the provider to carry the sign-in
+binding and compare against it; that belongs to the delegated access work
+"Delegated access: tokens and actors from third-party issuers". A row created
+under a different issuer or subject claim (or a half-stamped row) is refused with
+`subject.ErrUnknown` (`subject_unknown`) without writing to storage. A row that
+carries neither (written before binding existed) is accepted read-only and
+logged once per resolver at `WARN`; sign-in stamps it when the storage supports
+compare-and-swap. A row nobody has used since the upgrade therefore resolves to
+the old account under the new configuration; see [Migrating identity providers
+or subject claims](11-auth-server-storage.md#migrating-identity-providers-or-subject-claims).
+
+The resolver and the token endpoint are separate. A trusted issuer with
+`subject_mode: resolve` is refused by the closed gate before the resolver runs,
+until delegated access is turned on, so a user signing in does not by itself
+make such a redemption succeed.
 
 At startup the server logs a WARN once if the subject claim is `sub` and the
 first upstream's issuer looks like an Okta custom authorization server, because
@@ -1581,7 +1608,7 @@ provisioned.
 | The ID-JAG has no `resource` claim | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must carry a 'resource' claim.` | `resource_claim_missing` |
 | `upstream_subject` missing, not an object, or `iss`, `claim` or `value` missing or not a non-empty string | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion has a missing or malformed upstream_subject claim.` | `upstream_subject_invalid` |
 | The resolver does not resolve this `iss` and `claim` (today: `iss` is not the first upstream's issuer, or `claim` is not its subject claim) | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion upstream_subject does not name this server's sign-in identity provider and subject claim.` | `upstream_subject_foreign` |
-| No local user, more than one, or an empty user ID | 400 `access_denied`, `subject_unknown` | `subject_unknown` |
+| No local user, more than one, an empty user ID, or a row created under another issuer or subject claim | 400 `access_denied`, `subject_unknown` | `subject_unknown` |
 | The resolver failed, or no resolver is configured | 500 `server_error`, generic text ("The subject could not be resolved.") | `subject_resolver_unavailable` |
 
 The ID-JAG is not consumed in any of these cases. The Debug line names the

@@ -140,6 +140,12 @@ func (a *Authorizer) authorizeToolRead(
 	if erroredForbid(a.policySet, callDiag) {
 		return false, fmt.Errorf("authorization error: %v", callDiag.Errors)
 	}
+	// A call_tool permit that errors counts as a non-match, so a read_tool permit can still
+	// list the tool. Log each one so a typo or missing argument does not go unnoticed.
+	for _, e := range callDiag.Errors {
+		slog.Warn("cedar call_tool permit errored during tools/list visibility; treated as not matching",
+			"policy", e.PolicyID, "tool", toolName, "error", e.Message)
+	}
 
 	readDecision, readDiag, err := a.evaluate(
 		a.readSet, readPrincipal, readToolActionEntity, readResource, readContext, readEntities)

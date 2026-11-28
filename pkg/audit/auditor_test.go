@@ -1253,6 +1253,63 @@ func TestMiddlewareDetectsJSONRPCErrors(t *testing.T) {
 		assert.Contains(t, logOutput, "jsonrpc_error_code")
 	})
 
+	t.Run("detects JSON-RPC error in a body larger than the detection buffer", func(t *testing.T) {
+		t.Parallel()
+		// Bodies of 511, 512 and 513+ bytes: the old prefix parse missed
+		// everything past the buffer size.
+		for _, size := range []int{errorDetectionBufferSize - 1, errorDetectionBufferSize, errorDetectionBufferSize + 1, 4 * errorDetectionBufferSize} {
+			var logBuf bytes.Buffer
+			detectErrors := true
+			config := &Config{DetectApplicationErrors: &detectErrors}
+			auditor, err := NewAuditorWithTransport(config, "streamable-http")
+			require.NoError(t, err)
+			auditor.auditLogger = NewAuditLogger(&logBuf)
+
+			const envelope = `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":""}}`
+			errorResponse := `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"` +
+				strings.Repeat("a", size-len(envelope)) + `"}}`
+			require.Len(t, errorResponse, size)
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, err := w.Write([]byte(errorResponse))
+				require.NoError(t, err)
+			})
+
+			req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"test"}}`))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			auditor.Middleware(handler).ServeHTTP(rr, req)
+
+			assert.Equal(t, errorResponse, rr.Body.String(), "size %d", size)
+			assert.Contains(t, logBuf.String(), OutcomeApplicationError, "size %d", size)
+			assert.Contains(t, logBuf.String(), "-32000", "size %d", size)
+		}
+	})
+
+	t.Run("keeps outcome=success for a large JSON-RPC result", func(t *testing.T) {
+		t.Parallel()
+		var logBuf bytes.Buffer
+		detectErrors := true
+		config := &Config{DetectApplicationErrors: &detectErrors}
+		auditor, err := NewAuditorWithTransport(config, "streamable-http")
+		require.NoError(t, err)
+		auditor.auditLogger = NewAuditLogger(&logBuf)
+
+		response := `{"jsonrpc":"2.0","id":1,"result":{"error":{"code":1,"message":"x"},"text":"` +
+			strings.Repeat("a", 4*errorDetectionBufferSize) + `"}}`
+		handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, err := w.Write([]byte(response))
+			require.NoError(t, err)
+		})
+
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"test"}}`))
+		req.Header.Set("Content-Type", "application/json")
+		auditor.Middleware(handler).ServeHTTP(httptest.NewRecorder(), req)
+
+		assert.NotContains(t, logBuf.String(), OutcomeApplicationError)
+	})
+
 	t.Run("keeps outcome=success for valid JSON-RPC result", func(t *testing.T) {
 		t.Parallel()
 		var logBuf bytes.Buffer
